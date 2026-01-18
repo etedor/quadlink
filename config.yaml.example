@@ -1,0 +1,94 @@
+# quadlink configuration example
+
+credentials:
+  # provide inline (not recommended for production):
+  username: your_username
+  secret: your_secret_key
+
+  # or reference a file (recommended):
+  # file: /run/secrets/quadlink  # contains "username:password" or "password" only
+
+# quad selection tuning
+diversity_bonus: 25      # bonus points for streams in new categories
+stability_bonus: 30      # bonus points for streams already in quad
+skip_hosted: true        # skip streams that are hosting another channel
+hosted_offset: 50        # priority offset for hosted streams (if not skipping)
+
+# optional webhook notifications
+webhook:
+  enabled: false
+  url: https://example.com/webhook
+  timeout: 10
+
+# logging configuration
+logging:
+  level: info            # debug, info, warn, error
+  format: json           # json or text
+
+# streamlink configuration
+proxy_playlist: https://eu.luminous.dev
+low_latency: true
+
+# stream priorities (higher numbers = higher priority)
+# streams are processed from highest to lowest priority
+priorities:
+  999:
+    # highest priority - always prefer these streams
+    - urls:
+        - your_favorite_streamer
+      rulesets: [global]
+
+  180:
+    # mid-priority streams with category filters
+    - urls:
+        - streamer1
+        - streamer2
+      rulesets: [global, specific_game]
+
+  100:
+    # tournament streams
+    - urls:
+        - esports_channel
+      rulesets: [global, tournament]
+
+  10:
+    # low priority fallback streams
+    - urls:
+        - always_on_channel
+      rulesets: [always_on]
+
+# filter rulesets (applied to stream groups)
+# multiple rulesets are combined (union)
+rulesets:
+  - name: global
+    filters:
+      # block these categories (regex)
+      block_categories:
+        - "^Just Chatting$"
+        - "^Minecraft$"
+
+      # block these title patterns (regex)
+      block_titles:
+        - "(?i).*!adfest.*"
+        - "(?i).*(vod|replay)(ing)?.*"
+
+  - name: specific_game
+    filters:
+      # only allow these categories (whitelist)
+      allow_categories:
+        - "^Your Game Title$"
+
+      # block specific title patterns even if category matches
+      block_titles:
+        - "(?i).*raid.*"
+
+  - name: always_on
+    filters:
+      allow_categories:
+        - "^Always On$"
+        - "^Music$"
+
+  - name: tournament
+    filters:
+      # empty filters = allow all
+      block_titles: []
