@@ -160,7 +160,7 @@ class QuadStreamClient:
                     )
                     return False
 
-                logger.debug("webhook", status=response.status_code, url=webhook_url)
+                logger.info("webhook successful")
                 return True
 
         except httpx.TimeoutException:

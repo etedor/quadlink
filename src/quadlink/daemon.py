@@ -122,7 +122,7 @@ class Daemon:
                     self.running = False
                     break
 
-                logger.info("sleeping", interval=self.interval)
+                logger.debug("sleeping", interval=self.interval)
                 await asyncio.sleep(self.interval)
 
             except asyncio.CancelledError:

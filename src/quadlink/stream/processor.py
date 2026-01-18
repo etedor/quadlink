@@ -130,7 +130,7 @@ class StreamProcessor:
 
                 passed, reason, ruleset = self.filter.apply_filters(stream, rulesets)
                 if not passed:
-                    logger.info(
+                    logger.debug(
                         "stream rejected",
                         author=stream.metadata.author,
                         reason=reason,

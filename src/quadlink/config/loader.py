@@ -82,7 +82,7 @@ class ConfigLoader:
         for path_str in search_paths:
             path = Path(path_str).expanduser().resolve()
             if path.exists():
-                logger.info("config loaded", path=str(path))
+                logger.debug("config loaded", path=str(path))
                 with open(path) as f:
                     data = yaml.load(f)
 
