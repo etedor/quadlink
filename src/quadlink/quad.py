@@ -341,9 +341,7 @@ class QuadBuilder:
             return
 
         # get previous authors in position order
-        prev_authors_ordered = sorted(
-            self.previous_positions.items(), key=lambda x: x[1]
-        )
+        prev_authors_ordered = sorted(self.previous_positions.items(), key=lambda x: x[1])
         prev_authors_list = [author for author, _ in prev_authors_ordered]
 
         # quad changed if author composition or order differs
