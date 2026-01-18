@@ -22,6 +22,7 @@ class QuadBuilder:
         self.previous_quad: Quad | None = None
         self.previous_categories: dict[str, str] = {}  # author -> category
         self.previous_positions: dict[str, int] = {}  # author -> position (0-3)
+        self.quad_changed: bool = False
 
     def build_quad(self, candidates: list[PrioritizedStream]) -> Quad:
         """
@@ -331,13 +332,29 @@ class QuadBuilder:
             new_quad: Newly built quad
             selected: Selected streams with metadata
         """
-        # Get authors in position order (stream1, stream2, stream3, stream4)
         new_authors_list = self._get_authors_in_position_order(new_quad, selected)
 
+        # compare quad composition (authors in positions) to detect any change
         if not self.previous_positions:
+            self.quad_changed = True
             logger.info("quad", streams=new_authors_list)
             return
 
+        # get previous authors in position order
+        prev_authors_ordered = sorted(
+            self.previous_positions.items(), key=lambda x: x[1]
+        )
+        prev_authors_list = [author for author, _ in prev_authors_ordered]
+
+        # quad changed if author composition or order differs
+        new_authors_lower = [a.lower() for a in new_authors_list]
+        self.quad_changed = prev_authors_list != new_authors_lower
+
+        if not self.quad_changed:
+            logger.debug("quad unchanged", streams=new_authors_list)
+            return
+
+        # quad changed, determine what changed for logging
         prev_authors = set(self.previous_positions.keys())
         new_authors = {s.stream.metadata.author.lower() for s in selected}
 

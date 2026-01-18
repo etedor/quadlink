@@ -108,13 +108,15 @@ class Daemon:
                     await asyncio.sleep(self.interval)
                     continue
 
-                update_success = await self.quadstream_client.update_quad(quad)
+                # only send updates if quad changed
+                if self.quad_builder.quad_changed:
+                    update_success = await self.quadstream_client.update_quad(quad)
 
-                if not update_success:
-                    logger.error("quadstream update failed")
+                    if not update_success:
+                        logger.error("quadstream update failed")
 
-                if config.webhook.enabled and config.webhook.url:
-                    await self.quadstream_client.send_webhook(config.webhook.url, quad)
+                    if config.webhook.enabled and config.webhook.url:
+                        await self.quadstream_client.send_webhook(config.webhook.url, quad)
 
                 if self.one_shot:
                     self.running = False
