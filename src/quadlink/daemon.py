@@ -114,8 +114,7 @@ class Daemon:
 
                     if not update_success:
                         logger.error("quadstream update failed")
-
-                    if config.webhook.enabled and config.webhook.url:
+                    elif config.webhook.enabled and config.webhook.url:
                         await self.quadstream_client.send_webhook(config.webhook.url, quad)
 
                 if self.one_shot:
