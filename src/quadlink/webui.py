@@ -26,6 +26,23 @@ def _format_error(e: Exception) -> str:
     return str(e).lower()
 
 
+def _strip_empty(obj: Any) -> Any:
+    """Recursively drop None and empty list/dict values from a config tree."""
+    if isinstance(obj, dict):
+        result: dict[str, Any] = {}
+        for k, v in obj.items():
+            cleaned = _strip_empty(v)
+            if cleaned is None:
+                continue
+            if isinstance(cleaned, (list, dict)) and not cleaned:
+                continue
+            result[k] = cleaned
+        return result
+    if isinstance(obj, list):
+        return [_strip_empty(item) for item in obj]
+    return obj
+
+
 class WebUI:
     """Web server for viewing and editing QuadLink configuration.
 
@@ -91,6 +108,7 @@ class WebUI:
             config = await self.config_loader.load_or_cache()
             # convert to dict, excluding credentials for security
             config_dict = config.model_dump(exclude={"credentials"})
+            config_dict = _strip_empty(config_dict)
 
             # sort priorities if requested
             sort_order = request.query.get("sort", "desc")
