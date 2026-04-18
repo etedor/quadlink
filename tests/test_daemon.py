@@ -36,6 +36,11 @@ class TestDaemonInit:
         assert daemon.processor is None
         assert daemon.quad_builder is None
         assert daemon.quadstream_client is None
+        assert daemon.enable_webui is False
+        assert daemon.webui_host == "0.0.0.0"
+        assert daemon.webui_port == 8081
+        assert daemon.webui is None
+        assert daemon.webui_runner is None
 
     def test_custom_initialization(self):
         """Should accept custom interval and one_shot."""
@@ -527,6 +532,7 @@ class TestRunDaemon:
             mock_daemon.start = AsyncMock()
             mock_daemon.running = True
             mock_daemon.health_server = MagicMock()
+            mock_daemon.webui_runner = None
             MockDaemon.return_value = mock_daemon
 
             with patch("asyncio.get_event_loop") as mock_get_loop:
@@ -545,7 +551,13 @@ class TestRunDaemon:
                 )
 
                 MockDaemon.assert_called_once_with(
-                    interval=60, one_shot=True, enable_health_server=False, config_path=None
+                    interval=60,
+                    one_shot=True,
+                    enable_health_server=False,
+                    config_path=None,
+                    enable_webui=False,
+                    webui_host="0.0.0.0",
+                    webui_port=8081,
                 )
 
     @pytest.mark.asyncio
@@ -555,6 +567,7 @@ class TestRunDaemon:
             mock_daemon = MagicMock()
             mock_health = MagicMock()
             mock_daemon.health_server = mock_health
+            mock_daemon.webui_runner = None
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -579,6 +592,7 @@ class TestRunDaemon:
         with patch("quadlink.daemon.Daemon") as MockDaemon:
             mock_daemon = MagicMock()
             mock_daemon.health_server = MagicMock()
+            mock_daemon.webui_runner = None
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -609,6 +623,7 @@ class TestRunDaemon:
             mock_daemon = MagicMock()
             mock_health = MagicMock()
             mock_daemon.health_server = mock_health
+            mock_daemon.webui_runner = None
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 

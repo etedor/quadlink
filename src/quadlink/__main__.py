@@ -105,6 +105,23 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("QL_LOG_LEVEL", "info").lower(),
         help="Log level (default: info, or QL_LOG_LEVEL env var)",
     )
+    parser.add_argument(
+        "--webui",
+        action="store_true",
+        help="Enable web UI for config editing",
+    )
+    parser.add_argument(
+        "--webui-host",
+        type=str,
+        default="0.0.0.0",
+        help="Host address for web UI (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--webui-port",
+        type=int,
+        default=8081,
+        help="Port for web UI (default: 8081)",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +148,9 @@ def main() -> None:
                 interval=args.interval,
                 enable_health_server=enable_health_server,
                 config_path=args.config,
+                enable_webui=args.webui,
+                webui_host=args.webui_host,
+                webui_port=args.webui_port,
             )
         )
     except KeyboardInterrupt:

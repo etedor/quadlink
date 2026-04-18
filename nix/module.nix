@@ -46,10 +46,28 @@ in {
       description = "Log level for the daemon";
     };
 
+    enableWebui = mkOption {
+      type = types.bool;
+      default = false;
+      description = "Enable web UI for config editing";
+    };
+
+    webuiHost = mkOption {
+      type = types.str;
+      default = "127.0.0.1";
+      description = "Host address to bind the web UI to";
+    };
+
+    webuiPort = mkOption {
+      type = types.port;
+      default = 8081;
+      description = "Port for the web UI";
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = false;
-      description = "Open port 8080 for health checks";
+      description = "Open the web UI port in the firewall";
     };
   };
 
@@ -92,7 +110,8 @@ in {
           ${cfg.package}/bin/quadlink \
             ${optionalString (cfg.configFile != null) "--config ${cfg.configFile}"} \
             --interval ${toString cfg.interval} \
-            --log-level ${cfg.logLevel}
+            --log-level ${cfg.logLevel} \
+            ${optionalString cfg.enableWebui "--webui --webui-host ${cfg.webuiHost} --webui-port ${toString cfg.webuiPort}"}
         '';
 
         Environment = [
@@ -108,6 +127,6 @@ in {
       };
     };
 
-    networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall [ 8080 ];
+    networking.firewall.allowedTCPPorts = mkIf (cfg.openFirewall && cfg.enableWebui) [ cfg.webuiPort ];
   };
 }

@@ -5,12 +5,14 @@ import signal
 from collections.abc import Callable
 
 import structlog
+from aiohttp import web
 
 from quadlink.config.loader import ConfigLoader
 from quadlink.health import HealthServer
 from quadlink.quad import QuadBuilder
 from quadlink.quadstream import QuadStreamClient
 from quadlink.stream.processor import StreamProcessor
+from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
 
@@ -32,6 +34,9 @@ class Daemon:
         one_shot: bool = False,
         enable_health_server: bool = False,
         config_path: str | None = None,
+        enable_webui: bool = False,
+        webui_host: str = "0.0.0.0",
+        webui_port: int = 8081,
     ):
         """Initialize daemon.
 
@@ -40,21 +45,33 @@ class Daemon:
             one_shot: If True, run once and exit.
             enable_health_server: If True, start health check server on port 8080.
             config_path: Optional explicit path to config file (default: auto-discover).
+            enable_webui: If True, start web UI for config editing.
+            webui_host: Host address for web UI server.
+            webui_port: Port for web UI server.
         """
         self.interval = interval
         self.one_shot = one_shot
         self.enable_health_server = enable_health_server
+        self.enable_webui = enable_webui
+        self.webui_host = webui_host
+        self.webui_port = webui_port
         self.config_loader = ConfigLoader(explicit_path=config_path)
         self.health_server = HealthServer() if enable_health_server else None
+        self.webui: WebUI | None = None
+        self.webui_runner: web.AppRunner | None = None
         self.running = False
         self.processor: StreamProcessor | None = None
         self.quad_builder: QuadBuilder | None = None
         self.quadstream_client: QuadStreamClient | None = None
+        self._config_hash: int | None = None
 
     async def start(self) -> None:
-        """Start the daemon and optional health server."""
+        """Start the daemon and optional health/webui servers."""
         if self.health_server:
             self.health_server.start()
+        if self.enable_webui:
+            self.webui = WebUI(self.config_loader, host=self.webui_host, port=self.webui_port)
+            self.webui_runner = await self.webui.start()
         self.running = True
         try:
             await self._main_loop()
@@ -75,9 +92,17 @@ class Daemon:
                 if self.health_server:
                     self.health_server.mark_ready()
 
-                if not self.processor or not self.quad_builder:
+                # detect config changes and recreate components
+                config_hash = hash(str(config.model_dump(exclude={"credentials"})))
+                if self._config_hash != config_hash:
+                    if self._config_hash is not None:
+                        logger.info("config changed, reloading")
+                    self._config_hash = config_hash
                     self.processor = StreamProcessor(config)
                     self.quad_builder = QuadBuilder(config)
+
+                assert self.processor is not None
+                assert self.quad_builder is not None
 
                 if not self.quadstream_client:
                     assert config.credentials.username is not None
@@ -140,6 +165,9 @@ async def run_daemon(
     interval: int = 30,
     enable_health_server: bool = False,
     config_path: str | None = None,
+    enable_webui: bool = False,
+    webui_host: str = "0.0.0.0",
+    webui_port: int = 8081,
 ) -> None:
     """Entry point for running the daemon.
 
@@ -150,12 +178,18 @@ async def run_daemon(
         interval: Seconds between quad updates.
         enable_health_server: If True, start health check server on port 8080.
         config_path: Optional explicit path to config file (default: auto-discover).
+        enable_webui: If True, start web UI for config editing.
+        webui_host: Host address for web UI server.
+        webui_port: Port for web UI server.
     """
     daemon = Daemon(
         interval=interval,
         one_shot=one_shot,
         enable_health_server=enable_health_server,
         config_path=config_path,
+        enable_webui=enable_webui,
+        webui_host=webui_host,
+        webui_port=webui_port,
     )
     task = asyncio.create_task(daemon.start())
 
@@ -180,3 +214,5 @@ async def run_daemon(
     finally:
         if daemon.health_server:
             daemon.health_server.stop()
+        if daemon.webui_runner:
+            await daemon.webui_runner.cleanup()

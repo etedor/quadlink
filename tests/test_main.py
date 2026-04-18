@@ -118,6 +118,9 @@ class TestMain:
             mock_args.one_shot = True
             mock_args.interval = 60
             mock_args.config = "/path/to/config.yaml"
+            mock_args.webui = False
+            mock_args.webui_host = "0.0.0.0"
+            mock_args.webui_port = 8081
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
@@ -131,6 +134,9 @@ class TestMain:
                                 interval=60,
                                 enable_health_server=False,
                                 config_path="/path/to/config.yaml",
+                                enable_webui=False,
+                                webui_host="0.0.0.0",
+                                webui_port=8081,
                             )
 
     def test_main_handles_keyboard_interrupt(self):
