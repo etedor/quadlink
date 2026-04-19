@@ -75,7 +75,7 @@ class Ruleset(BaseModel):
     """
 
     name: str
-    filters: Filters
+    filters: Filters = Field(default_factory=Filters)
 
 
 class StreamGroup(BaseModel):

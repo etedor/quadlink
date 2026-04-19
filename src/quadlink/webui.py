@@ -154,6 +154,8 @@ class WebUI:
                         "rulesets",
                     ):
                         result[k] = []
+                    elif k == "filters":
+                        result[k] = {}
                     else:
                         result[k] = v
                 elif isinstance(v, (dict, list)):
