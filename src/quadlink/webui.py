@@ -244,7 +244,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
-    <title>QuadLink Config</title>
+    <title>quadlink</title>
     <style>
         body {
             max-width: 780px;
@@ -288,37 +288,37 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </style>
 </head>
 <body>
-    <h1>QuadLink Config</h1>
+    <h1>quadlink</h1>
     <p class="subtitle"><span id="config-path">loading...</span></p>
 
     <section>
-        <h2>Priorities</h2>
+        <h2>priorities</h2>
         <div class="sort-control">
-            <label>Sort:
+            <label>sort:
                 <select id="sort-order" onchange="loadConfig()">
-                    <option value="desc">High to Low</option>
-                    <option value="asc">Low to High</option>
+                    <option value="desc">high to low</option>
+                    <option value="asc">low to high</option>
                 </select>
             </label>
         </div>
-        <textarea id="editor-priorities" placeholder="Loading..."></textarea>
+        <textarea id="editor-priorities" placeholder="loading..."></textarea>
     </section>
 
     <section>
-        <h2>Rulesets</h2>
-        <textarea id="editor-rulesets" placeholder="Loading..."></textarea>
+        <h2>rulesets</h2>
+        <textarea id="editor-rulesets" placeholder="loading..."></textarea>
     </section>
 
     <section>
-        <h2>Settings</h2>
-        <textarea id="editor-settings" placeholder="Loading..."></textarea>
+        <h2>settings</h2>
+        <textarea id="editor-settings" placeholder="loading..."></textarea>
     </section>
 
     <div class="actions">
         <output id="status"></output>
-        <button onclick="loadConfig()">Reload</button>
-        <button onclick="validateConfig()">Validate</button>
-        <button onclick="saveConfig()">Save</button>
+        <button onclick="loadConfig()">reload</button>
+        <button onclick="validateConfig()">validate</button>
+        <button onclick="saveConfig()">save</button>
     </div>
 
     <script>
