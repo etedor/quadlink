@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quadlink"
-version = "2026.04.2"
+version = "2026.05.0"
 description = "Companion to QuadStream for Apple tvOS"
 readme = "README.md"
 requires-python = ">=3.12"
