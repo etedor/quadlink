@@ -1,3 +1,8 @@
 """Companion to QuadStream for Apple tvOS."""
 
-__version__ = "2025.01.0"
+from importlib.metadata import PackageNotFoundError, version
+
+try:
+    __version__ = version("quadlink")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"

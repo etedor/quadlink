@@ -8,6 +8,7 @@ from aiohttp import web
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 
+from quadlink import __version__
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
 
@@ -131,7 +132,9 @@ class WebUI:
             yaml_writer.dump(config_dict, stream)
             yaml_str = self._add_yaml_spacing(stream.getvalue())
 
-            return web.json_response({"yaml": yaml_str, "path": str(self.config_path)})
+            return web.json_response(
+                {"yaml": yaml_str, "path": str(self.config_path), "version": __version__}
+            )
         except Exception as e:
             logger.error("failed to load config for webui", error=str(e))
             return web.json_response({"error": str(e)}, status=500)
@@ -256,6 +259,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             line-height: 1.5;
         }
         h1 { margin-bottom: 0.25rem; }
+        h1 #version { font-size: 0.55em; font-weight: normal; opacity: 0.55; margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Monaco, monospace; }
         .subtitle { opacity: 0.7; margin-top: 0; font-size: 0.9em; }
         #config-path { font-family: ui-monospace, "SF Mono", Monaco, monospace; }
         section { margin: 1.5rem 0; }
@@ -290,7 +294,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     </style>
 </head>
 <body>
-    <h1>quadlink</h1>
+    <h1>quadlink <span id="version"></span></h1>
     <p class="subtitle"><span id="config-path">loading...</span></p>
 
     <section>
@@ -326,6 +330,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <script>
         const status = document.getElementById('status');
         const configPath = document.getElementById('config-path');
+        const versionEl = document.getElementById('version');
         let initialized = false;
 
         const sections = {
@@ -413,6 +418,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 if (data.error) throw new Error(data.error);
 
                 configPath.textContent = data.path || 'unknown';
+                if (data.version) versionEl.textContent = 'v' + data.version;
 
                 const split = splitYamlSections(data.yaml);
                 document.getElementById('editor-priorities').value = split.priorities;
