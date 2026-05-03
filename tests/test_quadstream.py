@@ -23,6 +23,7 @@ class TestQuadStreamClientInit:
         assert client.timeout == 30
         assert client.cookies is None
         assert client.short_id is None
+        assert client.csrf_token is None
         assert client._session_started_at is None
         assert client._session_expires_at is None
 
@@ -32,44 +33,66 @@ class TestQuadStreamClientInit:
         assert client.timeout == 60
 
 
+def _bootstrap_html(token: str = "csrf-abc") -> str:
+    return f'<html><head><meta name="csrf-token" content="{token}"></head></html>'
+
+
+def _mock_bootstrap_response(token: str = "csrf-abc", status: int = 200) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = _bootstrap_html(token) if status == 200 else ""
+    return resp
+
+
 class TestLogin:
     """Tests for login functionality."""
 
     @pytest.mark.asyncio
     async def test_successful_login(self):
-        """Should store cookies and short_id on successful login."""
+        """Should store cookies, short_id, and csrf token on successful login."""
         client = QuadStreamClient("user", "secret")
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"short_id": "abc123"}
-        mock_response.cookies = httpx.Cookies()
+        bootstrap_resp = _mock_bootstrap_response(token="tok123")
+
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.json.return_value = {"short_id": "abc123"}
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
+            mock_client.get.return_value = bootstrap_resp
+            mock_client.post.return_value = login_resp
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
 
             result = await client.login()
 
+            # CSRF header sent on the login POST
+            post_kwargs = mock_client.post.call_args.kwargs
+            assert post_kwargs["headers"]["X-CSRF-Token"] == "tok123"
+            assert post_kwargs["headers"]["X-Requested-With"] == "XMLHttpRequest"
+
         assert result is True
         assert client.short_id == "abc123"
+        assert client.csrf_token == "tok123"
         assert client.cookies is not None
 
     @pytest.mark.asyncio
     async def test_login_failure_status(self):
-        """Should return False on non-200 status."""
+        """Should return False on non-200 login status."""
         client = QuadStreamClient("user", "secret")
 
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.text = "Unauthorized"
+        login_resp = MagicMock()
+        login_resp.status_code = 401
+        login_resp.text = "Unauthorized"
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
+            mock_client.get.return_value = _mock_bootstrap_response()
+            mock_client.post.return_value = login_resp
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
@@ -81,17 +104,18 @@ class TestLogin:
 
     @pytest.mark.asyncio
     async def test_login_missing_short_id(self):
-        """Should return False when response missing short_id."""
+        """Should return False when login response missing short_id."""
         client = QuadStreamClient("user", "secret")
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {}  # no short_id
-        mock_response.cookies = httpx.Cookies()
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.json.return_value = {}
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
-            mock_client.post.return_value = mock_response
+            mock_client.get.return_value = _mock_bootstrap_response()
+            mock_client.post.return_value = login_resp
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
@@ -101,13 +125,55 @@ class TestLogin:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_bootstrap_failure_status(self):
+        """Should return False if bootstrap GET fails."""
+        client = QuadStreamClient("user", "secret")
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = _mock_bootstrap_response(status=500)
+            mock_client.cookies = httpx.Cookies()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            result = await client.login()
+
+        assert result is False
+        assert client.csrf_token is None
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_missing_csrf(self):
+        """Should return False if bootstrap HTML lacks csrf-token meta tag."""
+        client = QuadStreamClient("user", "secret")
+
+        bootstrap_resp = MagicMock()
+        bootstrap_resp.status_code = 200
+        bootstrap_resp.text = "<html><head></head></html>"
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = bootstrap_resp
+            mock_client.cookies = httpx.Cookies()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            result = await client.login()
+
+        assert result is False
+        assert client.csrf_token is None
+
+    @pytest.mark.asyncio
     async def test_login_timeout(self):
         """Should return False on timeout."""
         client = QuadStreamClient("user", "secret")
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
+            mock_client.get.return_value = _mock_bootstrap_response()
             mock_client.post.side_effect = httpx.TimeoutException("timeout")
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
@@ -123,7 +189,9 @@ class TestLogin:
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
+            mock_client.get.return_value = _mock_bootstrap_response()
             mock_client.post.side_effect = httpx.RequestError("connection failed")
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
@@ -139,7 +207,9 @@ class TestLogin:
 
         with patch("httpx.AsyncClient") as MockClient:
             mock_client = AsyncMock()
+            mock_client.get.return_value = _mock_bootstrap_response()
             mock_client.post.side_effect = RuntimeError("unexpected")
+            mock_client.cookies = httpx.Cookies()
             mock_client.__aenter__.return_value = mock_client
             mock_client.__aexit__.return_value = None
             MockClient.return_value = mock_client
@@ -147,6 +217,21 @@ class TestLogin:
             result = await client.login()
 
         assert result is False
+
+
+class TestParseCsrfToken:
+    """Tests for CSRF token parsing."""
+
+    def test_parses_double_quoted(self):
+        html = '<meta name="csrf-token" content="abc123">'
+        assert QuadStreamClient._parse_csrf_token(html) == "abc123"
+
+    def test_parses_single_quoted(self):
+        html = "<meta name='csrf-token' content='abc123'>"
+        assert QuadStreamClient._parse_csrf_token(html) == "abc123"
+
+    def test_returns_none_when_missing(self):
+        assert QuadStreamClient._parse_csrf_token("<html></html>") is None
 
 
 def _make_cookie(name: str, value: str, expires: int | None = None) -> Cookie:
@@ -397,6 +482,35 @@ class TestUpdateQuad:
             result = await client.update_quad(quad)
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_update_sends_csrf_header_when_set(self):
+        """Should include X-CSRF-Token header on update when csrf_token is set."""
+        client = QuadStreamClient("user", "secret")
+        cookies = httpx.Cookies()
+        cookies.set("session", "test")
+        client.cookies = cookies
+        client.short_id = "abc123"
+        client.csrf_token = "tok-xyz"
+
+        quad = Quad(stream1="https://stream1")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post.return_value = mock_response
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            result = await client.update_quad(quad)
+
+            post_kwargs = mock_client.post.call_args.kwargs
+            assert post_kwargs["headers"]["X-CSRF-Token"] == "tok-xyz"
+
+        assert result is True
 
     @pytest.mark.asyncio
     async def test_update_403_retries_with_reauth(self):

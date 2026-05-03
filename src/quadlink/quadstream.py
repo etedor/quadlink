@@ -1,5 +1,6 @@
 """QuadStream API client for authentication and quad updates."""
 
+import re
 import time
 from typing import Any
 
@@ -13,11 +14,18 @@ logger = structlog.get_logger()
 # renew session at 50% of lifetime (like DHCP T1)
 SESSION_RENEWAL_RATIO = 0.5
 
+# pulls token out of <meta name="csrf-token" content="...">
+_CSRF_META_RE = re.compile(
+    r'<meta\s+name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']',
+    re.IGNORECASE,
+)
+
 
 class QuadStreamClient:
     """Client for QuadStream API operations."""
 
     BASE_URL = "https://quadstream.tv"
+    BOOTSTRAP_PATH = "/stream/"
 
     def __init__(self, username: str, secret: str, timeout: int = 30):
         """
@@ -33,6 +41,7 @@ class QuadStreamClient:
         self.timeout = timeout
         self.cookies: httpx.Cookies | None = None
         self.short_id: str | None = None
+        self.csrf_token: str | None = None
         self._session_started_at: float | None = None
         self._session_expires_at: float | None = None
 
@@ -77,7 +86,8 @@ class QuadStreamClient:
         Returns:
             True if login successful, False otherwise
         """
-        url = f"{self.BASE_URL}/stream/api/login"
+        bootstrap_url = f"{self.BASE_URL}{self.BOOTSTRAP_PATH}"
+        login_url = f"{self.BASE_URL}/stream/api/login"
 
         payload = {
             "username": self.username,
@@ -85,8 +95,29 @@ class QuadStreamClient:
         }
 
         try:
+            # share one client across bootstrap+login so PHPSESSID cookie
+            # set by the GET is sent on the POST
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(url, json=payload)
+                bootstrap = await client.get(bootstrap_url)
+                if bootstrap.status_code != 200:
+                    logger.error(
+                        "quadstream bootstrap failed",
+                        status=bootstrap.status_code,
+                    )
+                    return False
+
+                csrf_token = self._parse_csrf_token(bootstrap.text)
+                if not csrf_token:
+                    logger.error("quadstream bootstrap missing csrf token")
+                    return False
+
+                headers = {
+                    "X-CSRF-Token": csrf_token,
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": self.BASE_URL,
+                    "Referer": bootstrap_url,
+                }
+                response = await client.post(login_url, json=payload, headers=headers)
 
                 if response.status_code != 200:
                     logger.error(
@@ -96,7 +127,21 @@ class QuadStreamClient:
                     )
                     return False
 
-                self.cookies = response.cookies
+                # session typically rotates on auth; re-fetch the bootstrap to
+                # get a CSRF token bound to the post-login session
+                post_login = await client.get(bootstrap_url)
+                refreshed = (
+                    self._parse_csrf_token(post_login.text)
+                    if post_login.status_code == 200
+                    else None
+                )
+
+                # snapshot the full client jar (PHPSESSID + any auth cookies)
+                jar = httpx.Cookies()
+                for cookie in client.cookies.jar:
+                    jar.jar.set_cookie(cookie)
+                self.cookies = jar
+                self.csrf_token = refreshed or csrf_token
                 self._extract_session_expiry()
 
                 data = response.json()
@@ -118,6 +163,11 @@ class QuadStreamClient:
         except Exception as e:
             logger.error("quadstream login unexpected error", error=str(e))
             return False
+
+    @staticmethod
+    def _parse_csrf_token(html: str) -> str | None:
+        match = _CSRF_META_RE.search(html)
+        return match.group(1) if match else None
 
     async def update_quad(self, quad: Quad, _retry: bool = True) -> bool:
         """
@@ -152,9 +202,17 @@ class QuadStreamClient:
             stream4=quad_dict.get("stream4", "")[:80] + "..." if quad_dict.get("stream4") else "",
         )
 
+        headers = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": self.BASE_URL,
+            "Referer": f"{self.BASE_URL}{self.BOOTSTRAP_PATH}",
+        }
+        if self.csrf_token:
+            headers["X-CSRF-Token"] = self.csrf_token
+
         try:
             async with httpx.AsyncClient(cookies=self.cookies, timeout=self.timeout) as client:
-                response = await client.post(url, json=quad_dict)
+                response = await client.post(url, json=quad_dict, headers=headers)
 
                 # session expired unexpectedly - re-auth and retry once
                 if response.status_code == 403 and _retry:
