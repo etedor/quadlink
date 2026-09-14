@@ -1,6 +1,8 @@
 """Tests for the HLS media-playlist parse + republish core."""
 
-from quadlink.relay.playlist import parse_media_playlist
+import math
+
+from quadlink.relay.playlist import Segment, SlotState, ingest, parse_media_playlist, render
 
 SAMPLE = """#EXTM3U
 #EXT-X-VERSION:3
@@ -57,3 +59,85 @@ def test_parse_discontinuity_sequence_tag_not_treated_as_discontinuity():
     )
     _, _, segs = parse_media_playlist(text)
     assert segs[0][3] is False
+
+
+def _src(media_seq: int, uris: list[str]) -> str:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6", f"#EXT-X-MEDIA-SEQUENCE:{media_seq}"]
+    for uri in uris:
+        lines.append("#EXTINF:2.000,live")
+        lines.append(uri)
+    return "\n".join(lines) + "\n"
+
+
+def test_ingest_first_fetch_assigns_monotonic_seq():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    assert [s.seq for s in state.segments] == [0, 1]
+    assert all(s.discontinuity is False for s in state.segments)
+
+
+def test_ingest_dedupes_on_refetch():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts"]
+    assert [s.seq for s in state.segments] == [0, 1]
+
+
+def test_ingest_appends_new_segments():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(101, ["b.ts", "c.ts"]), "url-A")
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "c.ts"]
+    assert [s.seq for s in state.segments] == [0, 1, 2]
+
+
+def test_ingest_marks_discontinuity_on_source_change():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(500, ["x.ts", "y.ts"]), "url-B")
+    uris = [s.uri for s in state.segments]
+    assert "x.ts" in uris
+    x = next(s for s in state.segments if s.uri == "x.ts")
+    y = next(s for s in state.segments if s.uri == "y.ts")
+    assert x.discontinuity is True
+    assert y.discontinuity is False
+
+
+def test_ingest_trims_to_window_and_counts_discontinuity_sequence():
+    state = SlotState(window=3)
+    ingest(state, _src(0, ["a.ts", "b.ts"]), "url-A")
+    # switch source -> c.ts carries a discontinuity, then push past the window
+    ingest(state, _src(0, ["c.ts", "d.ts", "e.ts"]), "url-B")
+    assert len(state.segments) == 3
+    # a.ts and b.ts evicted; the discontinuity on c.ts is still in-window
+    assert [s.uri for s in state.segments] == ["c.ts", "d.ts", "e.ts"]
+    assert state.discontinuity_seq == 0
+    # push more so c.ts (the discontinuity segment) rolls out
+    ingest(state, _src(3, ["f.ts", "g.ts", "h.ts"]), "url-B")
+    assert state.discontinuity_seq == 1
+
+
+def test_render_has_required_headers_and_no_endlist():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    out = render(state)
+    assert out.startswith("#EXTM3U")
+    assert "#EXT-X-VERSION:6" in out
+    assert "#EXT-X-MEDIA-SEQUENCE:0" in out
+    assert "#EXT-X-DISCONTINUITY-SEQUENCE:0" in out
+    assert "#EXT-X-TARGETDURATION:2" in out
+    assert "#EXTINF:2.000," in out
+    assert "a.ts" in out and "b.ts" in out
+    assert "#EXT-X-ENDLIST" not in out
+
+
+def test_render_emits_discontinuity_tag_before_segment():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts"]), "url-A")
+    ingest(state, _src(0, ["x.ts"]), "url-B")
+    out = render(state)
+    lines = out.splitlines()
+    x_index = lines.index("x.ts")
+    # the line two before the URI (EXTINF is directly before) should include the tag
+    assert "#EXT-X-DISCONTINUITY" in lines[x_index - 2 : x_index]
