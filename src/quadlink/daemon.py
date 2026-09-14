@@ -11,6 +11,8 @@ from quadlink.config.loader import ConfigLoader
 from quadlink.health import HealthServer
 from quadlink.quad import QuadBuilder
 from quadlink.quadstream import QuadStreamClient
+from quadlink.relay.server import SlotRelay
+from quadlink.relay.store import SlotStore
 from quadlink.stream.processor import StreamProcessor
 from quadlink.webui import WebUI
 
@@ -57,6 +59,8 @@ class Daemon:
         self.webui_port = webui_port
         self.config_loader = ConfigLoader(explicit_path=config_path)
         self.health_server = HealthServer() if enable_health_server else None
+        self.slot_store = SlotStore()
+        self.slot_relay = SlotRelay(self.slot_store)
         self.webui: WebUI | None = None
         self.webui_runner: web.AppRunner | None = None
         self.running = False
@@ -70,7 +74,12 @@ class Daemon:
         if self.health_server:
             self.health_server.start()
         if self.enable_webui:
-            self.webui = WebUI(self.config_loader, host=self.webui_host, port=self.webui_port)
+            self.webui = WebUI(
+                self.config_loader,
+                host=self.webui_host,
+                port=self.webui_port,
+                slot_relay=self.slot_relay,
+            )
             self.webui_runner = await self.webui.start()
         self.running = True
         try:
@@ -127,6 +136,9 @@ class Daemon:
                     continue
 
                 quad = self.quad_builder.build_quad(candidates)
+
+                # feed the local relay every cycle, regardless of quadstream
+                self.slot_store.update(quad.to_list())
 
                 if quad.is_empty():
                     logger.info("quad is empty, skipping update")
@@ -216,3 +228,4 @@ async def run_daemon(
             daemon.health_server.stop()
         if daemon.webui_runner:
             await daemon.webui_runner.cleanup()
+        await daemon.slot_relay.aclose()

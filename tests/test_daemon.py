@@ -533,6 +533,7 @@ class TestRunDaemon:
             mock_daemon.running = True
             mock_daemon.health_server = MagicMock()
             mock_daemon.webui_runner = None
+            mock_daemon.slot_relay = AsyncMock()
             MockDaemon.return_value = mock_daemon
 
             with patch("asyncio.get_event_loop") as mock_get_loop:
@@ -568,6 +569,7 @@ class TestRunDaemon:
             mock_health = MagicMock()
             mock_daemon.health_server = mock_health
             mock_daemon.webui_runner = None
+            mock_daemon.slot_relay = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -593,6 +595,7 @@ class TestRunDaemon:
             mock_daemon = MagicMock()
             mock_daemon.health_server = MagicMock()
             mock_daemon.webui_runner = None
+            mock_daemon.slot_relay = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -624,6 +627,7 @@ class TestRunDaemon:
             mock_health = MagicMock()
             mock_daemon.health_server = mock_health
             mock_daemon.webui_runner = None
+            mock_daemon.slot_relay = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -656,3 +660,62 @@ class TestRunDaemon:
                 # verify handler effects
                 assert mock_daemon.running is False
                 mock_health.stop.assert_called()
+
+
+class TestDaemonRelayWiring:
+    """Tests for slot store / relay integration."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Create a mock config."""
+        config = MagicMock()
+        config.credentials.username = "user"
+        config.credentials.secret = "secret"
+        config.webhook.enabled = False
+        config.webhook.url = ""
+        return config
+
+    def test_init_creates_store_and_relay(self):
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                daemon = Daemon()
+        assert daemon.slot_store is not None
+        assert daemon.slot_relay.store is daemon.slot_store
+
+    @pytest.mark.asyncio
+    async def test_main_loop_writes_quad_to_slot_store(self, mock_config):
+        from quadlink.types import Quad
+
+        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+            with patch("quadlink.daemon.HealthServer"):
+                mock_loader = MagicMock()
+                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
+                MockLoader.return_value = mock_loader
+
+                daemon = Daemon(one_shot=True)
+                daemon.running = True
+
+                quad = Quad("u1", "u2", "u3", "u4")
+
+                with patch("quadlink.daemon.StreamProcessor") as MockProc:
+                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
+                            proc = MagicMock()
+                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            MockProc.return_value = proc
+
+                            builder = MagicMock()
+                            builder.build_quad = MagicMock(return_value=quad)
+                            builder.quad_changed = True
+                            MockBuilder.return_value = builder
+
+                            client = AsyncMock()
+                            client.login = AsyncMock(return_value=True)
+                            client.update_quad = AsyncMock(return_value=True)
+                            MockClient.return_value = client
+
+                            with patch("asyncio.sleep", new_callable=AsyncMock):
+                                await daemon._main_loop()
+
+        assert daemon.slot_store.get(1) == "u1"
+        assert daemon.slot_store.get(4) == "u4"
