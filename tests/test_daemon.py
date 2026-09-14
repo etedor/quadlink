@@ -809,3 +809,20 @@ class TestDaemonRelayWiring:
 
         # but the relay store is not fed
         assert daemon.slot_store.get(1) is None
+
+
+class TestDroppedFromPool:
+    """Tests for the dropped-channel diagnostic."""
+
+    def test_flags_missing_quad_channels(self):
+        prev = {"wallah": 1, "shroud": 0, "grad": 2}
+        candidates = [make_stream("shroud"), make_stream("grad")]
+        assert Daemon._dropped_from_pool(prev, candidates) == ["wallah"]
+
+    def test_empty_when_all_present_case_insensitive(self):
+        prev = {"shroud": 0, "grad": 1}
+        candidates = [make_stream("Shroud"), make_stream("grad")]
+        assert Daemon._dropped_from_pool(prev, candidates) == []
+
+    def test_empty_when_no_previous_quad(self):
+        assert Daemon._dropped_from_pool({}, [make_stream("shroud")]) == []

@@ -14,6 +14,7 @@ from quadlink.quadstream import QuadStreamClient
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.stream.processor import StreamProcessor
+from quadlink.types import PrioritizedStream
 from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
@@ -90,6 +91,19 @@ class Daemon:
         except asyncio.CancelledError:
             raise
 
+    @staticmethod
+    def _dropped_from_pool(
+        previous_positions: dict[str, int],
+        candidates: list[PrioritizedStream],
+    ) -> list[str]:
+        """Quad channels (by author) no longer in the live candidate pool.
+
+        Offline/unresolved streams drop out silently, so surfacing this makes a
+        "channel disappeared" event visible instead of looking like a re-rank.
+        """
+        live = {c.stream.metadata.author.lower() for c in candidates}
+        return sorted(a for a in previous_positions if a not in live)
+
     async def _main_loop(self) -> None:
         """Main daemon loop - processes streams and updates quad repeatedly."""
         while self.running:
@@ -142,6 +156,16 @@ class Daemon:
                     logger.info("no stream candidates available")
                     await asyncio.sleep(self.interval)
                     continue
+
+                # surface quad channels that fell out of the live pool this
+                # cycle (offline/unresolved), which otherwise looks like a re-rank
+                dropped = self._dropped_from_pool(self.quad_builder.previous_positions, candidates)
+                if dropped:
+                    logger.warning(
+                        "quad channels dropped from live pool",
+                        dropped=dropped,
+                        candidates=len(candidates),
+                    )
 
                 quad = self.quad_builder.build_quad(candidates)
 
