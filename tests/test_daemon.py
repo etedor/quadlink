@@ -101,6 +101,7 @@ class TestDaemonMainLoop:
     def mock_config(self):
         """Create a mock config."""
         config = MagicMock()
+        config.mode = "both"
         config.credentials.username = "user"
         config.credentials.secret = "secret"
         config.webhook.enabled = False
@@ -380,6 +381,7 @@ class TestDaemonMainLoop:
         daemon.one_shot = True
 
         config = MagicMock()
+        config.mode = "both"
         config.credentials.username = "user"
         config.credentials.secret = "secret"
         config.webhook.enabled = True
@@ -669,6 +671,7 @@ class TestDaemonRelayWiring:
     def mock_config(self):
         """Create a mock config."""
         config = MagicMock()
+        config.mode = "both"
         config.credentials.username = "user"
         config.credentials.secret = "secret"
         config.webhook.enabled = False
@@ -722,3 +725,87 @@ class TestDaemonRelayWiring:
         assert daemon.slot_store.get(1).identity == "c1"
         assert daemon.slot_store.get(4).url == "u4"
         assert daemon.slot_store.get(4).identity == "c4"
+
+    @pytest.mark.asyncio
+    async def test_local_mode_feeds_store_and_skips_quadstream(self, mock_config):
+        from quadlink.types import Quad
+
+        mock_config.mode = "local"
+
+        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+            with patch("quadlink.daemon.HealthServer"):
+                mock_loader = MagicMock()
+                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
+                MockLoader.return_value = mock_loader
+
+                daemon = Daemon(one_shot=True)
+                daemon.running = True
+
+                with patch("quadlink.daemon.StreamProcessor") as MockProc:
+                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
+                            proc = MagicMock()
+                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            MockProc.return_value = proc
+
+                            builder = MagicMock()
+                            builder.build_quad = MagicMock(
+                                return_value=Quad("u1", "u2", "u3", "u4")
+                            )
+                            builder.quad_changed = True
+                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
+                            MockBuilder.return_value = builder
+
+                            with patch("asyncio.sleep", new_callable=AsyncMock):
+                                await daemon._main_loop()
+
+                            # local mode never touches quadstream
+                            MockClient.assert_not_called()
+
+        # but the relay store is still fed
+        assert daemon.slot_store.get(1).url == "u1"
+        assert daemon.quadstream_client is None
+
+    @pytest.mark.asyncio
+    async def test_remote_mode_pushes_quadstream_and_skips_store(self, mock_config):
+        from quadlink.types import Quad
+
+        mock_config.mode = "remote"
+
+        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+            with patch("quadlink.daemon.HealthServer"):
+                mock_loader = MagicMock()
+                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
+                MockLoader.return_value = mock_loader
+
+                daemon = Daemon(one_shot=True)
+                daemon.running = True
+
+                with patch("quadlink.daemon.StreamProcessor") as MockProc:
+                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
+                            proc = MagicMock()
+                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            MockProc.return_value = proc
+
+                            builder = MagicMock()
+                            builder.build_quad = MagicMock(
+                                return_value=Quad("u1", "u2", "u3", "u4")
+                            )
+                            builder.quad_changed = True
+                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
+                            MockBuilder.return_value = builder
+
+                            client = AsyncMock()
+                            client.login = AsyncMock(return_value=True)
+                            client.update_quad = AsyncMock(return_value=True)
+                            MockClient.return_value = client
+
+                            with patch("asyncio.sleep", new_callable=AsyncMock):
+                                await daemon._main_loop()
+
+                            # remote mode pushes to quadstream
+                            client.update_quad.assert_awaited_once()
+
+        # but the relay store is not fed
+        assert daemon.slot_store.get(1) is None

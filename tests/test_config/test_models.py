@@ -259,3 +259,55 @@ def test_config_full():
     assert config.logging.format == "text"
     assert config.proxy_playlist == "https://custom-proxy.com"
     assert config.low_latency is False
+
+
+def test_config_mode_defaults_to_both():
+    config = Config(
+        credentials={"username": "user", "secret": "pass"},
+        priorities={999: [{"urls": ["streamer1"]}]},
+    )
+    assert config.mode == "both"
+
+
+def test_config_mode_accepts_local_and_remote():
+    for m in ("local", "remote"):
+        config = Config(
+            credentials={"username": "user", "secret": "pass"},
+            priorities={999: [{"urls": ["streamer1"]}]},
+            mode=m,
+        )
+        assert config.mode == m
+
+
+def test_config_mode_normalizes_case():
+    config = Config(
+        credentials={"username": "user", "secret": "pass"},
+        priorities={999: [{"urls": ["streamer1"]}]},
+        mode="LOCAL",
+    )
+    assert config.mode == "local"
+
+
+def test_config_mode_rejects_invalid():
+    with pytest.raises(ValidationError):
+        Config(
+            credentials={"username": "user", "secret": "pass"},
+            priorities={999: [{"urls": ["streamer1"]}]},
+            mode="offline",
+        )
+
+
+def test_config_local_mode_allows_missing_credentials():
+    # local mode does not touch quadstream, so credentials are optional
+    config = Config(
+        priorities={999: [{"urls": ["streamer1"]}]},
+        mode="local",
+    )
+    assert config.credentials is None
+    assert config.mode == "local"
+
+
+def test_config_non_local_requires_credentials():
+    for m in ("both", "remote"):
+        with pytest.raises(ValidationError):
+            Config(priorities={999: [{"urls": ["streamer1"]}]}, mode=m)

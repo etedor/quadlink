@@ -74,11 +74,14 @@ class Daemon:
         if self.health_server:
             self.health_server.start()
         if self.enable_webui:
+            # register /streams routes only when the local relay is served
+            config = await self.config_loader.load_or_cache()
+            mode = config.mode if config else "both"
             self.webui = WebUI(
                 self.config_loader,
                 host=self.webui_host,
                 port=self.webui_port,
-                slot_relay=self.slot_relay,
+                slot_relay=self.slot_relay if mode in ("both", "local") else None,
             )
             self.webui_runner = await self.webui.start()
         self.running = True
@@ -113,7 +116,12 @@ class Daemon:
                 assert self.processor is not None
                 assert self.quad_builder is not None
 
-                if not self.quadstream_client:
+                push_remote = config.mode in ("both", "remote")
+                serve_local = config.mode in ("both", "local")
+
+                # log in to quadstream only when we push to it (skipped in local)
+                if push_remote and not self.quadstream_client:
+                    assert config.credentials is not None
                     assert config.credentials.username is not None
                     assert config.credentials.secret is not None
                     self.quadstream_client = QuadStreamClient(
@@ -137,16 +145,18 @@ class Daemon:
 
                 quad = self.quad_builder.build_quad(candidates)
 
-                # feed the local relay every cycle, regardless of quadstream
-                self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
+                # feed the local relay every cycle (both/local modes)
+                if serve_local:
+                    self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
 
                 if quad.is_empty():
                     logger.info("quad is empty, skipping update")
                     await asyncio.sleep(self.interval)
                     continue
 
-                # only send updates if quad changed
-                if self.quad_builder.quad_changed:
+                # push to quadstream only when it changed (both/remote modes)
+                if push_remote and self.quad_builder.quad_changed:
+                    assert self.quadstream_client is not None
                     update_success = await self.quadstream_client.update_quad(quad)
 
                     if not update_success:

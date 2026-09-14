@@ -214,9 +214,10 @@ class WebUI:
             parsed = yaml.load(StringIO(yaml_content))
             parsed = self._clean_parsed_yaml(parsed)
 
-            # merge with existing credentials
+            # merge with existing credentials (absent in local mode)
             existing_config = await self.config_loader.load_or_cache()
-            parsed["credentials"] = existing_config.credentials.model_dump()
+            if existing_config.credentials is not None:
+                parsed["credentials"] = existing_config.credentials.model_dump()
 
             # validate full config
             config = Config(**parsed)

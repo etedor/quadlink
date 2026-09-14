@@ -1,6 +1,7 @@
 """Configuration models using Pydantic."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -182,7 +183,7 @@ class Config(BaseSettings):
         case_sensitive=False,
     )
 
-    credentials: Credentials
+    credentials: Credentials | None = None
     rulesets: list[Ruleset] = Field(default_factory=list)
     priorities: dict[int, list[StreamGroup]]
 
@@ -197,6 +198,32 @@ class Config(BaseSettings):
 
     proxy_playlist: str = "https://eu.luminous.dev"
     low_latency: bool = True
+
+    # where quadlink publishes the quad:
+    #   both   - local relay + push to quadstream.tv (default, no regression)
+    #   local  - local relay only; no quadstream login/push (credentials optional)
+    #   remote - push to quadstream.tv only; local relay not served
+    mode: Literal["both", "local", "remote"] = "both"
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, v: object) -> object:
+        """Accept case-insensitive mode values."""
+        return v.strip().lower() if isinstance(v, str) else v
+
+    @model_validator(mode="after")
+    def validate_credentials_for_mode(self) -> "Config":
+        """Require quadstream credentials unless running local-only.
+
+        Returns:
+            Validated Config instance.
+
+        Raises:
+            ValueError: If credentials are missing while quadstream is in use.
+        """
+        if self.mode != "local" and self.credentials is None:
+            raise ValueError("credentials are required unless mode is 'local'")
+        return self
 
     @model_validator(mode="after")
     def validate_bonuses(self) -> "Config":
