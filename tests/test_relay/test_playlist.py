@@ -71,56 +71,75 @@ def _src(media_seq: int, uris: list[str]) -> str:
 
 def test_ingest_first_fetch_assigns_monotonic_seq():
     state = SlotState()
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
     assert [s.seq for s in state.segments] == [0, 1]
     assert all(s.discontinuity is False for s in state.segments)
 
 
 def test_ingest_dedupes_on_refetch():
     state = SlotState()
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
     assert [s.uri for s in state.segments] == ["a.ts", "b.ts"]
     assert [s.seq for s in state.segments] == [0, 1]
 
 
 def test_ingest_appends_new_segments():
     state = SlotState()
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
-    ingest(state, _src(101, ["b.ts", "c.ts"]), "url-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _src(101, ["b.ts", "c.ts"]), "chan-A")
     assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "c.ts"]
     assert [s.seq for s in state.segments] == [0, 1, 2]
 
 
-def test_ingest_marks_discontinuity_on_source_change():
+def test_ingest_same_identity_url_refresh_does_not_splice():
+    # a Twitch token/edge refresh re-mints the URL but the channel is unchanged;
+    # the media-sequence keeps climbing, so nothing should splice a discontinuity
     state = SlotState()
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
-    ingest(state, _src(500, ["x.ts", "y.ts"]), "url-B")
-    uris = [s.uri for s in state.segments]
-    assert "x.ts" in uris
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _src(102, ["c.ts", "d.ts"]), "chan-A")  # same channel, fresh fetch
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "c.ts", "d.ts"]
+    assert all(s.discontinuity is False for s in state.segments)
+
+
+def test_ingest_marks_discontinuity_on_identity_change():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _src(500, ["x.ts", "y.ts"]), "chan-B")
     x = next(s for s in state.segments if s.uri == "x.ts")
     y = next(s for s in state.segments if s.uri == "y.ts")
     assert x.discontinuity is True
     assert y.discontinuity is False
 
 
+def test_ingest_identity_change_resets_watermark_even_if_seq_lower():
+    # a new channel can have a LOWER media-sequence than the old one; resetting
+    # the watermark on identity change ensures its segments still get appended
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")  # watermark climbs to 101
+    ingest(state, _src(50, ["p.ts", "q.ts"]), "chan-B")  # lower seq, different channel
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "p.ts", "q.ts"]
+    p = next(s for s in state.segments if s.uri == "p.ts")
+    assert p.discontinuity is True
+
+
 def test_ingest_trims_to_window_and_counts_discontinuity_sequence():
     state = SlotState(window=3)
-    ingest(state, _src(0, ["a.ts", "b.ts"]), "url-A")
-    # switch source -> c.ts carries a discontinuity, then push past the window
-    ingest(state, _src(0, ["c.ts", "d.ts", "e.ts"]), "url-B")
+    ingest(state, _src(0, ["a.ts", "b.ts"]), "chan-A")
+    # switch channel -> c.ts carries a discontinuity, then push past the window
+    ingest(state, _src(0, ["c.ts", "d.ts", "e.ts"]), "chan-B")
     assert len(state.segments) == 3
     # a.ts and b.ts evicted; the discontinuity on c.ts is still in-window
     assert [s.uri for s in state.segments] == ["c.ts", "d.ts", "e.ts"]
     assert state.discontinuity_seq == 0
-    # push more so c.ts (the discontinuity segment) rolls out
-    ingest(state, _src(3, ["f.ts", "g.ts", "h.ts"]), "url-B")
+    # push more so c.ts (the discontinuity segment) rolls out (same channel now)
+    ingest(state, _src(3, ["f.ts", "g.ts", "h.ts"]), "chan-B")
     assert state.discontinuity_seq == 1
 
 
 def test_render_has_required_headers_and_no_endlist():
     state = SlotState()
-    ingest(state, _src(100, ["a.ts", "b.ts"]), "url-A")
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
     out = render(state)
     assert out.startswith("#EXTM3U")
     assert "#EXT-X-VERSION:6" in out
@@ -134,8 +153,8 @@ def test_render_has_required_headers_and_no_endlist():
 
 def test_render_emits_discontinuity_tag_before_segment():
     state = SlotState()
-    ingest(state, _src(100, ["a.ts"]), "url-A")
-    ingest(state, _src(0, ["x.ts"]), "url-B")
+    ingest(state, _src(100, ["a.ts"]), "chan-A")
+    ingest(state, _src(0, ["x.ts"]), "chan-B")
     out = render(state)
     lines = out.splitlines()
     x_index = lines.index("x.ts")

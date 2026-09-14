@@ -138,7 +138,7 @@ class Daemon:
                 quad = self.quad_builder.build_quad(candidates)
 
                 # feed the local relay every cycle, regardless of quadstream
-                self.slot_store.update(quad.to_list())
+                self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
 
                 if quad.is_empty():
                     logger.info("quad is empty, skipping update")

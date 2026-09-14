@@ -78,20 +78,20 @@ class SlotRelay:
         if slot not in (1, 2, 3, 4):
             return web.Response(status=404, text="bad slot")
 
-        url = self.store.get(slot)
-        if not url:
+        entry = self.store.get(slot)
+        if entry is None:
             return web.Response(status=503, text="slot empty")
 
         state = self._states.setdefault(slot, SlotState(window=self.window))
         try:
-            text = await self._cached_fetch(url)
+            text = await self._cached_fetch(entry.url)
         except Exception as e:
-            logger.warning("relay source fetch failed", slot=slot, url=url, error=str(e))
+            logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
             if state.segments:
                 return self._playlist_response(render(state))
             return web.Response(status=503, text="source unavailable")
 
-        ingest(state, text, url)
+        ingest(state, text, entry.identity)
         if not state.segments:
             return web.Response(status=503, text="no segments")
         return self._playlist_response(render(state))

@@ -70,18 +70,25 @@ class SlotState:
     segments: deque[Segment] = field(default_factory=deque)
     next_seq: int = 0
     discontinuity_seq: int = 0
-    last_source_url: str | None = None
+    last_identity: str | None = None
     last_source_seq: int | None = None
     pending_discontinuity: bool = False
 
 
-def ingest(state: SlotState, source_text: str, source_url: str) -> None:
-    """Fold a freshly-fetched source playlist into our rolling window."""
+def ingest(state: SlotState, source_text: str, identity: str) -> None:
+    """Fold a freshly-fetched source playlist into our rolling window.
+
+    `identity` is the stable channel identity, NOT the playlist URL. Twitch
+    re-mints the URL every cycle for an unchanged stream, so keying on the URL
+    would splice a spurious discontinuity each cycle. Keying on identity means a
+    token refresh for the same channel keeps the sequence watermark and dedups
+    cleanly, while a real channel switch resets it and splices a discontinuity.
+    """
     _, media_sequence, segments = parse_media_playlist(source_text)
 
-    # source change -> reset source-sequence tracking, splice a discontinuity
-    if source_url != state.last_source_url:
-        state.last_source_url = source_url
+    # channel change -> reset source-sequence tracking, splice a discontinuity
+    if identity != state.last_identity:
+        state.last_identity = identity
         state.last_source_seq = None
         if state.segments:  # only splice if we've already served something
             state.pending_discontinuity = True

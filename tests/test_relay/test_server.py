@@ -43,7 +43,7 @@ async def test_bad_slot_returns_404():
 @pytest.mark.asyncio
 async def test_serves_playlist_with_headers():
     store = SlotStore()
-    store.update(["url-A", "", "", ""])
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
 
     async def fetch(url):
         return _src(100, ["a.ts", "b.ts"])
@@ -62,7 +62,7 @@ async def test_serves_playlist_with_headers():
 @pytest.mark.asyncio
 async def test_cache_coalesces_fetches():
     store = SlotStore()
-    store.update(["url-A", "", "", ""])
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
     calls = 0
 
     async def fetch(url):
@@ -83,7 +83,7 @@ async def test_cache_coalesces_fetches():
 @pytest.mark.asyncio
 async def test_fetch_failure_serves_last_window_then_503():
     store = SlotStore()
-    store.update(["url-A", "", "", ""])
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
     state = {"fail": False}
 
     async def fetch(url):
@@ -106,7 +106,7 @@ async def test_fetch_failure_serves_last_window_then_503():
 @pytest.mark.asyncio
 async def test_fetch_failure_with_no_window_returns_503():
     store = SlotStore()
-    store.update(["url-A", "", "", ""])
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
 
     async def fetch(url):
         raise RuntimeError("boom")
@@ -119,7 +119,7 @@ async def test_fetch_failure_with_no_window_returns_503():
 @pytest.mark.asyncio
 async def test_cache_evicts_expired_entries():
     store = SlotStore()
-    store.update(["url-A", "", "", ""])
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
 
     async def fetch(url):
         return _src(100, ["a.ts"])
@@ -129,7 +129,7 @@ async def test_cache_evicts_expired_entries():
     await _call(relay, "1")
     assert "url-A" in relay._cache
 
-    store.update(["url-B", "", "", ""])
+    store.update(["url-B", "", "", ""], ["chan-A", "", "", ""])
     clock["t"] = 2.0
     await _call(relay, "1")
     assert "url-A" not in relay._cache

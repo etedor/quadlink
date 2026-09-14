@@ -707,6 +707,7 @@ class TestDaemonRelayWiring:
                             builder = MagicMock()
                             builder.build_quad = MagicMock(return_value=quad)
                             builder.quad_changed = True
+                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
                             MockBuilder.return_value = builder
 
                             client = AsyncMock()
@@ -717,5 +718,7 @@ class TestDaemonRelayWiring:
                             with patch("asyncio.sleep", new_callable=AsyncMock):
                                 await daemon._main_loop()
 
-        assert daemon.slot_store.get(1) == "u1"
-        assert daemon.slot_store.get(4) == "u4"
+        assert daemon.slot_store.get(1).url == "u1"
+        assert daemon.slot_store.get(1).identity == "c1"
+        assert daemon.slot_store.get(4).url == "u4"
+        assert daemon.slot_store.get(4).identity == "c4"

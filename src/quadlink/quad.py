@@ -23,6 +23,9 @@ class QuadBuilder:
         self.previous_categories: dict[str, str] = {}  # author -> category
         self.previous_positions: dict[str, int] = {}  # author -> position (0-3)
         self.quad_changed: bool = False
+        # stable channel identity per slot (position-aligned with the quad),
+        # so the relay can tell a token refresh from a real stream switch
+        self.slot_identities: list[str] = ["", "", "", ""]
 
     def build_quad(self, candidates: list[PrioritizedStream]) -> Quad:
         """
@@ -45,6 +48,7 @@ class QuadBuilder:
         """
         if not candidates:
             logger.info("no stream candidates available")
+            self.slot_identities = ["", "", "", ""]
             return Quad()
 
         candidate_map = {s.stream.metadata.author.lower(): s for s in candidates}
@@ -72,6 +76,7 @@ class QuadBuilder:
             s.stream.metadata.author.lower(): s.stream.metadata.category for s in selected
         }
         self.previous_positions = self._build_position_map(quad, selected)
+        self.slot_identities = self._build_slot_identities(quad, selected)
 
         return quad
 
@@ -97,6 +102,28 @@ class QuadBuilder:
                 position_map[url_to_author[url]] = position
 
         return position_map
+
+    def _build_slot_identities(self, quad: Quad, selected: list[PrioritizedStream]) -> list[str]:
+        """
+        Build a position-aligned list of stable channel identities.
+
+        The playlist URL a slot holds is re-minted every cycle (fresh Twitch
+        token/edge), so it cannot identify a stream. The channel URL is stable,
+        so the relay uses it to distinguish a token refresh from a real switch.
+
+        Args:
+            quad: The built quad
+            selected: Selected streams with metadata
+
+        Returns:
+            List of 4 channel identities, aligned with quad slots ("" if empty)
+        """
+        url_to_identity = {}
+        for s in selected:
+            key = s.stream.master_url or s.stream.url
+            url_to_identity[key] = s.stream.url
+
+        return [url_to_identity.get(url, "") if url else "" for url in quad.to_list()]
 
     def _get_existing_streams(
         self, candidate_map: dict[str, PrioritizedStream]
