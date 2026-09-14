@@ -1,6 +1,6 @@
 """Tests for the SlotRelay aiohttp server."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
@@ -8,6 +8,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
+from quadlink.webui import WebUI
 
 
 def _src(media_seq: int, uris: list[str]) -> str:
@@ -165,11 +166,6 @@ class AsyncNever:
 
     async def __call__(self, url):  # pragma: no cover - guard
         raise AssertionError("fetch should not be called")
-
-
-from unittest.mock import MagicMock
-
-from quadlink.webui import WebUI
 
 
 def test_webui_registers_relay_routes():

@@ -10,7 +10,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 # a parsed source segment: (duration, uri, program_date_time, source_discontinuity)
-ParsedSegment = tuple[float, str, "str | None", bool]
+ParsedSegment = tuple[float, str, str | None, bool]
 
 
 def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:

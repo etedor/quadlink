@@ -61,7 +61,7 @@ class SlotRelay:
             u: entry for u, entry in self._cache.items() if now - entry[0] < self.cache_ttl
         }
         hit = self._cache.get(url)
-        if hit is not None and now - hit[0] < self.cache_ttl:
+        if hit is not None:
             return hit[1]
         fetch = self._fetch or self._default_fetch
         text = await fetch(url)
