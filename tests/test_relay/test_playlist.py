@@ -27,17 +27,32 @@ def test_parse_target_duration_and_media_sequence():
 
 def test_parse_segment_fields():
     _, _, segs = parse_media_playlist(SAMPLE)
-    duration, uri, pdt, disc = segs[0]
+    duration, uri, pdt, disc, ext_map = segs[0]
     assert duration == 2.0
     assert uri == "https://cdn.example/seg100.ts?dna=aaa"
     assert pdt == "2026-08-14T15:14:32.243Z"
     assert disc is False
+    assert ext_map is None  # legacy TS stream has no init segment
 
 
 def test_parse_ignores_unknown_tags():
     # the EXT-X-DATERANGE line must not become a segment
     _, _, segs = parse_media_playlist(SAMPLE)
-    assert all(uri.startswith("https://") for _, uri, _, _ in segs)
+    assert all(uri.startswith("https://") for _, uri, _, _, _ in segs)
+
+
+def test_parse_carries_ext_x_map_across_segments():
+    text = (
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+        '#EXT-X-MAP:URI="https://cdn.example/init.mp4?dna=z"\n'
+        "#EXTINF:2.000,live\nhttps://cdn.example/a.mp4?dna=aaa\n"
+        "#EXTINF:2.000,live\nhttps://cdn.example/b.mp4?dna=bbb\n"
+    )
+    _, _, segs = parse_media_playlist(text)
+    the_map = '#EXT-X-MAP:URI="https://cdn.example/init.mp4?dna=z"'
+    # the map persists across both fMP4 segments (declared once, applies to all)
+    assert segs[0][4] == the_map
+    assert segs[1][4] == the_map
 
 
 def test_parse_source_discontinuity_flag():
@@ -160,3 +175,50 @@ def test_render_emits_discontinuity_tag_before_segment():
     x_index = lines.index("x.ts")
     # the line two before the URI (EXTINF is directly before) should include the tag
     assert "#EXT-X-DISCONTINUITY" in lines[x_index - 2 : x_index]
+
+
+def _fmp4_src(media_seq: int, uris: list[str], map_uri: str) -> str:
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-TARGETDURATION:2",
+        f"#EXT-X-MEDIA-SEQUENCE:{media_seq}",
+        f'#EXT-X-MAP:URI="{map_uri}"',
+    ]
+    for uri in uris:
+        lines.append("#EXTINF:2.000,live")
+        lines.append(uri)
+    return "\n".join(lines) + "\n"
+
+
+def test_render_emits_ext_x_map_once_for_fmp4():
+    state = SlotState()
+    ingest(state, _fmp4_src(0, ["a.mp4", "b.mp4"], "https://cdn.example/init.mp4"), "chan-A")
+    out = render(state)
+    the_map = '#EXT-X-MAP:URI="https://cdn.example/init.mp4"'
+    # declared exactly once (persists for both segments), before the first segment
+    assert out.count(the_map) == 1
+    lines = out.splitlines()
+    assert lines.index(the_map) < lines.index("a.mp4")
+    assert "#EXT-X-ENDLIST" not in out
+
+
+def test_render_no_ext_x_map_for_ts():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
+    out = render(state)
+    assert "#EXT-X-MAP" not in out
+
+
+def test_render_reemits_ext_x_map_on_channel_change():
+    state = SlotState()
+    ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/initA.mp4"), "chan-A")
+    ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/initB.mp4"), "chan-B")
+    out = render(state)
+    mapA = '#EXT-X-MAP:URI="https://cdn.example/initA.mp4"'
+    mapB = '#EXT-X-MAP:URI="https://cdn.example/initB.mp4"'
+    assert out.count(mapA) == 1 and out.count(mapB) == 1
+    lines = out.splitlines()
+    # the new channel's map is re-declared, right after the discontinuity
+    x_index = lines.index("x.mp4")
+    assert mapB in lines[:x_index]
+    assert lines.index(mapB) > lines.index("#EXT-X-DISCONTINUITY")

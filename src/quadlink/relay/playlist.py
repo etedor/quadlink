@@ -9,8 +9,9 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 
-# a parsed source segment: (duration, uri, program_date_time, source_discontinuity)
-ParsedSegment = tuple[float, str, str | None, bool]
+# a parsed source segment: (duration, uri, program_date_time, source_discontinuity, ext_map)
+# ext_map is the raw #EXT-X-MAP line in effect (fMP4 init segment), or None for TS
+ParsedSegment = tuple[float, str, str | None, bool, str | None]
 
 
 def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
@@ -18,6 +19,8 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
 
     Returns (target_duration, media_sequence, segments). Unknown tags are
     ignored; EXTINF/PROGRAM-DATE-TIME/DISCONTINUITY attach to the next segment.
+    EXT-X-MAP (fMP4 init segment, used by Twitch enhanced broadcasting) persists
+    across segments until it changes.
     """
     target_duration = 6
     media_sequence = 0
@@ -26,6 +29,7 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
     duration = 0.0
     pdt: str | None = None
     disc = False
+    ext_map: str | None = None  # persists across segments until re-specified
 
     for raw in text.splitlines():
         line = raw.strip()
@@ -37,6 +41,8 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
             media_sequence = int(line.split(":", 1)[1])
         elif line == "#EXT-X-DISCONTINUITY":
             disc = True
+        elif line.startswith("#EXT-X-MAP:"):
+            ext_map = line  # carried verbatim; Twitch's URI is absolute
         elif line.startswith("#EXT-X-PROGRAM-DATE-TIME:"):
             # value is an ISO timestamp that itself contains colons
             pdt = line.split(":", 1)[1]
@@ -45,8 +51,8 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
         elif line.startswith("#"):
             continue  # ignore all other tags (DATERANGE, TWITCH-*, etc.)
         else:
-            segments.append((duration, line, pdt, disc))
-            duration, pdt, disc = 0.0, None, False
+            segments.append((duration, line, pdt, disc, ext_map))
+            duration, pdt, disc = 0.0, None, False  # ext_map persists
 
     return target_duration, media_sequence, segments
 
@@ -60,6 +66,7 @@ class Segment:
     duration: float
     program_date_time: str | None
     discontinuity: bool
+    ext_map: str | None  # #EXT-X-MAP line for fMP4 segments, None for TS
 
 
 @dataclass
@@ -93,7 +100,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         if state.segments:  # only splice if we've already served something
             state.pending_discontinuity = True
 
-    for index, (duration, uri, pdt, src_disc) in enumerate(segments):
+    for index, (duration, uri, pdt, src_disc, ext_map) in enumerate(segments):
         source_seq = media_sequence + index
         if state.last_source_seq is not None and source_seq <= state.last_source_seq:
             continue  # already ingested this segment
@@ -106,6 +113,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
                 duration=duration,
                 program_date_time=pdt,
                 discontinuity=disc,
+                ext_map=ext_map,
             )
         )
         state.next_seq += 1
@@ -129,9 +137,15 @@ def render(state: SlotState) -> str:
         f"#EXT-X-MEDIA-SEQUENCE:{segments[0].seq}",
         f"#EXT-X-DISCONTINUITY-SEQUENCE:{state.discontinuity_seq}",
     ]
+    last_map: str | None = None
     for seg in segments:
         if seg.discontinuity:
             lines.append("#EXT-X-DISCONTINUITY")
+        # emit EXT-X-MAP at the window start and whenever it changes, so fMP4
+        # (Twitch enhanced broadcasting) segments have their init segment
+        if seg.ext_map and seg.ext_map != last_map:
+            lines.append(seg.ext_map)
+            last_map = seg.ext_map
         if seg.program_date_time:
             lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.program_date_time}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")
