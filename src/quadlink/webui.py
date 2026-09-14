@@ -11,6 +11,7 @@ from ruamel.yaml import YAML
 from quadlink import __version__
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
+from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
 
@@ -59,6 +60,7 @@ class WebUI:
         config_loader: ConfigLoader,
         host: str = "0.0.0.0",
         port: int = 8081,
+        slot_relay: SlotRelay | None = None,
     ):
         """Initialize web UI server.
 
@@ -66,10 +68,12 @@ class WebUI:
             config_loader: ConfigLoader instance for reading config.
             host: Host address to bind to.
             port: Port number to listen on.
+            slot_relay: Optional slot relay whose /streams routes are registered.
         """
         self.host = host
         self.port = port
         self.config_loader = config_loader
+        self.slot_relay = slot_relay
         self.config_path = self._find_config_path()
         self.app = web.Application()
         self._setup_routes()
@@ -86,6 +90,8 @@ class WebUI:
         self.app.router.add_get("/api/config", self._handle_get_config)
         self.app.router.add_post("/api/config", self._handle_post_config)
         self.app.router.add_post("/api/validate", self._handle_validate)
+        if self.slot_relay is not None:
+            self.slot_relay.register_routes(self.app.router)
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         """Serve the main config editor page."""

@@ -165,3 +165,21 @@ class AsyncNever:
 
     async def __call__(self, url):  # pragma: no cover - guard
         raise AssertionError("fetch should not be called")
+
+
+from unittest.mock import MagicMock
+
+from quadlink.webui import WebUI
+
+
+def test_webui_registers_relay_routes():
+    relay = SlotRelay(SlotStore(), fetch=AsyncNever())
+    webui = WebUI(MagicMock(), slot_relay=relay)
+    paths = {r.resource.canonical for r in webui.app.router.routes()}
+    assert "/streams/{slot}" in paths
+
+
+def test_webui_without_relay_has_no_stream_routes():
+    webui = WebUI(MagicMock())
+    paths = {r.resource.canonical for r in webui.app.router.routes()}
+    assert "/streams/{slot}" not in paths
