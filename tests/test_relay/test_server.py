@@ -1,5 +1,7 @@
 """Tests for the SlotRelay aiohttp server."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
@@ -111,6 +113,43 @@ async def test_fetch_failure_with_no_window_returns_503():
     relay = SlotRelay(store, fetch=fetch)
     resp = await _call(relay, "1")
     assert resp.status == 503
+
+
+@pytest.mark.asyncio
+async def test_cache_evicts_expired_entries():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, ["a.ts"])
+
+    clock = {"t": 0.0}
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=1.0, time_fn=lambda: clock["t"])
+    await _call(relay, "1")
+    assert "url-A" in relay._cache
+
+    store.update(["url-B", "", "", ""])
+    clock["t"] = 2.0
+    await _call(relay, "1")
+    assert "url-A" not in relay._cache
+
+
+@pytest.mark.asyncio
+async def test_aclose_without_client_is_noop():
+    relay = SlotRelay(SlotStore(), fetch=AsyncNever())
+    assert relay._client is None
+    await relay.aclose()
+    assert relay._client is None
+
+
+@pytest.mark.asyncio
+async def test_aclose_closes_created_client():
+    relay = SlotRelay(SlotStore(), fetch=AsyncNever())
+    mock_client = AsyncMock()
+    relay._client = mock_client
+    await relay.aclose()
+    mock_client.aclose.assert_awaited_once()
+    assert relay._client is None
 
 
 def test_register_routes_adds_streams_path():

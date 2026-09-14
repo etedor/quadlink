@@ -56,6 +56,10 @@ class SlotRelay:
 
     async def _cached_fetch(self, url: str) -> str:
         now = self._time()
+        # drop expired entries so the cache stays bounded on a long-running daemon
+        self._cache = {
+            u: entry for u, entry in self._cache.items() if now - entry[0] < self.cache_ttl
+        }
         hit = self._cache.get(url)
         if hit is not None and now - hit[0] < self.cache_ttl:
             return hit[1]
