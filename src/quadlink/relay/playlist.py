@@ -104,6 +104,18 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         source_seq = media_sequence + index
         if state.last_source_seq is not None and source_seq <= state.last_source_seq:
             continue  # already ingested this segment
+
+        # a format flip (fMP4 <-> MPEG-TS) cannot coexist in one continuous
+        # playlist: EXT-X-MAP persists with no "unset", so TS segments would
+        # inherit a prior fMP4 init and fail to decode. Drop the old-format
+        # window so the served playlist stays a single format across the switch.
+        if state.segments and (state.segments[-1].ext_map is None) != (ext_map is None):
+            for old in state.segments:
+                if old.discontinuity:
+                    state.discontinuity_seq += 1
+            state.segments.clear()
+            state.pending_discontinuity = True
+
         disc = state.pending_discontinuity or src_disc
         state.pending_discontinuity = False
         state.segments.append(

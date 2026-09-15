@@ -222,3 +222,40 @@ def test_render_reemits_ext_x_map_on_channel_change():
     x_index = lines.index("x.mp4")
     assert mapB in lines[:x_index]
     assert lines.index(mapB) > lines.index("#EXT-X-DISCONTINUITY")
+
+
+def test_ingest_fmp4_to_ts_drops_old_window():
+    # fMP4 -> TS: TS must NOT inherit the fMP4 EXT-X-MAP, so the fMP4 window is
+    # dropped and the served playlist is clean TS
+    state = SlotState()
+    ingest(state, _fmp4_src(0, ["a.mp4", "b.mp4"], "https://cdn.example/init.mp4"), "chan-A")
+    ingest(state, _src(0, ["x.ts", "y.ts"]), "chan-B")
+    assert [s.uri for s in state.segments] == ["x.ts", "y.ts"]
+    out = render(state)
+    assert "#EXT-X-MAP" not in out
+    assert "x.ts" in out
+    x = next(s for s in state.segments if s.uri == "x.ts")
+    assert x.discontinuity is True
+
+
+def test_ingest_ts_to_fmp4_drops_old_window():
+    # TS -> fMP4: also start a clean single-format window (with the new map)
+    state = SlotState()
+    ingest(state, _src(0, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/init.mp4"), "chan-B")
+    assert [s.uri for s in state.segments] == ["x.mp4"]
+    out = render(state)
+    assert '#EXT-X-MAP:URI="https://cdn.example/init.mp4"' in out
+    lines = out.splitlines()
+    assert lines.index('#EXT-X-MAP:URI="https://cdn.example/init.mp4"') < lines.index("x.mp4")
+
+
+def test_ingest_fmp4_to_fmp4_keeps_window_and_reemits_map():
+    # different enhanced channels: NOT a format flip, so both stay in-window and
+    # the new map is re-declared (no drop)
+    state = SlotState()
+    ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/initA.mp4"), "chan-A")
+    ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/initB.mp4"), "chan-B")
+    assert [s.uri for s in state.segments] == ["a.mp4", "x.mp4"]
+    out = render(state)
+    assert out.count("#EXT-X-MAP") == 2
