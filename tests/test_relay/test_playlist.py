@@ -259,3 +259,21 @@ def test_ingest_fmp4_to_fmp4_keeps_window_and_reemits_map():
     assert [s.uri for s in state.segments] == ["a.mp4", "x.mp4"]
     out = render(state)
     assert out.count("#EXT-X-MAP") == 2
+
+
+def test_ingest_latches_map_across_token_refresh():
+    # Twitch re-mints the EXT-X-MAP token each fetch; the init content is the
+    # same, so within a run the emitted map must stay a single stable URI
+    # (not churn) or AVPlayer re-inits the decoder and stutters
+    state = SlotState()
+    ingest(
+        state, _fmp4_src(0, ["a.mp4", "b.mp4"], "https://cdn.example/init.mp4?dna=TOK1"), "chan-A"
+    )
+    ingest(
+        state, _fmp4_src(2, ["c.mp4", "d.mp4"], "https://cdn.example/init.mp4?dna=TOK2"), "chan-A"
+    )
+    assert [s.uri for s in state.segments] == ["a.mp4", "b.mp4", "c.mp4", "d.mp4"]
+    out = render(state)
+    assert out.count("#EXT-X-MAP") == 1  # one stable map, not re-emitted on churn
+    assert "dna=TOK1" in out
+    assert "dna=TOK2" not in out

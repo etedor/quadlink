@@ -80,6 +80,7 @@ class SlotState:
     last_identity: str | None = None
     last_source_seq: int | None = None
     pending_discontinuity: bool = False
+    current_map: str | None = None  # latched EXT-X-MAP for the current run
 
 
 def ingest(state: SlotState, source_text: str, identity: str) -> None:
@@ -100,7 +101,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         if state.segments:  # only splice if we've already served something
             state.pending_discontinuity = True
 
-    for index, (duration, uri, pdt, src_disc, ext_map) in enumerate(segments):
+    for index, (duration, uri, pdt, src_disc, source_map) in enumerate(segments):
         source_seq = media_sequence + index
         if state.last_source_seq is not None and source_seq <= state.last_source_seq:
             continue  # already ingested this segment
@@ -109,15 +110,27 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         # playlist: EXT-X-MAP persists with no "unset", so TS segments would
         # inherit a prior fMP4 init and fail to decode. Drop the old-format
         # window so the served playlist stays a single format across the switch.
-        if state.segments and (state.segments[-1].ext_map is None) != (ext_map is None):
+        if state.segments and (state.segments[-1].ext_map is None) != (source_map is None):
             for old in state.segments:
                 if old.discontinuity:
                     state.discontinuity_seq += 1
             state.segments.clear()
             state.pending_discontinuity = True
+            state.current_map = None
 
         disc = state.pending_discontinuity or src_disc
         state.pending_discontinuity = False
+
+        # latch the init map per run: Twitch re-mints the EXT-X-MAP token on
+        # every fetch, but the init content is identical, so re-emitting on
+        # token churn makes AVPlayer re-init the decoder (stutter). Only
+        # (re)latch at a run boundary (first fMP4 segment or a discontinuity).
+        if source_map is not None:
+            if state.current_map is None or disc:
+                state.current_map = source_map
+        else:
+            state.current_map = None
+
         state.segments.append(
             Segment(
                 seq=state.next_seq,
@@ -125,7 +138,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
                 duration=duration,
                 program_date_time=pdt,
                 discontinuity=disc,
-                ext_map=ext_map,
+                ext_map=state.current_map,
             )
         )
         state.next_seq += 1
