@@ -6,6 +6,7 @@ with a monotonic MEDIA-SEQUENCE and DISCONTINUITY splices on source change.
 """
 
 import math
+import re
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -57,6 +58,15 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
     return target_duration, media_sequence, segments
 
 
+_MAP_URI_RE = re.compile(r'#EXT-X-MAP:[^\n]*URI="([^"]+)"')
+
+
+def first_map_uri(text: str) -> str | None:
+    """Return the first EXT-X-MAP init-segment URI in a source playlist, if any."""
+    m = _MAP_URI_RE.search(text)
+    return m.group(1) if m else None
+
+
 @dataclass
 class Segment:
     """One republished segment in our own playlist."""
@@ -66,7 +76,7 @@ class Segment:
     duration: float
     program_date_time: str | None
     discontinuity: bool
-    ext_map: str | None  # #EXT-X-MAP line for fMP4 segments, None for TS
+    map_gen: int | None  # init-segment generation for fMP4, None for TS
 
 
 @dataclass
@@ -80,7 +90,7 @@ class SlotState:
     last_identity: str | None = None
     last_source_seq: int | None = None
     pending_discontinuity: bool = False
-    current_map: str | None = None  # latched EXT-X-MAP for the current run
+    map_generation: int = 0  # bumps at each new fMP4 init run, for a stable init URL
 
 
 def ingest(state: SlotState, source_text: str, identity: str) -> None:
@@ -110,26 +120,30 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         # playlist: EXT-X-MAP persists with no "unset", so TS segments would
         # inherit a prior fMP4 init and fail to decode. Drop the old-format
         # window so the served playlist stays a single format across the switch.
-        if state.segments and (state.segments[-1].ext_map is None) != (source_map is None):
+        prev_is_fmp4 = bool(state.segments) and state.segments[-1].map_gen is not None
+        new_is_fmp4 = source_map is not None
+        if state.segments and prev_is_fmp4 != new_is_fmp4:
             for old in state.segments:
                 if old.discontinuity:
                     state.discontinuity_seq += 1
             state.segments.clear()
             state.pending_discontinuity = True
-            state.current_map = None
+            prev_is_fmp4 = False
 
         disc = state.pending_discontinuity or src_disc
         state.pending_discontinuity = False
 
-        # latch the init map per run: Twitch re-mints the EXT-X-MAP token on
-        # every fetch, but the init content is identical, so re-emitting on
-        # token churn makes AVPlayer re-init the decoder (stutter). Only
-        # (re)latch at a run boundary (first fMP4 segment or a discontinuity).
-        if source_map is not None:
-            if state.current_map is None or disc:
-                state.current_map = source_map
+        # bump the init generation at each run boundary (first fMP4 segment or a
+        # discontinuity) so the served EXT-X-MAP URL is stable within a run but
+        # changes when the init actually changes. Token churn within a run keeps
+        # the same generation, so AVPlayer never needlessly re-inits, and the
+        # relay serves a fresh init on each fetch so the token can't go stale.
+        if new_is_fmp4:
+            if not prev_is_fmp4 or disc:
+                state.map_generation += 1
+            map_gen: int | None = state.map_generation
         else:
-            state.current_map = None
+            map_gen = None
 
         state.segments.append(
             Segment(
@@ -138,7 +152,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
                 duration=duration,
                 program_date_time=pdt,
                 discontinuity=disc,
-                ext_map=state.current_map,
+                map_gen=map_gen,
             )
         )
         state.next_seq += 1
@@ -151,7 +165,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
             state.discontinuity_seq += 1
 
 
-def render(state: SlotState) -> str:
+def render(state: SlotState, slot: int) -> str:
     """Render our current window as a live HLS media playlist."""
     segments = list(state.segments)
     target = max(1, max((math.ceil(s.duration) for s in segments), default=1))
@@ -162,15 +176,17 @@ def render(state: SlotState) -> str:
         f"#EXT-X-MEDIA-SEQUENCE:{segments[0].seq}",
         f"#EXT-X-DISCONTINUITY-SEQUENCE:{state.discontinuity_seq}",
     ]
-    last_map: str | None = None
+    last_gen: int | None = None
     for seg in segments:
         if seg.discontinuity:
             lines.append("#EXT-X-DISCONTINUITY")
-        # emit EXT-X-MAP at the window start and whenever it changes, so fMP4
-        # (Twitch enhanced broadcasting) segments have their init segment
-        if seg.ext_map and seg.ext_map != last_map:
-            lines.append(seg.ext_map)
-            last_map = seg.ext_map
+        # point fMP4 (Twitch enhanced broadcasting) segments at a relay-served
+        # init URL that is stable within a run (keyed on the run generation) but
+        # changes at real init boundaries; the relay resolves it to a fresh
+        # Twitch init on each fetch, so the init token never goes stale
+        if seg.map_gen is not None and seg.map_gen != last_gen:
+            lines.append(f'#EXT-X-MAP:URI="/streams/{slot}/init/{seg.map_gen}"')
+            last_gen = seg.map_gen
         if seg.program_date_time:
             lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.program_date_time}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")

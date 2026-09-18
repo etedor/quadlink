@@ -179,3 +179,56 @@ def test_webui_without_relay_has_no_stream_routes():
     webui = WebUI(MagicMock())
     paths = {r.resource.canonical for r in webui.app.router.routes()}
     assert "/streams/{slot}" not in paths
+
+
+async def _call_init(relay: SlotRelay, slot: str) -> web.Response:
+    request = make_mocked_request(
+        "GET", f"/streams/{slot}/init/1", match_info={"slot": slot, "gen": "1"}
+    )
+    return await relay.handle_init(request)
+
+
+@pytest.mark.asyncio
+async def test_init_redirects_to_current_fresh_twitch_init():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return (
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+            '#EXT-X-MAP:URI="https://cdn.example/init.mp4?dna=FRESH"\n'
+            "#EXTINF:2.000,live\nhttps://cdn.example/a.mp4?dna=aaa\n"
+        )
+
+    relay = SlotRelay(store, fetch=fetch)
+    resp = await _call_init(relay, "1")
+    assert resp.status == 302
+    assert resp.headers["Location"] == "https://cdn.example/init.mp4?dna=FRESH"
+
+
+@pytest.mark.asyncio
+async def test_init_404_for_ts_slot_without_map():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(0, ["a.ts", "b.ts"])  # legacy TS: no EXT-X-MAP
+
+    relay = SlotRelay(store, fetch=fetch)
+    resp = await _call_init(relay, "1")
+    assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_init_503_for_empty_slot():
+    relay = SlotRelay(SlotStore(), fetch=AsyncNever())
+    resp = await _call_init(relay, "1")
+    assert resp.status == 503
+
+
+def test_register_routes_adds_init_path():
+    relay = SlotRelay(SlotStore(), fetch=AsyncNever())
+    app = web.Application()
+    relay.register_routes(app.router)
+    paths = {r.resource.canonical for r in app.router.routes()}
+    assert "/streams/{slot}/init/{gen}" in paths

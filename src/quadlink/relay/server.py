@@ -12,7 +12,7 @@ import httpx
 import structlog
 from aiohttp import web
 
-from quadlink.relay.playlist import SlotState, ingest, render
+from quadlink.relay.playlist import SlotState, first_map_uri, ingest, render
 from quadlink.relay.store import SlotStore
 
 logger = structlog.get_logger()
@@ -88,13 +88,42 @@ class SlotRelay:
         except Exception as e:
             logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
             if state.segments:
-                return self._playlist_response(render(state))
+                return self._playlist_response(render(state, slot))
             return web.Response(status=503, text="source unavailable")
 
         ingest(state, text, entry.identity)
         if not state.segments:
             return web.Response(status=503, text="no segments")
-        return self._playlist_response(render(state))
+        return self._playlist_response(render(state, slot))
+
+    async def handle_init(self, request: web.Request) -> web.Response:
+        """Route handler for GET /streams/{slot}/init/{gen}.
+
+        The played fMP4 EXT-X-MAP points here (a stable per-run URL). We resolve
+        the slot's current source and redirect to a fresh Twitch init segment,
+        so the init token is never stale even though the URL never changes.
+        """
+        raw = request.match_info.get("slot", "")
+        try:
+            slot = int(raw)
+        except ValueError:
+            return web.Response(status=404, text="bad slot")
+        if slot not in (1, 2, 3, 4):
+            return web.Response(status=404, text="bad slot")
+
+        entry = self.store.get(slot)
+        if entry is None:
+            return web.Response(status=503, text="slot empty")
+        try:
+            text = await self._cached_fetch(entry.url)
+        except Exception as e:
+            logger.warning("relay init fetch failed", slot=slot, url=entry.url, error=str(e))
+            return web.Response(status=503, text="source unavailable")
+
+        uri = first_map_uri(text)
+        if not uri:
+            return web.Response(status=404, text="no init segment")
+        return web.Response(status=302, headers={"Location": uri, **NO_CACHE_HEADERS})
 
     def _playlist_response(self, body: str) -> web.Response:
         return web.Response(
@@ -104,8 +133,9 @@ class SlotRelay:
         )
 
     def register_routes(self, router: web.UrlDispatcher) -> None:
-        """Register GET /streams/{slot} on an existing aiohttp router."""
+        """Register the relay routes on an existing aiohttp router."""
         router.add_get("/streams/{slot}", self.handle)
+        router.add_get("/streams/{slot}/init/{gen}", self.handle_init)
 
     async def aclose(self) -> None:
         """Close the internal httpx client, if one was created."""
