@@ -1,6 +1,7 @@
 """Streamlink-based stream fetcher using Python library."""
 
 import asyncio
+import atexit
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +22,19 @@ logger = structlog.get_logger()
 
 # suppress Streamlink logging, we handle errors ourselves
 logging.getLogger("streamlink").setLevel(logging.CRITICAL)
+
+
+def _release_plugin_cache(plugin: Any) -> None:
+    """Drop the atexit save hook streamlink adds for a plugin's Cache.
+
+    streamlink's Cache.__init__ calls atexit.register(cache._save), and a new
+    plugin (hence a new Cache) is built on every resolve. Each hook pins its
+    Cache for the life of the process, so one leaks per resolve without this.
+    """
+    cache = getattr(plugin, "cache", None)
+    save = getattr(cache, "_save", None)
+    if save is not None:
+        atexit.unregister(save)
 
 
 class StreamlinkFetcher:
@@ -102,26 +116,31 @@ class StreamlinkFetcher:
                 opts.set("proxy-playlist-fallback", False)
 
             plugin = plugin_class(session, resolved_url, options=opts)
-            streams = plugin.streams()
+            try:
+                streams = plugin.streams()
 
-            if not streams:
-                logger.debug("stream unavailable", url=url)
-                return None
+                if not streams:
+                    logger.debug("stream unavailable", url=url)
+                    return None
 
-            if "best" not in streams:
-                logger.debug("no 'best' stream available", url=url, available=list(streams.keys()))
-                return None
+                if "best" not in streams:
+                    logger.debug(
+                        "no 'best' stream available", url=url, available=list(streams.keys())
+                    )
+                    return None
 
-            stream = streams["best"]
-            metadata = self._extract_metadata(plugin, url)
+                stream = streams["best"]
+                metadata = self._extract_metadata(plugin, url)
 
-            if not metadata:
-                logger.warning("could not extract metadata", url=url)
-                return None
+                if not metadata:
+                    logger.warning("could not extract metadata", url=url)
+                    return None
 
-            master_url = stream.url if hasattr(stream, "url") else None
+                master_url = stream.url if hasattr(stream, "url") else None
 
-            return Stream(url=url, metadata=metadata, master_url=master_url)
+                return Stream(url=url, metadata=metadata, master_url=master_url)
+            finally:
+                _release_plugin_cache(plugin)
 
         except NoPluginError:
             logger.debug("no plugin for url", url=url)

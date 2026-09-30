@@ -510,3 +510,32 @@ class TestExtractMetadata:
         result = fetcher._extract_metadata(mock_plugin, "https://twitch.tv/test")
 
         assert result is None
+
+
+from unittest.mock import patch
+
+from quadlink.stream.fetcher import _release_plugin_cache
+
+
+def test_release_plugin_cache_unregisters_save_hook():
+    class _Cache:
+        def _save(self):
+            pass
+
+    class _Plugin:
+        def __init__(self):
+            self.cache = _Cache()
+
+    plugin = _Plugin()
+    with patch("quadlink.stream.fetcher.atexit.unregister") as unregister:
+        _release_plugin_cache(plugin)
+    unregister.assert_called_once_with(plugin.cache._save)
+
+
+def test_release_plugin_cache_handles_missing_cache():
+    class _Plugin:
+        pass
+
+    with patch("quadlink.stream.fetcher.atexit.unregister") as unregister:
+        _release_plugin_cache(_Plugin())  # no cache attribute -> no error
+    unregister.assert_not_called()
