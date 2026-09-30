@@ -704,7 +704,7 @@ class TestDaemonRelayWiring:
                     with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
                             builder = MagicMock()
@@ -745,7 +745,7 @@ class TestDaemonRelayWiring:
                     with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
                             builder = MagicMock()
@@ -785,7 +785,7 @@ class TestDaemonRelayWiring:
                     with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=["c"])
+                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
                             builder = MagicMock()
