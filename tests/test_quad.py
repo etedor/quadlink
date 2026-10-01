@@ -70,6 +70,43 @@ class TestQuadBuilderBasic:
         assert quad.stream3 == "https://twitch.tv/streamer3"
         assert quad.stream4 == "https://twitch.tv/streamer4"
 
+    def test_initial_slots_seated_by_priority(self, builder):
+        """Should seat the highest priority stream in slot 1, not the first alphabetically."""
+        candidates = [
+            make_stream("zed", "Zelda", 200),
+            make_stream("amy", "Apex", 100),
+        ]
+        quad = builder.build_quad(candidates)
+
+        assert quad.stream1 == "https://twitch.tv/zed"
+        assert quad.stream2 == "https://twitch.tv/amy"
+
+    def test_freed_slots_filled_best_first(self, builder):
+        """Should give the best newcomer the lowest freed slot when two slots open at once."""
+        builder.build_quad(
+            [
+                make_stream("streamer1", "Games", 100),
+                make_stream("streamer2", "Games", 90),
+                make_stream("streamer3", "Games", 80),
+                make_stream("streamer4", "Games", 70),
+            ]
+        )
+
+        # streamer1 (slot 1) and streamer3 (slot 3) go offline
+        quad = builder.build_quad(
+            [
+                make_stream("aaa", "Games", 50),
+                make_stream("zzz", "Games", 150),
+                make_stream("streamer2", "Games", 90),
+                make_stream("streamer4", "Games", 70),
+            ]
+        )
+
+        assert quad.stream1 == "https://twitch.tv/zzz"
+        assert quad.stream2 == "https://twitch.tv/streamer2"
+        assert quad.stream3 == "https://twitch.tv/aaa"
+        assert quad.stream4 == "https://twitch.tv/streamer4"
+
     def test_more_than_four_candidates(self, builder):
         """Should select top 4 by priority."""
         candidates = [

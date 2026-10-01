@@ -331,11 +331,10 @@ class QuadBuilder:
                 quad_urls[stream.position] = selected_map[author]
                 existing_authors.add(author)
 
+        # selected is already priority-ordered, so the best newcomer takes the lowest free slot
         new_streams = [
             s for s in selected if s.stream.metadata.author.lower() not in existing_authors
         ]
-        # sort by category, author for deterministic ordering
-        new_streams.sort(key=lambda s: (s.stream.metadata.category, s.stream.metadata.author))
 
         new_stream_index = 0
         for i in range(4):
