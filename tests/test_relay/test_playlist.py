@@ -138,6 +138,82 @@ def test_ingest_identity_change_resets_watermark_even_if_seq_lower():
     assert p.discontinuity is True
 
 
+def _timed_src(media_seq: int, segs: list[tuple[str, str]]) -> str:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6", f"#EXT-X-MEDIA-SEQUENCE:{media_seq}"]
+    for uri, pdt in segs:
+        lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{pdt}")
+        lines.append("#EXTINF:2.000,live")
+        lines.append(uri)
+    return "\n".join(lines) + "\n"
+
+
+def test_ingest_same_channel_restart_resumes_with_discontinuity():
+    # the broadcast restarts: seq starts over below the watermark, time moves on
+    state = SlotState()
+    ingest(
+        state,
+        _timed_src(
+            5000, [("a.ts", "2026-10-02T14:25:40.023Z"), ("b.ts", "2026-10-02T14:25:42.032Z")]
+        ),
+        "chan-A",
+    )
+    ingest(
+        state,
+        _timed_src(
+            1287, [("x.ts", "2026-10-02T15:07:00.000Z"), ("y.ts", "2026-10-02T15:07:02.000Z")]
+        ),
+        "chan-A",
+    )
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "x.ts", "y.ts"]
+    assert [s.seq for s in state.segments] == [0, 1, 2, 3]
+    assert [s.discontinuity for s in state.segments] == [False, False, True, False]
+
+    # the restarted run then dedupes and appends as normal
+    ingest(
+        state,
+        _timed_src(
+            1288, [("y.ts", "2026-10-02T15:07:02.000Z"), ("z.ts", "2026-10-02T15:07:04.000Z")]
+        ),
+        "chan-A",
+    )
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "x.ts", "y.ts", "z.ts"]
+    assert state.segments[-1].discontinuity is False
+
+
+def test_ingest_lagging_edge_with_old_times_is_skipped():
+    state = SlotState()
+    ingest(
+        state,
+        _timed_src(
+            100,
+            [
+                ("a.ts", "2026-10-02T14:00:00.000Z"),
+                ("b.ts", "2026-10-02T14:00:02.000Z"),
+                ("c.ts", "2026-10-02T14:00:04.000Z"),
+            ],
+        ),
+        "chan-A",
+    )
+    # an edge two segments behind repeats segments we already hold
+    ingest(
+        state,
+        _timed_src(
+            99, [("p.ts", "2026-10-02T13:59:58.000Z"), ("a.ts", "2026-10-02T14:00:00.000Z")]
+        ),
+        "chan-A",
+    )
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts", "c.ts"]
+    assert all(s.discontinuity is False for s in state.segments)
+
+
+def test_ingest_lower_seq_without_times_is_skipped():
+    # no PROGRAM-DATE-TIME means no proof of a restart, so lower seqs stay skipped
+    state = SlotState()
+    ingest(state, _src(5000, ["a.ts", "b.ts"]), "chan-A")
+    ingest(state, _src(1287, ["x.ts", "y.ts"]), "chan-A")
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts"]
+
+
 def test_ingest_trims_to_window_and_counts_discontinuity_sequence():
     state = SlotState(window=3)
     ingest(state, _src(0, ["a.ts", "b.ts"]), "chan-A")

@@ -9,6 +9,7 @@ import math
 import re
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 
 # a parsed source segment: (duration, uri, program_date_time, source_discontinuity, ext_map)
 # ext_map is the raw #EXT-X-MAP line in effect (fMP4 init segment), or None for TS
@@ -61,6 +62,15 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
 _MAP_URI_RE = re.compile(r'#EXT-X-MAP:[^\n]*URI="([^"]+)"')
 
 
+def _parse_pdt(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def first_map_uri(text: str) -> str | None:
     """Return the first EXT-X-MAP init-segment URI in a source playlist, if any."""
     m = _MAP_URI_RE.search(text)
@@ -89,6 +99,7 @@ class SlotState:
     discontinuity_seq: int = 0
     last_identity: str | None = None
     last_source_seq: int | None = None
+    last_source_time: datetime | None = None  # PROGRAM-DATE-TIME of last_source_seq
     pending_discontinuity: bool = False
     map_generation: int = 0  # bumps at each new fMP4 init run, for a stable init URL
 
@@ -108,13 +119,27 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
     if identity != state.last_identity:
         state.last_identity = identity
         state.last_source_seq = None
+        state.last_source_time = None
         if state.segments:  # only splice if we've already served something
             state.pending_discontinuity = True
 
     for index, (duration, uri, pdt, src_disc, source_map) in enumerate(segments):
         source_seq = media_sequence + index
+        source_time = _parse_pdt(pdt)
         if state.last_source_seq is not None and source_seq <= state.last_source_seq:
-            continue  # already ingested this segment
+            # within one broadcast seq and PROGRAM-DATE-TIME both rise, so a seq at or
+            # below the watermark with a later time is a restarted broadcast (its
+            # seq starts over). a lagging edge repeats old segments with their old
+            # times and is skipped. without times, skip: there is no proof of restart.
+            restarted = (
+                source_time is not None
+                and state.last_source_time is not None
+                and source_time > state.last_source_time
+            )
+            if not restarted:
+                continue  # already ingested this segment
+            if state.segments:
+                state.pending_discontinuity = True
 
         # a format flip (fMP4 <-> MPEG-TS) cannot coexist in one continuous
         # playlist: EXT-X-MAP persists with no "unset", so TS segments would
@@ -157,6 +182,8 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         )
         state.next_seq += 1
         state.last_source_seq = source_seq
+        if source_time is not None:
+            state.last_source_time = source_time
 
     # trim to window; count out any discontinuity segments that roll off
     while len(state.segments) > state.window:
