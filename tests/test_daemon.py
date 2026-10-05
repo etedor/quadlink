@@ -204,7 +204,9 @@ class TestDaemonMainLoop:
                     with patch("asyncio.sleep", new_callable=AsyncMock):
                         await daemon._main_loop()
 
-                    MockProcessor.assert_called_once_with(mock_config)
+                    MockProcessor.assert_called_once_with(
+                        mock_config, lookup_timeout=daemon.interval
+                    )
                     MockBuilder.assert_called_once_with(mock_config)
 
     @pytest.mark.asyncio
@@ -826,3 +828,40 @@ class TestDroppedFromPool:
 
     def test_empty_when_no_previous_quad(self):
         assert Daemon._dropped_from_pool({}, [make_stream("shroud")]) == []
+
+
+class TestStillPlaying:
+    """Tests for keeping an on-screen channel whose lookup failed but video arrives."""
+
+    @pytest.fixture
+    def daemon(self):
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                d = Daemon()
+        d.processor = MagicMock()
+        d.processor.lookup_failed = MagicMock(return_value=True)
+        d.quad_builder = MagicMock()
+        d.quad_builder.previous_positions = {"alice": 2, "bob": 0}
+        d._on_screen = {"alice": make_stream("alice"), "bob": make_stream("bob")}
+        d._fed_at = 10.0
+        d.slot_relay.video_arrived_since = MagicMock(return_value=True)
+        return d
+
+    def test_keeps_failed_lookup_with_video_arriving(self, daemon):
+        kept = daemon._still_playing([make_stream("bob")])
+        assert [k.stream.metadata.author for k in kept] == ["alice"]
+        daemon.slot_relay.video_arrived_since.assert_called_once_with(
+            3, "https://twitch.tv/alice", 10.0
+        )
+
+    def test_drops_channel_rejected_by_filter(self, daemon):
+        daemon.processor.lookup_failed.return_value = False
+        assert daemon._still_playing([make_stream("bob")]) == []
+
+    def test_drops_channel_without_new_video(self, daemon):
+        daemon.slot_relay.video_arrived_since.return_value = False
+        assert daemon._still_playing([make_stream("bob")]) == []
+
+    def test_nothing_kept_before_first_feed(self, daemon):
+        daemon._fed_at = None
+        assert daemon._still_playing([make_stream("bob")]) == []

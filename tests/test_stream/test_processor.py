@@ -154,6 +154,44 @@ class TestProcessSingleStream:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_lookup_failed_records_unresolved_channel(self, mock_fetcher):
+        """A lookup that returns nothing is recorded, keyed like Stream.url."""
+        mock_fetcher.fetch_stream_info.return_value = None
+        processor = StreamProcessor(make_config())
+        processor.fetcher = mock_fetcher
+
+        await processor._process_single_stream("Streamer", 100, [])
+
+        assert processor.lookup_failed("https://twitch.tv/streamer")
+        assert processor.lookup_failed("streamer")
+        assert not processor.lookup_failed("https://twitch.tv/other")
+
+    @pytest.mark.asyncio
+    async def test_lookup_failed_false_for_filter_rejection(self, mock_fetcher):
+        """A channel that resolved but a filter rejected is not a failed lookup."""
+        mock_fetcher.fetch_stream_info.return_value = make_stream("Streamer", "Minecraft")
+        config = make_config(
+            rulesets=[Ruleset(name="global", filters=Filters(block_categories=["^Minecraft$"]))]
+        )
+        processor = StreamProcessor(config)
+        processor.fetcher = mock_fetcher
+
+        await processor._process_single_stream("streamer", 100, ["global"])
+
+        assert not processor.lookup_failed("https://twitch.tv/streamer")
+
+    @pytest.mark.asyncio
+    async def test_lookup_failed_on_fetch_error(self, mock_fetcher):
+        """An exception during lookup counts as a failed lookup."""
+        mock_fetcher.fetch_stream_info.side_effect = Exception("Network error")
+        processor = StreamProcessor(make_config())
+        processor.fetcher = mock_fetcher
+
+        await processor._process_single_stream("streamer", 100, [])
+
+        assert processor.lookup_failed("https://twitch.tv/streamer")
+
+    @pytest.mark.asyncio
     async def test_hosted_stream_skipped(self, mock_fetcher):
         """Hosted stream should be skipped when skip_hosted=True."""
         # URL is "hostchannel" but actual author is "realstreamer"

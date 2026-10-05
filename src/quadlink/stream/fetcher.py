@@ -24,6 +24,15 @@ logger = structlog.get_logger()
 logging.getLogger("streamlink").setLevel(logging.CRITICAL)
 
 
+def channel_url(url: str) -> str:
+    """Expand a bare channel name to the URL a fetched Stream carries as its url.
+
+    Callers that track channels a lookup missed key them by this, so the keys
+    match Stream.url for the same channel.
+    """
+    return url if url.startswith("http") else f"https://twitch.tv/{url}"
+
+
 def _release_plugin_cache(plugin: Any) -> None:
     """Drop the atexit save hook streamlink adds for a plugin's Cache.
 
@@ -45,6 +54,7 @@ class StreamlinkFetcher:
         proxy_playlist: str = "https://eu.luminous.dev",
         low_latency: bool = True,
         max_workers: int = 3,
+        timeout: float | None = None,
     ):
         """
         Initialize Streamlink fetcher.
@@ -53,9 +63,11 @@ class StreamlinkFetcher:
             proxy_playlist: Twitch playlist proxy URL
             low_latency: Enable low-latency mode
             max_workers: Maximum thread pool workers for blocking Streamlink calls
+            timeout: Seconds before a lookup is abandoned as unresolved (None waits forever)
         """
         self.proxy_playlist = proxy_playlist
         self.low_latency = low_latency
+        self.timeout = timeout
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._thread_local = threading.local()
 
@@ -68,12 +80,22 @@ class StreamlinkFetcher:
 
         Returns:
             Stream object with metadata, or None if stream is offline/unavailable
+            or the lookup outlived the timeout
         """
-        if not url.startswith("http"):
-            url = f"https://twitch.tv/{url}"
+        url = channel_url(url)
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self.executor, self._fetch_stream_info_sync, url)
+        loop = asyncio.get_running_loop()
+        lookup = loop.run_in_executor(self.executor, self._fetch_stream_info_sync, url)
+        if self.timeout is None:
+            return await lookup
+        try:
+            return await asyncio.wait_for(lookup, self.timeout)
+        except TimeoutError:
+            # the worker thread can't be cancelled; it runs to completion and its
+            # result is discarded. the caller stops waiting, so one hung lookup
+            # can't stall the whole cycle.
+            logger.warning("stream lookup timed out", url=url, timeout=self.timeout)
+            return None
 
     def _get_session(self) -> Streamlink:
         """

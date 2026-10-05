@@ -69,6 +69,10 @@ class Daemon:
         self.quad_builder: QuadBuilder | None = None
         self.quadstream_client: QuadStreamClient | None = None
         self._config_hash: int | None = None
+        # last cycle's candidate (raw priority) for each channel on screen
+        self._on_screen: dict[str, PrioritizedStream] = {}
+        # relay clock when the slot store was last fed
+        self._fed_at: float | None = None
 
     async def start(self) -> None:
         """Start the daemon and optional health/webui servers."""
@@ -104,6 +108,32 @@ class Daemon:
         live = {c.stream.metadata.author.lower() for c in candidates}
         return sorted(a for a in previous_positions if a not in live)
 
+    def _still_playing(self, candidates: list[PrioritizedStream]) -> list[PrioritizedStream]:
+        """On-screen channels whose lookup failed but whose video still arrives.
+
+        A failed lookup is weak evidence (it also fails on a transient Twitch or
+        proxy error); new segments reaching the relay since the last cycle prove
+        the channel is live, so it keeps its slot instead of swapping out and back.
+        A channel that resolved but a filter rejected is not kept.
+        """
+        assert self.processor is not None
+        assert self.quad_builder is not None
+        if self._fed_at is None:
+            return []
+        positions = self.quad_builder.previous_positions
+        kept = []
+        for author in self._dropped_from_pool(positions, candidates):
+            previous = self._on_screen.get(author)
+            if previous is None or not self.processor.lookup_failed(previous.stream.url):
+                continue
+            slot = positions[author] + 1
+            if self.slot_relay.video_arrived_since(slot, previous.stream.url, self._fed_at):
+                logger.info(
+                    "kept channel: lookup failed but video still arriving", author=author, slot=slot
+                )
+                kept.append(previous)
+        return kept
+
     async def _main_loop(self) -> None:
         """Main daemon loop - processes streams and updates quad repeatedly."""
         while self.running:
@@ -124,7 +154,8 @@ class Daemon:
                     if self._config_hash is not None:
                         logger.info("config changed, reloading")
                     self._config_hash = config_hash
-                    self.processor = StreamProcessor(config)
+                    # a lookup slower than one cycle is useless: the next cycle is already due
+                    self.processor = StreamProcessor(config, lookup_timeout=self.interval)
                     self.quad_builder = QuadBuilder(config)
 
                 assert self.processor is not None
@@ -151,6 +182,8 @@ class Daemon:
                         continue
 
                 candidates = await self.processor.process_stream_groups()
+                if serve_local:
+                    candidates += self._still_playing(candidates)
 
                 if not candidates:
                     logger.info("no stream candidates available")
@@ -168,10 +201,16 @@ class Daemon:
                     )
 
                 quad = self.quad_builder.build_quad(candidates)
+                self._on_screen = {}
+                for c in candidates:
+                    author = c.stream.metadata.author.lower()
+                    if author in self.quad_builder.previous_positions:
+                        self._on_screen.setdefault(author, c)
 
                 # feed the local relay every cycle (both/local modes)
                 if serve_local:
                     self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
+                    self._fed_at = self.slot_relay.clock()
 
                 if quad.is_empty():
                     logger.info("quad is empty, skipping update")

@@ -44,8 +44,23 @@ class SlotRelay:
         self.window = window
         self._time = time_fn
         self._states: dict[int, SlotState] = {}
+        # slot -> (identity, time) of the last fetch that added new segments.
+        # set only while a client is polling the slot; an unwatched slot has none
+        self._arrivals: dict[int, tuple[str, float]] = {}
         self._cache: dict[str, tuple[float, str]] = {}
         self._client: httpx.AsyncClient | None = None
+
+    def clock(self) -> float:
+        """Current time on the clock that video_arrived_since compares against."""
+        return self._time()
+
+    def video_arrived_since(self, slot: int, identity: str, since: float) -> bool:
+        """Whether new segments from this channel reached the slot after `since`.
+
+        New segments prove the channel is live right now, whatever a lookup said.
+        """
+        arrival = self._arrivals.get(slot)
+        return arrival is not None and arrival[0] == identity and arrival[1] > since
 
     async def _default_fetch(self, url: str) -> str:
         if self._client is None:
@@ -91,7 +106,10 @@ class SlotRelay:
                 return self._playlist_response(render(state, slot))
             return web.Response(status=503, text="source unavailable")
 
+        before = state.next_seq
         ingest(state, text, entry.identity)
+        if state.next_seq > before:
+            self._arrivals[slot] = (entry.identity, self._time())
         if not state.segments:
             return web.Response(status=503, text="no segments")
         return self._playlist_response(render(state, slot))

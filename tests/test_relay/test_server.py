@@ -232,3 +232,31 @@ def test_register_routes_adds_init_path():
     relay.register_routes(app.router)
     paths = {r.resource.canonical for r in app.router.routes()}
     assert "/streams/{slot}/init/{gen}" in paths
+
+
+@pytest.mark.asyncio
+async def test_video_arrived_since_tracks_new_segments_per_channel():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [100.0]
+    source = [_src(100, ["a.ts", "b.ts"])]
+
+    async def fetch(url):
+        return source[0]
+
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0])
+    assert not relay.video_arrived_since(1, "chan-A", 0.0)  # nothing fetched yet
+
+    await _call(relay, "1")
+    assert relay.video_arrived_since(1, "chan-A", 99.0)
+    assert not relay.video_arrived_since(1, "chan-A", 100.0)  # strictly after `since`
+    assert not relay.video_arrived_since(1, "chan-B", 99.0)  # other channel's video
+
+    # the same segments again add nothing, so no fresh arrival is recorded
+    now[0] = 130.0
+    await _call(relay, "1")
+    assert not relay.video_arrived_since(1, "chan-A", 120.0)
+
+    source[0] = _src(101, ["b.ts", "c.ts"])
+    await _call(relay, "1")
+    assert relay.video_arrived_since(1, "chan-A", 120.0)

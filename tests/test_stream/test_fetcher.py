@@ -1,5 +1,7 @@
 """Tests for streamlink fetcher."""
 
+import asyncio
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -539,3 +541,19 @@ def test_release_plugin_cache_handles_missing_cache():
     with patch("quadlink.stream.fetcher.atexit.unregister") as unregister:
         _release_plugin_cache(_Plugin())  # no cache attribute -> no error
     unregister.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_stream_info_gives_up_after_timeout():
+    fetcher = StreamlinkFetcher(timeout=0.05)
+    release = threading.Event()
+
+    def hung_lookup(url):
+        release.wait(5)
+        return None
+
+    with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=hung_lookup):
+        result = await asyncio.wait_for(fetcher.fetch_stream_info("streamer"), 2)
+    release.set()
+    fetcher.executor.shutdown(wait=True)
+    assert result is None
