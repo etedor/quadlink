@@ -5,7 +5,6 @@ folds it into a rolling window via the pure core in playlist.py, and serves
 our own continuously-live playlist. Segments stay absolute Twitch CDN URLs.
 """
 
-import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -35,9 +34,10 @@ NO_CACHE_HEADERS = {
 
 FetchFn = Callable[[str], Awaitable[str]]
 
-# seconds without new video before filler starts: AVPlayer logs -12888 ("playlist
-# unchanged for longer than 1.5 * target duration") at 3s with Twitch's 2s
-# segments, then stalls until the playlist moves again
+# seconds without new video before filler starts. A client plays about 3
+# segments (6s) behind the live edge, so filler must land before that buffer
+# runs dry: on a stall QuadStream rebuilds the player, which replays the stale
+# window every 6s for as long as the playlist stays unchanged
 STALL_AFTER = 3.0
 
 _FILLER_DIR = Path(__file__).parent / "filler"
@@ -70,9 +70,6 @@ class SlotRelay:
         self._source_urls: dict[int, str] = {}
         self._filler = {name: (_FILLER_DIR / name).read_bytes() for name in _FILLER_TYPES}
         self._client: httpx.AsyncClient | None = None
-        # set when Twitch 404s a slot's playlist: the broadcast ended, so the
-        # daemon re-picks now instead of letting the served playlist stall
-        self.source_gone = asyncio.Event()
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -120,10 +117,6 @@ class SlotRelay:
             logger.info("relay source refreshed", slot=slot, status=e.response.status_code)
             return await self._cached_fetch(entry.url)
 
-    def _note_failure(self, error: Exception) -> None:
-        if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404:
-            self.source_gone.set()
-
     async def handle(self, request: web.Request) -> web.Response:
         """Route handler for GET /streams/{slot}."""
         raw = request.match_info.get("slot", "")
@@ -143,7 +136,6 @@ class SlotRelay:
             text = await self._fetch_source(slot, entry.url)
         except Exception as e:
             logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
-            self._note_failure(e)
             if not state.segments:
                 return web.Response(status=503, text="source unavailable")
         else:
@@ -225,7 +217,6 @@ class SlotRelay:
                 text = await self._cached_fetch(url)
         except Exception as e:
             logger.warning("relay init fetch failed", slot=slot, url=url, error=str(e))
-            self._note_failure(e)
             return web.Response(status=503, text="source unavailable")
 
         uri = first_map_uri(text)

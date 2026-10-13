@@ -270,34 +270,6 @@ def _http_error(status: int) -> httpx.HTTPStatusError:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("call", [_call, _call_init])
-async def test_source_404_signals_source_gone(call):
-    store = SlotStore()
-    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
-
-    async def fetch(url):
-        raise _http_error(404)
-
-    relay = SlotRelay(store, fetch=fetch)
-    await call(relay, "1")
-    assert relay.source_gone.is_set()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("error", [_http_error(502), RuntimeError("boom")])
-async def test_other_fetch_failures_do_not_signal_source_gone(error):
-    store = SlotStore()
-    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
-
-    async def fetch(url):
-        raise error
-
-    relay = SlotRelay(store, fetch=fetch)
-    await _call(relay, "1")
-    assert not relay.source_gone.is_set()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [403, 404])
 async def test_dead_kept_url_moves_to_newest_url(status):
     store = SlotStore()
@@ -316,11 +288,10 @@ async def test_dead_kept_url_moves_to_newest_url(status):
     assert resp.status == 200
     assert fetched == ["url-old", "url-new"]
     assert store.get(1).url == "url-new"
-    assert not relay.source_gone.is_set()
 
 
 @pytest.mark.asyncio
-async def test_dead_newest_url_signals_source_gone():
+async def test_dead_newest_url_without_window_returns_503():
     store = SlotStore()
     store.update(["url-old", "", "", ""], ["chan-A", "", "", ""])
     store.update(["url-new", "", "", ""], ["chan-A", "", "", ""])
@@ -331,4 +302,3 @@ async def test_dead_newest_url_signals_source_gone():
     relay = SlotRelay(store, fetch=fetch)
     resp = await _call(relay, "1")
     assert resp.status == 503
-    assert relay.source_gone.is_set()

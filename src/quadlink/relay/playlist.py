@@ -270,10 +270,9 @@ def _trim(state: SlotState) -> None:
 def add_filler(state: SlotState) -> None:
     """Append one filler segment so the served playlist keeps advancing.
 
-    A player whose live playlist stops advancing for a few target durations
-    fails and does not recover without a reload. The filler takes the format of
-    the window: EXT-X-MAP has no "unset", so TS cannot follow fMP4. Each filler
-    repeats the same timestamps, so every one starts a discontinuity.
+    The filler takes the format of the window: EXT-X-MAP has no "unset", so TS
+    cannot follow fMP4. Each filler repeats the same timestamps, so every one
+    starts a discontinuity.
     """
     fmp4 = bool(state.segments) and state.segments[-1].map_gen is not None
     state.segments.append(
