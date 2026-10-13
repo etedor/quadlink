@@ -8,13 +8,22 @@ our own continuously-live playlist. Segments stay absolute Twitch CDN URLs.
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 import httpx
 import structlog
 from aiohttp import web
 
-from quadlink.relay.playlist import SlotState, first_map_uri, ingest, render
-from quadlink.relay.store import SlotStore
+from quadlink.relay.playlist import (
+    FILLER_DURATION,
+    SlotState,
+    add_filler,
+    first_map_uri,
+    has_live_segment,
+    ingest,
+    render,
+)
+from quadlink.relay.store import SlotEntry, SlotStore
 
 logger = structlog.get_logger()
 
@@ -25,6 +34,14 @@ NO_CACHE_HEADERS = {
 }
 
 FetchFn = Callable[[str], Awaitable[str]]
+
+# seconds without new video before filler starts. AVPlayer logs -12888 ("playlist
+# unchanged for longer than 1.5 * target duration") at 3s with Twitch's 2s
+# segments, and QuadStream does not recover from it
+STALL_AFTER = 3.0
+
+_FILLER_DIR = Path(__file__).parent / "filler"
+_FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
 
 
 class SlotRelay:
@@ -49,6 +66,9 @@ class SlotRelay:
         # set only while a client is polling the slot; an unwatched slot has none
         self._arrivals: dict[int, tuple[str, float]] = {}
         self._cache: dict[str, tuple[float, str]] = {}
+        # slot -> URL last folded into its window, which the fMP4 init must match
+        self._source_urls: dict[int, str] = {}
+        self._filler = {name: (_FILLER_DIR / name).read_bytes() for name in _FILLER_TYPES}
         self._client: httpx.AsyncClient | None = None
         # set when Twitch 404s a slot's playlist: the broadcast ended, so the
         # daemon re-picks now instead of letting the served playlist stall
@@ -124,17 +144,60 @@ class SlotRelay:
         except Exception as e:
             logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
             self._note_failure(e)
-            if state.segments:
-                return self._playlist_response(render(state, slot))
-            return web.Response(status=503, text="source unavailable")
+            if not state.segments:
+                return web.Response(status=503, text="source unavailable")
+        else:
+            await self._ingest_slot(slot, state, entry, text)
 
-        before = state.next_seq
-        ingest(state, text, entry.identity)
-        if state.next_seq > before:
-            self._arrivals[slot] = (entry.identity, self._time())
+        self._fill_gap(state)
         if not state.segments:
             return web.Response(status=503, text="no segments")
         return self._playlist_response(render(state, slot))
+
+    async def _ingest_slot(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
+        """Fold the slot's channel into its window, or the outgoing one during a preroll."""
+        if has_live_segment(text):
+            self.store.release_outgoing(slot)
+        else:
+            outgoing = self.store.outgoing(slot)
+            if outgoing is not None:
+                try:
+                    out_text = await self._cached_fetch(outgoing.url)
+                except Exception as e:
+                    logger.debug("relay outgoing fetch failed", slot=slot, error=str(e))
+                else:
+                    self._fold(slot, state, outgoing, out_text)
+                    return
+        self._fold(slot, state, entry, text)
+
+    def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
+        before = state.next_seq
+        ingest(state, text, entry.identity)
+        self._source_urls[slot] = entry.url
+        if state.next_seq > before:
+            now = self._time()
+            self._arrivals[slot] = (entry.identity, now)
+            state.served_until = now
+
+    def _fill_gap(self, state: SlotState) -> None:
+        """Add one filler segment once a slot's video has stalled.
+
+        Called on each client poll, so filler follows at most one segment per
+        poll, paced to FILLER_DURATION after the first.
+        """
+        if not state.segments:
+            return
+        now = self._time()
+        if state.served_until is None:
+            state.served_until = now
+            return
+        if now - state.served_until < STALL_AFTER:
+            return
+        add_filler(state)
+        # after a long unpolled spell, pace from now instead of bursting filler
+        state.served_until = max(
+            state.served_until + FILLER_DURATION, now - STALL_AFTER + FILLER_DURATION
+        )
 
     async def handle_init(self, request: web.Request) -> web.Response:
         """Route handler for GET /streams/{slot}/init/{gen}.
@@ -154,10 +217,14 @@ class SlotRelay:
         entry = self.store.get(slot)
         if entry is None:
             return web.Response(status=503, text="slot empty")
+        url = self._source_urls.get(slot, entry.url)
         try:
-            text = await self._fetch_source(slot, entry.url)
+            if url == entry.url:
+                text = await self._fetch_source(slot, url)
+            else:
+                text = await self._cached_fetch(url)
         except Exception as e:
-            logger.warning("relay init fetch failed", slot=slot, url=entry.url, error=str(e))
+            logger.warning("relay init fetch failed", slot=slot, url=url, error=str(e))
             self._note_failure(e)
             return web.Response(status=503, text="source unavailable")
 
@@ -165,6 +232,18 @@ class SlotRelay:
         if not uri:
             return web.Response(status=404, text="no init segment")
         return web.Response(status=302, headers={"Location": uri, **NO_CACHE_HEADERS})
+
+    async def handle_filler(self, request: web.Request) -> web.Response:
+        """Route handler for GET /streams/filler/{name}: black, silent 2s clips."""
+        name = request.match_info.get("name", "")
+        body = self._filler.get(name)
+        if body is None:
+            return web.Response(status=404, text="no such filler")
+        return web.Response(
+            body=body,
+            content_type=_FILLER_TYPES[name],
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     def _playlist_response(self, body: str) -> web.Response:
         return web.Response(
@@ -176,6 +255,7 @@ class SlotRelay:
     def register_routes(self, router: web.UrlDispatcher) -> None:
         """Register the relay routes on an existing aiohttp router."""
         router.add_get("/streams/{slot}", self.handle)
+        router.add_get("/streams/filler/{name}", self.handle_filler)
         router.add_get("/streams/{slot}/init/{gen}", self.handle_init)
 
     async def aclose(self) -> None:

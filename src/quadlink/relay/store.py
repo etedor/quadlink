@@ -21,6 +21,9 @@ class SlotStore:
         self._entries: dict[int, SlotEntry | None] = {1: None, 2: None, 3: None, 4: None}
         # newest URL per slot from the last update, held back until the kept one fails
         self._fresh: dict[int, str] = {}
+        # the channel a slot showed before its current one; the relay plays it
+        # until the new channel's preroll ends
+        self._outgoing: dict[int, SlotEntry] = {}
 
     def update(self, urls: list[str], identities: list[str]) -> None:
         """Set all 4 slots from a quad's ordered URL and identity lists.
@@ -36,10 +39,16 @@ class SlotStore:
             if not url:
                 self._entries[slot] = None
                 self._fresh.pop(slot, None)
+                self._outgoing.pop(slot, None)
                 continue
             self._fresh[slot] = url
             current = self._entries[slot]
             if current is None or current.identity != identity:
+                if current is not None:
+                    self._outgoing[slot] = current
+                outgoing = self._outgoing.get(slot)
+                if outgoing is not None and outgoing.identity == identity:
+                    del self._outgoing[slot]
                 self._entries[slot] = SlotEntry(identity, url)
 
     def refresh(self, slot: int) -> bool:
@@ -50,6 +59,14 @@ class SlotStore:
             return False
         self._entries[slot] = entry._replace(url=fresh)
         return True
+
+    def outgoing(self, slot: int) -> SlotEntry | None:
+        """The channel a slot showed before its current one, until released."""
+        return self._outgoing.get(slot)
+
+    def release_outgoing(self, slot: int) -> None:
+        """Forget a slot's outgoing channel once the current one plays."""
+        self._outgoing.pop(slot, None)
 
     def get(self, slot: int) -> SlotEntry | None:
         """Return the current entry for a slot, or None if empty/unknown."""

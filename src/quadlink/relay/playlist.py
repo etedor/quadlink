@@ -60,6 +60,62 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
 
 
 _MAP_URI_RE = re.compile(r'#EXT-X-MAP:[^\n]*URI="([^"]+)"')
+_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
+
+# served in place of source video while a slot has none; see add_filler
+FILLER_DURATION = 2.0
+FILLER_TS = "/streams/filler/2s.ts"
+FILLER_FMP4 = "/streams/filler/2s.m4s"
+FILLER_FMP4_INIT = "/streams/filler/init.mp4"
+
+
+def ad_segment_uris(text: str) -> set[str]:
+    """URIs of Twitch-stitched ad segments in a source playlist.
+
+    Same test as the streamlink-ttvlol plugin: an "Amazon" EXTINF title, or a
+    PROGRAM-DATE-TIME inside a twitch-stitched-ad DATERANGE.
+    """
+    ranges: list[tuple[datetime, float]] = []
+    for line in text.splitlines():
+        if not line.startswith("#EXT-X-DATERANGE:"):
+            continue
+        attrs = {k: v.strip('"') for k, v in _ATTR_RE.findall(line.split(":", 1)[1])}
+        if attrs.get("CLASS") != "twitch-stitched-ad" and not attrs.get("ID", "").startswith(
+            "stitched-ad-"
+        ):
+            continue
+        start = _parse_pdt(attrs.get("START-DATE"))
+        try:
+            duration = float(attrs.get("DURATION", ""))
+        except ValueError:
+            continue
+        if start is not None:
+            ranges.append((start, duration))
+
+    ads: set[str] = set()
+    title = ""
+    pdt: datetime | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#EXT-X-PROGRAM-DATE-TIME:"):
+            pdt = _parse_pdt(line.split(":", 1)[1])
+        elif line.startswith("#EXTINF:"):
+            title = line.split(",", 1)[1] if "," in line else ""
+        elif line and not line.startswith("#"):
+            in_range = pdt is not None and any(
+                0 <= (pdt - start).total_seconds() < duration for start, duration in ranges
+            )
+            if "Amazon" in title or in_range:
+                ads.add(line)
+            title, pdt = "", None
+    return ads
+
+
+def has_live_segment(text: str) -> bool:
+    """Whether a source playlist holds any segment that is not an ad."""
+    _, _, segments = parse_media_playlist(text)
+    ads = ad_segment_uris(text)
+    return any(uri not in ads for _, uri, _, _, _ in segments)
 
 
 def _parse_pdt(value: str | None) -> datetime | None:
@@ -87,6 +143,7 @@ class Segment:
     program_date_time: str | None
     discontinuity: bool
     map_gen: int | None  # init-segment generation for fMP4, None for TS
+    filler: bool = False
 
 
 @dataclass
@@ -102,6 +159,9 @@ class SlotState:
     last_source_time: datetime | None = None  # PROGRAM-DATE-TIME of last_source_seq
     pending_discontinuity: bool = False
     map_generation: int = 0  # bumps at each new fMP4 init run, for a stable init URL
+    # relay clock time the served content reaches; the relay advances it on
+    # every append and adds filler when real time runs too far past it
+    served_until: float | None = None
 
 
 def ingest(state: SlotState, source_text: str, identity: str) -> None:
@@ -114,6 +174,7 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
     cleanly, while a real channel switch resets it and splices a discontinuity.
     """
     _, media_sequence, segments = parse_media_playlist(source_text)
+    ads = ad_segment_uris(source_text)
 
     # channel change -> reset source-sequence tracking, splice a discontinuity
     if identity != state.last_identity:
@@ -140,6 +201,16 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
                 continue  # already ingested this segment
             if state.segments:
                 state.pending_discontinuity = True
+
+        if uri in ads:
+            # the gap an ad leaves is covered by filler; mark the watermark so the
+            # ad is not reconsidered on the next fetch
+            state.last_source_seq = source_seq
+            if source_time is not None:
+                state.last_source_time = source_time
+            if state.segments:
+                state.pending_discontinuity = True
+            continue
 
         # a format flip (fMP4 <-> MPEG-TS) cannot coexist in one continuous
         # playlist: EXT-X-MAP persists with no "unset", so TS segments would
@@ -185,11 +256,40 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         if source_time is not None:
             state.last_source_time = source_time
 
-    # trim to window; count out any discontinuity segments that roll off
+    _trim(state)
+
+
+def _trim(state: SlotState) -> None:
+    """Trim to the window, counting out discontinuity segments that roll off."""
     while len(state.segments) > state.window:
         removed = state.segments.popleft()
         if removed.discontinuity:
             state.discontinuity_seq += 1
+
+
+def add_filler(state: SlotState) -> None:
+    """Append one filler segment so the served playlist keeps advancing.
+
+    A player whose live playlist stops advancing for a few target durations
+    fails and does not recover without a reload. The filler takes the format of
+    the window: EXT-X-MAP has no "unset", so TS cannot follow fMP4. Each filler
+    repeats the same timestamps, so every one starts a discontinuity.
+    """
+    fmp4 = bool(state.segments) and state.segments[-1].map_gen is not None
+    state.segments.append(
+        Segment(
+            seq=state.next_seq,
+            uri=FILLER_FMP4 if fmp4 else FILLER_TS,
+            duration=FILLER_DURATION,
+            program_date_time=None,
+            discontinuity=True,
+            map_gen=0 if fmp4 else None,
+            filler=True,
+        )
+    )
+    state.next_seq += 1
+    state.pending_discontinuity = True
+    _trim(state)
 
 
 def render(state: SlotState, slot: int) -> str:
@@ -203,7 +303,7 @@ def render(state: SlotState, slot: int) -> str:
         f"#EXT-X-MEDIA-SEQUENCE:{segments[0].seq}",
         f"#EXT-X-DISCONTINUITY-SEQUENCE:{state.discontinuity_seq}",
     ]
-    last_gen: int | None = None
+    last_map: str | None = None
     for seg in segments:
         if seg.discontinuity:
             lines.append("#EXT-X-DISCONTINUITY")
@@ -211,9 +311,11 @@ def render(state: SlotState, slot: int) -> str:
         # init URL that is stable within a run (keyed on the run generation) but
         # changes at real init boundaries; the relay resolves it to a fresh
         # Twitch init on each fetch, so the init token never goes stale
-        if seg.map_gen is not None and seg.map_gen != last_gen:
-            lines.append(f'#EXT-X-MAP:URI="/streams/{slot}/init/{seg.map_gen}"')
-            last_gen = seg.map_gen
+        if seg.map_gen is not None:
+            map_uri = FILLER_FMP4_INIT if seg.filler else f"/streams/{slot}/init/{seg.map_gen}"
+            if map_uri != last_map:
+                lines.append(f'#EXT-X-MAP:URI="{map_uri}"')
+                last_map = map_uri
         if seg.program_date_time:
             lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.program_date_time}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")

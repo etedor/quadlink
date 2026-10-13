@@ -152,6 +152,11 @@ class StreamlinkFetcher:
                     return None
 
                 stream = streams["best"]
+                if stream is streams.get("audio_only"):
+                    # Twitch can list only the audio rendition while a broadcast
+                    # starts or restarts; a tile would play it as a black screen
+                    logger.debug("only audio rendition available", url=url)
+                    return None
                 metadata = self._extract_metadata(plugin, url)
 
                 if not metadata:

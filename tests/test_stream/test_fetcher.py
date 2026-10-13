@@ -148,6 +148,28 @@ class TestFetchStreamInfoSync:
         assert result.metadata.title == "TestTitle"
         assert result.master_url == "https://playlist.url/master.m3u8"
 
+    def test_audio_only_stream_is_unavailable(self):
+        """Should return None when the only rendition is audio."""
+        fetcher = StreamlinkFetcher()
+
+        mock_session = MagicMock()
+        mock_plugin_class = MagicMock()
+        mock_plugin = MagicMock()
+        audio = MagicMock()
+        mock_plugin.streams.return_value = {"audio_only": audio, "best": audio, "worst": audio}
+        mock_plugin_class.return_value = mock_plugin
+
+        mock_session.resolve_url.return_value = (
+            "twitch",
+            mock_plugin_class,
+            "https://twitch.tv/test",
+        )
+
+        with patch.object(fetcher, "_get_session", return_value=mock_session):
+            result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
+
+        assert result is None
+
     def test_offline_stream_no_streams(self):
         """Should return None when no streams available."""
         fetcher = StreamlinkFetcher()
