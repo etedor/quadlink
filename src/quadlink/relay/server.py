@@ -5,6 +5,7 @@ folds it into a rolling window via the pure core in playlist.py, and serves
 our own continuously-live playlist. Segments stay absolute Twitch CDN URLs.
 """
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 
@@ -49,6 +50,9 @@ class SlotRelay:
         self._arrivals: dict[int, tuple[str, float]] = {}
         self._cache: dict[str, tuple[float, str]] = {}
         self._client: httpx.AsyncClient | None = None
+        # set when Twitch 404s a slot's playlist: the broadcast ended, so the
+        # daemon re-picks now instead of letting the served playlist stall
+        self.source_gone = asyncio.Event()
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -83,6 +87,10 @@ class SlotRelay:
         self._cache[url] = (now, text)
         return text
 
+    def _note_failure(self, error: Exception) -> None:
+        if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404:
+            self.source_gone.set()
+
     async def handle(self, request: web.Request) -> web.Response:
         """Route handler for GET /streams/{slot}."""
         raw = request.match_info.get("slot", "")
@@ -102,6 +110,7 @@ class SlotRelay:
             text = await self._cached_fetch(entry.url)
         except Exception as e:
             logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
+            self._note_failure(e)
             if state.segments:
                 return self._playlist_response(render(state, slot))
             return web.Response(status=503, text="source unavailable")
@@ -136,6 +145,7 @@ class SlotRelay:
             text = await self._cached_fetch(entry.url)
         except Exception as e:
             logger.warning("relay init fetch failed", slot=slot, url=entry.url, error=str(e))
+            self._note_failure(e)
             return web.Response(status=503, text="source unavailable")
 
         uri = first_map_uri(text)

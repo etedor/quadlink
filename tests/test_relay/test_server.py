@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
@@ -260,3 +261,37 @@ async def test_video_arrived_since_tracks_new_segments_per_channel():
     source[0] = _src(101, ["b.ts", "c.ts"])
     await _call(relay, "1")
     assert relay.video_arrived_since(1, "chan-A", 120.0)
+
+
+def _http_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://twitch.example/playlist.m3u8")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError(f"{status}", request=request, response=response)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call", [_call, _call_init])
+async def test_source_404_signals_source_gone(call):
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        raise _http_error(404)
+
+    relay = SlotRelay(store, fetch=fetch)
+    await call(relay, "1")
+    assert relay.source_gone.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [_http_error(502), RuntimeError("boom")])
+async def test_other_fetch_failures_do_not_signal_source_gone(error):
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        raise error
+
+    relay = SlotRelay(store, fetch=fetch)
+    await _call(relay, "1")
+    assert not relay.source_gone.is_set()

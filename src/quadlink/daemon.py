@@ -19,6 +19,10 @@ from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
 
+# floor between cycles started early by a dead relay source, so a playlist that
+# keeps 404ing after a re-pick cannot spin the loop
+MIN_CYCLE_GAP = 5
+
 
 class Daemon:
     """Main daemon for QuadLink stream curation.
@@ -134,6 +138,22 @@ class Daemon:
                 kept.append(previous)
         return kept
 
+    async def _wait_next_cycle(self) -> None:
+        """Sleep one interval, or start early when a relay source goes dead.
+
+        A player whose live playlist stops advancing for a few target durations
+        fails and does not recover without a reload, so a slot must not wait out
+        a full interval on an ended broadcast.
+        """
+        gone = self.slot_relay.source_gone
+        gone.clear()
+        await asyncio.sleep(MIN_CYCLE_GAP)
+        try:
+            await asyncio.wait_for(gone.wait(), max(0, self.interval - MIN_CYCLE_GAP))
+        except TimeoutError:
+            return
+        logger.info("relay source gone, starting cycle early")
+
     async def _main_loop(self) -> None:
         """Main daemon loop - processes streams and updates quad repeatedly."""
         while self.running:
@@ -232,7 +252,7 @@ class Daemon:
                     break
 
                 logger.debug("sleeping", interval=self.interval)
-                await asyncio.sleep(self.interval)
+                await self._wait_next_cycle()
 
             except asyncio.CancelledError:
                 break

@@ -21,6 +21,16 @@ def make_stream(author: str) -> PrioritizedStream:
     )
 
 
+@pytest.fixture(autouse=True)
+def instant_cycle_wait(request):
+    """Main-loop tests patch asyncio.sleep; the event wait between cycles would block them."""
+    if request.cls is not None and request.cls.__name__ == "TestWaitNextCycle":
+        yield None
+        return
+    with patch.object(Daemon, "_wait_next_cycle", new_callable=AsyncMock) as wait:
+        yield wait
+
+
 class TestDaemonInit:
     """Tests for Daemon initialization."""
 
@@ -449,7 +459,9 @@ class TestDaemonMainLoop:
                     assert daemon.running is False
 
     @pytest.mark.asyncio
-    async def test_main_loop_continuous_mode_sleeps(self, daemon_with_mocks, mock_config):
+    async def test_main_loop_continuous_mode_sleeps(
+        self, daemon_with_mocks, mock_config, instant_cycle_wait
+    ):
         """Should sleep between iterations in continuous mode."""
         daemon, mock_loader, mock_health = daemon_with_mocks
         daemon.running = True
@@ -486,10 +498,9 @@ class TestDaemonMainLoop:
                     mock_client.update_quad = AsyncMock(return_value=True)
                     MockClient.return_value = mock_client
 
-                    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                        await daemon._main_loop()
-                        # should sleep for interval after successful update
-                        mock_sleep.assert_called_with(45)
+                    await daemon._main_loop()
+                    # should wait for the next cycle after a successful update
+                    instant_cycle_wait.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_main_loop_cancelled_error(self, daemon_with_mocks, mock_config):
@@ -865,3 +876,41 @@ class TestStillPlaying:
     def test_nothing_kept_before_first_feed(self, daemon):
         daemon._fed_at = None
         assert daemon._still_playing([make_stream("bob")]) == []
+
+
+class TestWaitNextCycle:
+    """Tests for the inter-cycle wait."""
+
+    @pytest.fixture
+    def daemon(self):
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                d = Daemon(interval=30)
+        return d
+
+    @pytest.mark.asyncio
+    async def test_waits_full_interval_without_dead_source(self, daemon):
+        with patch("quadlink.daemon.MIN_CYCLE_GAP", 0):
+            daemon.interval = 0.05
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            await daemon._wait_next_cycle()
+            assert loop.time() - start >= 0.05
+
+    @pytest.mark.asyncio
+    async def test_dead_source_ends_wait_after_floor(self, daemon):
+        with patch("quadlink.daemon.MIN_CYCLE_GAP", 0.01):
+            task = asyncio.create_task(daemon._wait_next_cycle())
+            await asyncio.sleep(0)
+            daemon.slot_relay.source_gone.set()
+            await asyncio.wait_for(task, 1)
+
+    @pytest.mark.asyncio
+    async def test_stale_signal_from_previous_cycle_is_ignored(self, daemon):
+        daemon.slot_relay.source_gone.set()
+        with patch("quadlink.daemon.MIN_CYCLE_GAP", 0):
+            daemon.interval = 0.05
+            loop = asyncio.get_running_loop()
+            start = loop.time()
+            await daemon._wait_next_cycle()
+            assert loop.time() - start >= 0.05
