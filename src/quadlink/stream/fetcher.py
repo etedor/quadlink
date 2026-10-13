@@ -33,6 +33,29 @@ def channel_url(url: str) -> str:
     return url if url.startswith("http") else f"https://twitch.tv/{url}"
 
 
+_VIDEO_CODECS = ("avc1", "avc3", "hvc1", "hev1", "av01", "vp09")
+
+
+def _has_video(stream: Any) -> bool:
+    """Whether the multivariant playlist lists this rendition with video.
+
+    Rendition names do not tell: Twitch calls an audio rendition "audio_only",
+    but through a playlist proxy the same rendition is named by bitrate
+    ("160k"). A rendition missing from the multivariant counts as video.
+    """
+    multivariant = getattr(stream, "multivariant", None)
+    url = getattr(stream, "url", None)
+    for playlist in getattr(multivariant, "playlists", None) or []:
+        if playlist.uri != url:
+            continue
+        info = playlist.stream_info
+        codecs = info.codecs or []
+        if info.resolution is not None or not codecs:
+            return True
+        return any(codec.startswith(_VIDEO_CODECS) for codec in codecs)
+    return True
+
+
 def _release_plugin_cache(plugin: Any) -> None:
     """Drop the atexit save hook streamlink adds for a plugin's Cache.
 
@@ -152,11 +175,10 @@ class StreamlinkFetcher:
                     return None
 
                 stream = streams["best"]
-                if stream is streams.get("audio_only"):
-                    # Twitch can list only the audio rendition while a broadcast
-                    # starts or restarts; a tile would play it as a black screen
-                    logger.debug("only audio rendition available", url=url)
-                    return None
+                # Twitch lists only an audio rendition while a broadcast starts or
+                # restarts, or for one that sends no video; a tile would play it as
+                # a frozen or black picture
+                has_video = stream is not streams.get("audio_only") and _has_video(stream)
                 metadata = self._extract_metadata(plugin, url)
 
                 if not metadata:
@@ -165,7 +187,9 @@ class StreamlinkFetcher:
 
                 master_url = stream.url if hasattr(stream, "url") else None
 
-                return Stream(url=url, metadata=metadata, master_url=master_url)
+                return Stream(
+                    url=url, metadata=metadata, master_url=master_url, has_video=has_video
+                )
             finally:
                 _release_plugin_cache(plugin)
 

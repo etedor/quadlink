@@ -26,11 +26,13 @@ class Stream:
         url: Original Twitch URL.
         metadata: Stream metadata (author, category, title).
         master_url: Master m3u8 playlist URL, if available.
+        has_video: False when the only rendition carries audio alone.
     """
 
     url: str
     metadata: Metadata
     master_url: str | None = None
+    has_video: bool = True
 
 
 @dataclass

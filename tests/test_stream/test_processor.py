@@ -181,6 +181,20 @@ class TestProcessSingleStream:
         assert not processor.lookup_failed("https://twitch.tv/streamer")
 
     @pytest.mark.asyncio
+    async def test_audio_only_stream_is_rejected_not_failed(self, mock_fetcher):
+        """An audio-only channel is dropped without counting as a failed lookup."""
+        stream = make_stream("Streamer", "Just Chatting")
+        stream.has_video = False
+        mock_fetcher.fetch_stream_info.return_value = stream
+        processor = StreamProcessor(make_config())
+        processor.fetcher = mock_fetcher
+
+        result = await processor._process_single_stream("streamer", 100, [])
+
+        assert result is None
+        assert not processor.lookup_failed("https://twitch.tv/streamer")
+
+    @pytest.mark.asyncio
     async def test_lookup_failed_on_fetch_error(self, mock_fetcher):
         """An exception during lookup counts as a failed lookup."""
         mock_fetcher.fetch_stream_info.side_effect = Exception("Network error")

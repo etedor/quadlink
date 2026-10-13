@@ -144,6 +144,14 @@ class StreamProcessor:
                     self._unresolved.add(self._normalize_url(channel_url(url)))
                     return None
 
+                # kept out of _unresolved: a failed lookup keeps a channel whose
+                # segments still arrive, and audio-only segments do arrive
+                if not stream.has_video:
+                    logger.debug(
+                        "stream rejected", author=stream.metadata.author, reason="no video"
+                    )
+                    return None
+
                 passed, reason, ruleset = self.filter.apply_filters(stream, rulesets)
                 if not passed:
                     logger.debug(
