@@ -35,9 +35,9 @@ NO_CACHE_HEADERS = {
 
 FetchFn = Callable[[str], Awaitable[str]]
 
-# seconds without new video before filler starts. AVPlayer logs -12888 ("playlist
+# seconds without new video before filler starts: AVPlayer logs -12888 ("playlist
 # unchanged for longer than 1.5 * target duration") at 3s with Twitch's 2s
-# segments, and QuadStream does not recover from it
+# segments, then stalls until the playlist moves again
 STALL_AFTER = 3.0
 
 _FILLER_DIR = Path(__file__).parent / "filler"
