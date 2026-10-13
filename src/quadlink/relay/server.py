@@ -87,6 +87,19 @@ class SlotRelay:
         self._cache[url] = (now, text)
         return text
 
+    async def _fetch_source(self, slot: int, url: str) -> str:
+        """Fetch a slot's playlist, moving to its newest URL once the kept one fails."""
+        try:
+            return await self._cached_fetch(url)
+        except httpx.HTTPStatusError as e:
+            # 403: the kept URL's token expired; 404: its session ended
+            if e.response.status_code not in (403, 404) or not self.store.refresh(slot):
+                raise
+            entry = self.store.get(slot)
+            assert entry is not None
+            logger.info("relay source refreshed", slot=slot, status=e.response.status_code)
+            return await self._cached_fetch(entry.url)
+
     def _note_failure(self, error: Exception) -> None:
         if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 404:
             self.source_gone.set()
@@ -107,7 +120,7 @@ class SlotRelay:
 
         state = self._states.setdefault(slot, SlotState(window=self.window))
         try:
-            text = await self._cached_fetch(entry.url)
+            text = await self._fetch_source(slot, entry.url)
         except Exception as e:
             logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
             self._note_failure(e)
@@ -142,7 +155,7 @@ class SlotRelay:
         if entry is None:
             return web.Response(status=503, text="slot empty")
         try:
-            text = await self._cached_fetch(entry.url)
+            text = await self._fetch_source(slot, entry.url)
         except Exception as e:
             logger.warning("relay init fetch failed", slot=slot, url=entry.url, error=str(e))
             self._note_failure(e)

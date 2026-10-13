@@ -8,10 +8,10 @@ from typing import NamedTuple
 
 
 class SlotEntry(NamedTuple):
-    """A slot's current channel identity and its (re-minted) playlist URL."""
+    """A slot's current channel identity and the playlist URL the relay plays."""
 
     identity: str  # stable channel identity (does not churn across cycles)
-    url: str  # freshly-resolved Twitch media-playlist URL (churns each cycle)
+    url: str  # kept while the channel holds the slot; see SlotStore.update
 
 
 class SlotStore:
@@ -19,16 +19,37 @@ class SlotStore:
 
     def __init__(self) -> None:
         self._entries: dict[int, SlotEntry | None] = {1: None, 2: None, 3: None, 4: None}
+        # newest URL per slot from the last update, held back until the kept one fails
+        self._fresh: dict[int, str] = {}
 
     def update(self, urls: list[str], identities: list[str]) -> None:
-        """Replace all 4 slots from a quad's ordered URL and identity lists.
+        """Set all 4 slots from a quad's ordered URL and identity lists.
 
+        A slot whose channel is unchanged keeps its URL: each lookup mints a new
+        URL, and Twitch opens every new URL as a new session with a preroll ad.
         An empty URL maps to None (an empty slot).
         """
         for i in range(4):
+            slot = i + 1
             url = urls[i] if i < len(urls) else ""
             identity = identities[i] if i < len(identities) else ""
-            self._entries[i + 1] = SlotEntry(identity, url) if url else None
+            if not url:
+                self._entries[slot] = None
+                self._fresh.pop(slot, None)
+                continue
+            self._fresh[slot] = url
+            current = self._entries[slot]
+            if current is None or current.identity != identity:
+                self._entries[slot] = SlotEntry(identity, url)
+
+    def refresh(self, slot: int) -> bool:
+        """Move a slot to its newest URL. False when there is no newer one."""
+        entry = self._entries.get(slot)
+        fresh = self._fresh.get(slot)
+        if entry is None or fresh is None or fresh == entry.url:
+            return False
+        self._entries[slot] = entry._replace(url=fresh)
+        return True
 
     def get(self, slot: int) -> SlotEntry | None:
         """Return the current entry for a slot, or None if empty/unknown."""

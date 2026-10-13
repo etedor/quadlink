@@ -130,7 +130,7 @@ async def test_cache_evicts_expired_entries():
     await _call(relay, "1")
     assert "url-A" in relay._cache
 
-    store.update(["url-B", "", "", ""], ["chan-A", "", "", ""])
+    store.update(["url-B", "", "", ""], ["chan-B", "", "", ""])
     clock["t"] = 2.0
     await _call(relay, "1")
     assert "url-A" not in relay._cache
@@ -295,3 +295,40 @@ async def test_other_fetch_failures_do_not_signal_source_gone(error):
     relay = SlotRelay(store, fetch=fetch)
     await _call(relay, "1")
     assert not relay.source_gone.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 404])
+async def test_dead_kept_url_moves_to_newest_url(status):
+    store = SlotStore()
+    store.update(["url-old", "", "", ""], ["chan-A", "", "", ""])
+    store.update(["url-new", "", "", ""], ["chan-A", "", "", ""])
+    fetched = []
+
+    async def fetch(url):
+        fetched.append(url)
+        if url == "url-old":
+            raise _http_error(status)
+        return _src(100, ["a.ts"])
+
+    relay = SlotRelay(store, fetch=fetch)
+    resp = await _call(relay, "1")
+    assert resp.status == 200
+    assert fetched == ["url-old", "url-new"]
+    assert store.get(1).url == "url-new"
+    assert not relay.source_gone.is_set()
+
+
+@pytest.mark.asyncio
+async def test_dead_newest_url_signals_source_gone():
+    store = SlotStore()
+    store.update(["url-old", "", "", ""], ["chan-A", "", "", ""])
+    store.update(["url-new", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        raise _http_error(404)
+
+    relay = SlotRelay(store, fetch=fetch)
+    resp = await _call(relay, "1")
+    assert resp.status == 503
+    assert relay.source_gone.is_set()
