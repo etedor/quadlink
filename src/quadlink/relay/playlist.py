@@ -162,9 +162,18 @@ class SlotState:
     # relay clock time the served content reaches; the relay advances it on
     # every append and adds filler when real time runs too far past it
     served_until: float | None = None
+    # relay clock time at which a client playing at real speed finishes the served
+    # content; the relay keeps it from running ahead of real time
+    edge: float | None = None
 
 
-def ingest(state: SlotState, source_text: str, identity: str) -> None:
+def _advance_watermark(state: SlotState, source_seq: int, source_time: datetime | None) -> None:
+    state.last_source_seq = source_seq
+    if source_time is not None:
+        state.last_source_time = source_time
+
+
+def ingest(state: SlotState, source_text: str, identity: str, budget: float | None = None) -> float:
     """Fold a freshly-fetched source playlist into our rolling window.
 
     `identity` is the stable channel identity, NOT the playlist URL. Twitch
@@ -172,6 +181,10 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
     would splice a spurious discontinuity each cycle. Keying on identity means a
     token refresh for the same channel keeps the sequence watermark and dedups
     cleanly, while a real channel switch resets it and splices a discontinuity.
+
+    `budget` caps the seconds of new content appended, keeping the newest
+    segments and splicing over the older ones; None appends everything.
+    Returns the seconds appended.
     """
     _, media_sequence, segments = parse_media_playlist(source_text)
     ads = ad_segment_uris(source_text)
@@ -184,33 +197,52 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
         if state.segments:  # only splice if we've already served something
             state.pending_discontinuity = True
 
-    for index, (duration, uri, pdt, src_disc, source_map) in enumerate(segments):
+    # (index, source_time, restarted) of each segment not yet ingested; the
+    # watermark moves past each one as it is found, as if it were appended
+    fresh: list[tuple[int, datetime | None, bool]] = []
+    mark_seq, mark_time = state.last_source_seq, state.last_source_time
+    for index, (_, uri, pdt, _, _) in enumerate(segments):
         source_seq = media_sequence + index
         source_time = _parse_pdt(pdt)
-        if state.last_source_seq is not None and source_seq <= state.last_source_seq:
+        restarted = False
+        if mark_seq is not None and source_seq <= mark_seq:
             # within one broadcast seq and PROGRAM-DATE-TIME both rise, so a seq at or
             # below the watermark with a later time is a restarted broadcast (its
             # seq starts over). a lagging edge repeats old segments with their old
             # times and is skipped. without times, skip: there is no proof of restart.
             restarted = (
-                source_time is not None
-                and state.last_source_time is not None
-                and source_time > state.last_source_time
+                source_time is not None and mark_time is not None and source_time > mark_time
             )
             if not restarted:
                 continue  # already ingested this segment
-            if state.segments:
-                state.pending_discontinuity = True
+        mark_seq = source_seq
+        if source_time is not None:
+            mark_time = source_time
 
         if uri in ads:
             # the gap an ad leaves is covered by filler; mark the watermark so the
             # ad is not reconsidered on the next fetch
-            state.last_source_seq = source_seq
-            if source_time is not None:
-                state.last_source_time = source_time
+            _advance_watermark(state, source_seq, source_time)
             if state.segments:
                 state.pending_discontinuity = True
             continue
+        fresh.append((index, source_time, restarted))
+
+    if budget is not None:
+        # a client plays every served second at real speed and never skips, so
+        # content beyond the budget would become permanent delay behind live
+        while fresh and sum(segments[i][0] for i, _, _ in fresh) > budget:
+            index, source_time, _ = fresh.pop(0)
+            _advance_watermark(state, media_sequence + index, source_time)
+            if state.segments:
+                state.pending_discontinuity = True
+
+    appended = 0.0
+    for index, source_time, restarted in fresh:
+        duration, uri, pdt, src_disc, source_map = segments[index]
+        source_seq = media_sequence + index
+        if restarted and state.segments:
+            state.pending_discontinuity = True
 
         # a format flip (fMP4 <-> MPEG-TS) cannot coexist in one continuous
         # playlist: EXT-X-MAP persists with no "unset", so TS segments would
@@ -252,11 +284,11 @@ def ingest(state: SlotState, source_text: str, identity: str) -> None:
             )
         )
         state.next_seq += 1
-        state.last_source_seq = source_seq
-        if source_time is not None:
-            state.last_source_time = source_time
+        appended += duration
+        _advance_watermark(state, source_seq, source_time)
 
     _trim(state)
+    return appended
 
 
 def _trim(state: SlotState) -> None:

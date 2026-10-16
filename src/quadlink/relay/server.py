@@ -40,6 +40,15 @@ FetchFn = Callable[[str], Awaitable[str]]
 # window every 6s for as long as the playlist stays unchanged
 STALL_AFTER = 3.0
 
+# seconds the served content may run ahead of real time. Every second beyond
+# real time is permanent delay for a client, and one that drifts past the
+# window (12 x 2s) loses segments and stutters. Twitch delivers a segment every
+# 2s with some jitter, so normal arrivals stay within this
+MAX_LEAD = 4.0
+# a slot whose content edge is this far behind real time has had no client
+# keeping it moving, so the next client starts fresh at the live edge
+IDLE_RESET = 10.0
+
 _FILLER_DIR = Path(__file__).parent / "filler"
 _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
 
@@ -163,11 +172,19 @@ class SlotRelay:
         self._fold(slot, state, entry, text)
 
     def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
+        now = self._time()
+        if state.edge is None or now - state.edge > IDLE_RESET:
+            budget = None
+            state.edge = now
+        else:
+            budget = max(0.0, now + MAX_LEAD - state.edge)
         before = state.next_seq
-        ingest(state, text, entry.identity)
+        if budget is None:
+            ingest(state, text, entry.identity)
+        else:
+            state.edge += ingest(state, text, entry.identity, budget)
         self._source_urls[slot] = entry.url
         if state.next_seq > before:
-            now = self._time()
             self._arrivals[slot] = (entry.identity, now)
             state.served_until = now
 
@@ -186,6 +203,8 @@ class SlotRelay:
         if now - state.served_until < STALL_AFTER:
             return
         add_filler(state)
+        if state.edge is not None:
+            state.edge += FILLER_DURATION
         # after a long unpolled spell, pace from now instead of bursting filler
         state.served_until = max(
             state.served_until + FILLER_DURATION, now - STALL_AFTER + FILLER_DURATION

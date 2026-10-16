@@ -250,3 +250,22 @@ async def test_unknown_filler_is_404():
     relay = SlotRelay(SlotStore())
     request = make_mocked_request("GET", "/streams/filler/x", match_info={"name": "x"})
     assert (await relay.handle_filler(request)).status == 404
+
+
+def test_budget_keeps_the_newest_segments_and_splices_over_the_rest():
+    state = SlotState()
+    ingest(state, _src(10, ["a.ts"]), "chan-A")
+    appended = ingest(state, _src(11, ["b.ts", "c.ts", "d.ts", "e.ts"]), "chan-A", budget=4.0)
+    assert appended == 4.0
+    assert [s.uri for s in state.segments] == ["a.ts", "d.ts", "e.ts"]
+    assert [s.discontinuity for s in state.segments] == [False, True, False]
+    # the skipped backlog is behind the watermark, so it never comes back
+    ingest(state, _src(11, ["b.ts", "c.ts", "d.ts", "e.ts"]), "chan-A", budget=10.0)
+    assert len(state.segments) == 3
+
+
+def test_budget_within_reach_appends_without_a_splice():
+    state = SlotState()
+    ingest(state, _src(10, ["a.ts"]), "chan-A")
+    ingest(state, _src(10, ["a.ts", "b.ts"]), "chan-A", budget=4.0)
+    assert [s.discontinuity for s in state.segments] == [False, False]
