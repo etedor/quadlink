@@ -159,11 +159,12 @@ class SlotState:
     last_source_time: datetime | None = None  # PROGRAM-DATE-TIME of last_source_seq
     pending_discontinuity: bool = False
     map_generation: int = 0  # bumps at each new fMP4 init run, for a stable init URL
-    # relay clock time the served content reaches; the relay advances it on
-    # every append and adds filler when real time runs too far past it
+    # relay clock time of the last new video, or of the last filler; filler starts
+    # once real time runs STALL_AFTER past it
     served_until: float | None = None
     # relay clock time at which a client playing at real speed finishes the served
-    # content; the relay keeps it from running ahead of real time
+    # content; the relay keeps it within MAX_LEAD ahead of real time and adds
+    # filler once it falls SLOW_AFTER behind
     edge: float | None = None
 
 

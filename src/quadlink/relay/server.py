@@ -37,8 +37,13 @@ FetchFn = Callable[[str], Awaitable[str]]
 # seconds without new video before filler starts. A client plays about 3
 # segments (6s) behind the live edge, so filler must land before that buffer
 # runs dry: on a stall QuadStream rebuilds the player, which replays the stale
-# window every 6s for as long as the playlist stays unchanged
+# window every 6s for as long as nothing new arrives
 STALL_AFTER = 3.0
+# seconds the served content may fall behind real time before filler starts,
+# for a source delivering slower than real time whose gaps each stay under
+# STALL_AFTER. The relay sees a segment only when a client polls (about every
+# 2s), so the edge carries up to ~2s of noise; this sits above that
+SLOW_AFTER = 5.0
 
 # seconds the served content may run ahead of real time. Every second beyond
 # real time is permanent delay for a client, and one that drifts past the
@@ -189,26 +194,24 @@ class SlotRelay:
             state.served_until = now
 
     def _fill_gap(self, state: SlotState) -> None:
-        """Add one filler segment once a slot's video has stalled.
+        """Add one filler segment once a slot's video has stalled or fallen behind.
 
-        Called on each client poll, so filler follows at most one segment per
-        poll, paced to FILLER_DURATION after the first.
+        A stall is STALL_AFTER without new video; falling behind is the content
+        edge SLOW_AFTER behind real time, from a source whose gaps each stay
+        short. Called on each client poll, so filler follows at most one segment
+        per poll.
         """
-        if not state.segments:
+        if not state.segments or state.edge is None or state.served_until is None:
             return
         now = self._time()
-        if state.served_until is None:
-            state.served_until = now
-            return
-        if now - state.served_until < STALL_AFTER:
+        if now - state.served_until < STALL_AFTER and now - state.edge < SLOW_AFTER:
             return
         add_filler(state)
-        if state.edge is not None:
-            state.edge += FILLER_DURATION
         # after a long unpolled spell, pace from now instead of bursting filler
         state.served_until = max(
             state.served_until + FILLER_DURATION, now - STALL_AFTER + FILLER_DURATION
         )
+        state.edge = max(state.edge + FILLER_DURATION, now - SLOW_AFTER + FILLER_DURATION)
 
     async def handle_init(self, request: web.Request) -> web.Response:
         """Route handler for GET /streams/{slot}/init/{gen}.

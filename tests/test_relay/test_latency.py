@@ -63,6 +63,13 @@ class JitterySource(Source):
         return seq if self.clock.t >= published else seq - 1
 
 
+class SlowSource(Source):
+    """Publishes one 2s segment every 3s: video arrives slower than real time."""
+
+    def newest(self) -> int:
+        return int((self.clock.t - self.start) // 3.0)
+
+
 class Client:
     """Plays the slot at real speed from JOIN_BEHIND behind the edge it joined at."""
 
@@ -74,6 +81,7 @@ class Client:
         self.joined_at: float | None = None
         self.content_at_join = 0.0
         self.worst = 0.0
+        self.starved_at: float | None = None  # first clock time it ran out of content
 
     async def poll(self) -> None:
         request = make_mocked_request("GET", "/streams/1", match_info={"slot": "1"})
@@ -94,15 +102,18 @@ class Client:
         if self.joined_at is None:
             self.joined_at = self.clock.t
             self.content_at_join = content - JOIN_BEHIND
-        playhead = min(content, self.content_at_join + self.clock.t - self.joined_at)
+        wanted = self.content_at_join + self.clock.t - self.joined_at
+        if wanted > content and self.starved_at is None:
+            self.starved_at = self.clock.t
+        playhead = min(content, wanted)
         self.worst = max(self.worst, content - playhead)
 
 
-async def _run(clock: Clock, client: Client, seconds: float) -> None:
+async def _run(clock: Clock, client: Client, seconds: float, every: float = 1.0) -> None:
     end = clock.t + seconds
     while clock.t < end:
         await client.poll()
-        clock.t += 1.0
+        clock.t += every
 
 
 @pytest.mark.asyncio
@@ -136,7 +147,8 @@ async def test_client_stays_near_live_across_outages_and_switches():
 
 
 @pytest.mark.asyncio
-async def test_late_segments_are_never_skipped():
+@pytest.mark.parametrize("every", [1.0, 2.0])  # AVPlayer reloads about every 2s
+async def test_late_segments_are_never_skipped(every):
     clock = Clock()
     source = JitterySource("a", clock)
     store = SlotStore()
@@ -147,8 +159,32 @@ async def test_late_segments_are_never_skipped():
 
     relay = SlotRelay(store, fetch=fetch, cache_ttl=0.0, time_fn=clock)
     client = Client(relay, clock)
-    await _run(clock, client, 300)
+    await _run(clock, client, 300, every)
 
     played = [int(uri.split("/")[1].removesuffix(".ts")) for _, uri in sorted(client.uris.items())]
     assert played == list(range(played[0], played[0] + len(played)))
+    assert client.worst <= MAX_BEHIND
+
+
+@pytest.mark.asyncio
+async def test_slow_source_never_starves_the_client():
+    clock = Clock()
+    sources: dict[str, Source] = {"a": Source("a", clock)}
+    store = SlotStore()
+    store.update(["a", "", "", ""], ["chan-a", "", "", ""])
+
+    async def fetch(url: str) -> str:
+        return sources[url].render()
+
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0.0, time_fn=clock)
+    client = Client(relay, clock)
+    await _run(clock, client, 30)
+
+    slow = SlowSource("a", clock)
+    # same channel, so its sequence must carry on past the watermark
+    slow.start = clock.t - (sources["a"].newest() + 1) * 3.0
+    sources["a"] = slow
+    await _run(clock, client, 60)
+
+    assert client.starved_at is None, f"client ran out of content at {client.starved_at:.0f}s"
     assert client.worst <= MAX_BEHIND
