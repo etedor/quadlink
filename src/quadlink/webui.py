@@ -266,7 +266,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             line-height: 1.5;
         }
         h1 { margin-bottom: 0.25rem; }
-        h1 #version { font-size: 0.55em; font-weight: normal; opacity: 0.55; margin-left: 0.5rem; font-family: ui-monospace, "SF Mono", Monaco, monospace; }
+        h1 #version {
+            font-size: 0.55em; font-weight: normal; opacity: 0.55; margin-left: 0.5rem;
+            font-family: ui-monospace, "SF Mono", Monaco, monospace;
+        }
         .subtitle { opacity: 0.7; margin-top: 0; font-size: 0.9em; }
         #config-path { font-family: ui-monospace, "SF Mono", Monaco, monospace; }
         section { margin: 1.5rem 0; }
@@ -378,7 +381,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     }
                 }
                 if (currentSection) {
-                    if ((currentSection === 'priorities' || currentSection === 'rulesets') && line.startsWith('  ')) {
+                    const nested = currentSection === 'priorities' || currentSection === 'rulesets';
+                    if (nested && line.startsWith('  ')) {
                         result[currentSection].push(line.slice(2));
                     } else {
                         result[currentSection].push(line);

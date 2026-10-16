@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from streamlink import Streamlink
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 from streamlink.options import Options
+from streamlink.session.session import Streamlink
 
 from quadlink.types import Metadata, Stream
 
@@ -135,7 +135,8 @@ class StreamlinkFetcher:
 
             self._thread_local.session = session
 
-        return self._thread_local.session
+        cached: Streamlink = self._thread_local.session
+        return cached
 
     def _fetch_stream_info_sync(self, url: str) -> Stream | None:
         """
@@ -160,7 +161,9 @@ class StreamlinkFetcher:
                 opts.set("proxy-playlist", [self.proxy_playlist])
                 opts.set("proxy-playlist-fallback", False)
 
-            plugin = plugin_class(session, resolved_url, options=opts)
+            # Any: streamlink's Plugin.streams() carries no annotations, and the
+            # loaded class is the ttvlol plugin, typed only as Plugin
+            plugin: Any = plugin_class(session, resolved_url, options=opts)
             try:
                 streams = plugin.streams()
 

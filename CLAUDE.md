@@ -16,7 +16,8 @@ python -m quadlink --one-shot  # single iteration
 Before committing:
 1. **Test**: `pytest` - ensure all tests pass
 2. **Format**: `black src/ tests/` - apply consistent formatting
-3. **Type check**: `mypy src/` - verify type safety (3 streamlink errors expected)
+3. **Lint**: `ruff check src/ tests/` - must pass with no findings
+4. **Type check**: `mypy src/` - must pass with no errors
 
 ## Style
 

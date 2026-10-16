@@ -58,6 +58,8 @@ include = '\.pyi?$'
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# the ttvlol plugin is fetched at build time (git-ignored), not maintained here
+extend-exclude = ["src/quadlink/plugins"]
 
 [tool.ruff.lint]
 select = [

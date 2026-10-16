@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 
-from quadlink.stream.fetcher import StreamlinkFetcher
+from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache
 
 
 class TestStreamlinkFetcherInit:
@@ -535,11 +535,6 @@ class TestExtractMetadata:
         result = fetcher._extract_metadata(mock_plugin, "https://twitch.tv/test")
 
         assert result is None
-
-
-from unittest.mock import patch
-
-from quadlink.stream.fetcher import _release_plugin_cache
 
 
 def test_release_plugin_cache_unregisters_save_hook():

@@ -1,8 +1,6 @@
 """Tests for the HLS media-playlist parse + republish core."""
 
-import math
-
-from quadlink.relay.playlist import Segment, SlotState, ingest, parse_media_playlist, render
+from quadlink.relay.playlist import SlotState, ingest, parse_media_playlist, render
 
 SAMPLE = """#EXTM3U
 #EXT-X-VERSION:3
