@@ -47,9 +47,13 @@ src/quadlink/
 ├── quad.py          # quad selection algorithm
 ├── quadstream.py    # QuadStream API client
 ├── types.py         # core data types
+├── webui.py         # config web UI; also serves the relay routes
 ├── config/          # configuration loading
+├── relay/           # HLS slot relay at /streams/1-4: splices channels, drops ads, adds filler
 └── stream/          # stream fetching, filtering, processing
 ```
+
+The QuadStream app (machina) plays each tile with AVPlayer and never skips ahead: the relay must keep every served playlist advancing in real time, near the live edge, and video-only. See `src/quadlink/relay/server.py` for the timing limits.
 
 ## External Dependencies
 
