@@ -39,6 +39,10 @@ class AudioConverter:
             "-v",
             "error",
             "-copyts",
+            # the default probe holds a new run's first output until a third segment
+            # is in; 0.5s finds both streams within the first, so it lags by one
+            "-analyzeduration",
+            "500000",
             "-f",
             "mpegts",
             "-i",

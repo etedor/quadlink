@@ -1,6 +1,12 @@
 """Tests for the HLS media-playlist parse + republish core."""
 
-from quadlink.relay.playlist import SlotState, ingest, parse_media_playlist, render
+from quadlink.relay.playlist import (
+    SlotState,
+    add_filler,
+    ingest,
+    parse_media_playlist,
+    render,
+)
 
 SAMPLE = """#EXTM3U
 #EXT-X-VERSION:3
@@ -357,3 +363,42 @@ def test_ingest_latches_map_across_token_refresh():
     assert out.count("#EXT-X-MAP") == 1
     assert '#EXT-X-MAP:URI="/streams/3/init/1"' in out
     assert "dna=" not in out
+
+
+def _unready(*uris: str):
+    return lambda seg: seg.uri not in uris
+
+
+def test_render_holds_back_trailing_unready_mid_run_segment():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts", "b.ts", "c.ts"]), "chan-A")
+    out = render(state, 3, ready=_unready("b.ts", "c.ts"))
+    assert "a.ts" in out
+    assert "b.ts" not in out and "c.ts" not in out
+
+
+def test_render_lists_unready_run_start_after_filler():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts"]), "chan-A")
+    add_filler(state)
+    ingest(state, _src(101, ["b.ts"]), "chan-A")
+    state.segments[-1].discontinuity = False
+    out = render(state, 3, ready=_unready("b.ts"))
+    assert out.rstrip().endswith("b.ts")
+
+
+def test_render_lists_unready_run_start_at_discontinuity():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts"]), "chan-A")
+    ingest(state, _src(0, ["x.ts"]), "chan-B")
+    assert state.segments[-1].discontinuity
+    out = render(state, 3, ready=_unready("x.ts"))
+    assert out.rstrip().endswith("x.ts")
+
+
+def test_render_holds_back_past_run_start_but_keeps_it():
+    state = SlotState()
+    ingest(state, _src(100, ["a.ts"]), "chan-A")
+    ingest(state, _src(0, ["x.ts", "y.ts"]), "chan-B")
+    out = render(state, 3, ready=_unready("x.ts", "y.ts"))
+    assert out.rstrip().endswith("x.ts")

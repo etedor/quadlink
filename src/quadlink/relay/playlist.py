@@ -335,10 +335,15 @@ def render(
 
     `ready` holds back trailing segments a client could not fetch yet (a converted
     segment exists only once ffmpeg has seen the next keyframe); earlier ones stay.
+    A segment that starts a run is never held back: its output waits on the next
+    source update, which would leave the playlist unchanged long enough for the
+    client to rebuild its player. A client fetching it waits for the conversion.
     """
     segments = list(state.segments)
     if ready is not None:
         while len(segments) > 1 and not segments[-1].filler and not ready(segments[-1]):
+            if segments[-1].discontinuity or segments[-2].filler:
+                break
             segments.pop()
     target = max(1, max((math.ceil(s.duration) for s in segments), default=1))
     lines = [

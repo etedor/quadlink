@@ -408,6 +408,47 @@ async def test_flush_converts_the_tail_promptly(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_flush_during_first_fetch_still_ends_the_run(ffmpeg, ts_run, tmp_path):
+    """A flush while the run's first segment is still fetching must reach its converter."""
+    segs = ts_run(44100, 1)
+
+    async def fetch(uri: str) -> bytes:
+        await asyncio.sleep(0.2)
+        return segs[int(uri)]
+
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy.register(1, _seg(0, "0"))
+    await asyncio.sleep(0.05)
+    proxy.flush(1)
+    async with asyncio.timeout(3):
+        while not proxy.ready(1, 0):
+            await asyncio.sleep(0.05)
+    out = await proxy.get(1, 0)
+    assert out is not None and audio_sample_rate(out) == 48000
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_start_is_served_converted_once_next_segment_arrives(ffmpeg, ts_run, tmp_path):
+    """The playlist lists a run's first segment before its output exists; get() waits."""
+    segs = ts_run(44100, 2)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy.register(1, _seg(0, "0"))
+    await _fetched(proxy, 1, 0)
+    request = asyncio.create_task(proxy.get(1, 0))
+    await asyncio.sleep(0.3)
+    assert not request.done()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    proxy.register(1, _seg(1, "1"))
+    out = await request
+    assert loop.time() - start < 2.0
+    assert out is not None and audio_sample_rate(out) == 48000
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
 async def test_flush_without_converter_is_noop(ts_run, tmp_path):
     segs = ts_run(44100, 1)
     fetch, _ = _source(segs)

@@ -87,3 +87,16 @@ async def test_finish_flushes_last_output_and_close_removes_it(ffmpeg, ts_run, t
     # a stale lookup after the workdir is gone reports no output instead of raising
     assert await conv.output_for(last, timeout=0) is None
     assert not conv.has_output(last + 1)
+
+
+@pytest.mark.asyncio
+async def test_fresh_run_lags_one_segment(ffmpeg, ts_run, tmp_path):
+    """A new run's first output must not wait on the default stream probe."""
+    segs = ts_run(44100, 2)
+    conv = AudioConverter(ffmpeg, tmp_path)
+    await conv.start()
+    for seg in segs:
+        await conv.feed(seg)
+    out = await conv.output_for(first_video_pts(segs[0]), timeout=2)
+    assert out is not None and audio_sample_rate(out) == 48000
+    await conv.close()

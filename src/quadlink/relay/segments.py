@@ -95,8 +95,8 @@ class SegmentProxy:
         state = self._slots.get(slot)
         if state is None or state.worker is None or state.worker.done():
             return
-        if state.converter is None and state.queue.empty():
-            return
+        # queued even with no converter open: the worker can be fetching a run's
+        # first segment, whose converter opens only after this call
         state.queue.put_nowait(None)
 
     async def _work(self, slot: int, state: _Slot) -> None:
