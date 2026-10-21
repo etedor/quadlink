@@ -1,7 +1,8 @@
 """Fetch each relay segment from Twitch once and serve it to every client on the LAN.
 
 Segments are processed per slot in playlist order, because a converting run must
-feed ffmpeg its input in sequence. A run is a stretch without a discontinuity.
+feed ffmpeg its input in sequence. A run is a stretch without a discontinuity
+whose video PTS keep rising.
 """
 
 import asyncio
@@ -165,9 +166,12 @@ class SegmentProxy:
 
     async def _route(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> None:
         ts = entry.seg.map_gen is None
+        # a PTS step without a discontinuity tag, or a failed ffmpeg, also ends the run:
+        # the old converter could never complete this segment's output
+        broken = ts and state.converter is not None and not state.converter.continues(data)
         # every TS run with audio goes through the encoder, so all tiles get the same
         # 48 kHz AAC whatever the channel sends; a run decides once, at its first segment
-        if entry.seg.discontinuity or not state.decided:
+        if entry.seg.discontinuity or not state.decided or broken:
             if state.converter is not None:
                 self._retire(state, state.converter)
                 state.converter = None

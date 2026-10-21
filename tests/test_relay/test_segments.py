@@ -226,6 +226,28 @@ async def test_discontinuity_starts_new_converter(ffmpeg, ts_run):
 
 
 @pytest.mark.asyncio
+async def test_pts_step_back_without_discontinuity_starts_a_new_run(ffmpeg, ts_run):
+    """A repeated stretch must not pile up behind the old run's head output."""
+    segs = ts_run(44100, 4)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    order = [0, 1, 2, 3] * 3
+    for seq, i in enumerate(order):
+        proxy.register(1, _seg(seq, str(i)))
+    loop = asyncio.get_running_loop()
+    # the last has no next segment or flush to close it
+    for seq in range(len(order) - 1):
+        start = loop.time()
+        out = await proxy.get(1, seq)
+        assert out is not None and audio_sample_rate(out) == 48000, seq
+        assert loop.time() - start < 3, seq
+    state = proxy._slots[1]
+    assert state.run == 3
+    assert state.converter is not None and state.converter._splitter.size < 4 << 20
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
 async def test_fmp4_is_never_fed(ffmpeg, ts_run, monkeypatch):
     segs = [*ts_run(44100, 1), b"fmp4 bytes"]
     fetch, _ = _source(segs)

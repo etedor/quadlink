@@ -21,13 +21,21 @@ def ts_run(ffmpeg: str, tmp_path_factory: pytest.TempPathFactory) -> Callable[..
 
     `extra_keyframes` adds keyframes at these offsets (seconds) inside every segment,
     as some Twitch channels do; segments still start at every 2s keyframe. `offset`
-    is the first timestamp in seconds; past 95443.7 the 33-bit PTS wraps.
+    is the first timestamp in seconds; past 95443.7 the 33-bit PTS wraps. `open_gop`
+    encodes 640x360 with B-frames and open GOPs, as many broadcasters' x264 does: a
+    segment's leading B-frames show before its keyframe and reference the previous GOP.
     """
 
     def make(
-        rate: int, count: int, extra_keyframes: tuple[float, ...] = (), offset: float = 10
+        rate: int,
+        count: int,
+        extra_keyframes: tuple[float, ...] = (),
+        offset: float = 10,
+        open_gop: bool = False,
     ) -> list[bytes]:
         out = tmp_path_factory.mktemp(f"ts{rate}")
+        size = "640x360" if open_gop else "320x180"
+        gop = ["-bf", "3", "-x264-params", "open-gop=1"] if open_gop else []
         times = [2 * i + off for i in range(count) for off in (0.0, *extra_keyframes)]
         force = (
             ["-force_key_frames", ",".join(f"{t:.3f}" for t in times)] if extra_keyframes else []
@@ -41,7 +49,7 @@ def ts_run(ffmpeg: str, tmp_path_factory: pytest.TempPathFactory) -> Callable[..
                 "-f",
                 "lavfi",
                 "-i",
-                "testsrc=s=320x180:r=30",
+                f"testsrc=s={size}:r=30",
                 "-f",
                 "lavfi",
                 "-i",
@@ -61,6 +69,7 @@ def ts_run(ffmpeg: str, tmp_path_factory: pytest.TempPathFactory) -> Callable[..
                 "-sc_threshold",
                 "0",
                 *force,
+                *gop,
                 "-c:a",
                 "aac",
                 "-ar",

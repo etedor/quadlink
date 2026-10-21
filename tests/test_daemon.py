@@ -745,6 +745,30 @@ class TestDaemonRelayWiring:
             await daemon._segment_client.aclose()
 
     @pytest.mark.asyncio
+    async def test_fetch_segment_bounds_a_trickling_body(self):
+        import httpx
+
+        async def trickle():
+            while True:
+                yield b"x"
+                await asyncio.sleep(0.05)
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, content=trickle())
+
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                daemon = Daemon()
+        await daemon._segment_client.aclose()
+        daemon._segment_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            with patch("quadlink.daemon.SEGMENT_FETCH_WAIT", 0.3):
+                with pytest.raises(TimeoutError):
+                    await daemon._fetch_segment("http://cdn/slow.ts")
+        finally:
+            await daemon._segment_client.aclose()
+
+    @pytest.mark.asyncio
     async def test_main_loop_writes_quad_to_slot_store(self, mock_config):
         from quadlink.types import Quad
 

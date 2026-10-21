@@ -7,6 +7,7 @@ import subprocess
 
 import pytest
 
+from quadlink.relay import convert
 from quadlink.relay.convert import AudioConverter, Splitter
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
@@ -90,8 +91,13 @@ async def test_each_output_completes_once_the_next_segment_is_fed(ffmpeg, ts_run
 
 
 @pytest.mark.asyncio
-async def test_every_video_frame_lands_in_its_own_segments_output(ffmpeg, ts_run):
-    segs = ts_run(44100, 4, _SPLIT)
+@pytest.mark.parametrize(
+    "shape",
+    [{"extra_keyframes": _SPLIT}, {"open_gop": True}],
+    ids=["mid-segment-keyframes", "open-gop"],
+)
+async def test_every_video_frame_lands_in_its_own_segments_output(ffmpeg, ts_run, shape):
+    segs = ts_run(44100, 4, **shape)
     conv, outputs, keys = await _run(ffmpeg, segs)
     await conv.finish()
     outs = [outputs.got[k] for k in keys]
@@ -225,6 +231,46 @@ async def test_segment_without_new_video_pts_has_no_output(ffmpeg, ts_run):
 
 
 @pytest.mark.asyncio
+async def test_output_with_no_cut_fails_the_run_at_once(ffmpeg, ts_run, monkeypatch):
+    """Repeated input never closes the head output; its buffer must not grow unbounded."""
+    segs = ts_run(44100, 2)
+    monkeypatch.setattr(convert, "MAX_PENDING", 2 * max(map(len, segs)))
+    conv, outputs, keys = await _run(ffmpeg, segs)
+    assert await outputs.get(keys[0]) is not None
+    async with asyncio.timeout(10):
+        while not conv.failed:
+            # not after the last key, so no output of its own and no cut
+            assert conv.register(segs[0]) is None
+            try:
+                await conv.feed(segs[0])
+            except (OSError, RuntimeError):
+                # the reader killed ffmpeg during this feed
+                break
+    assert conv.failed
+    assert await outputs.get(keys[1], timeout=1) is None
+    assert not conv.continues(segs[1])
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    with pytest.raises(RuntimeError):
+        await conv.feed(segs[0])
+    assert loop.time() - start < 0.1
+    assert conv._splitter.size == 0
+    await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_continues_only_with_a_later_video_pts(ffmpeg, ts_run):
+    segs = ts_run(44100, 3)
+    conv = AudioConverter(ffmpeg, _Outputs())
+    assert conv.continues(segs[1])
+    conv.register(segs[1])
+    assert conv.continues(segs[2])
+    assert not conv.continues(segs[1])
+    assert not conv.continues(segs[0])
+    assert conv.continues(b"no video")
+
+
+@pytest.mark.asyncio
 async def test_crash_fails_pending_outputs(ffmpeg, ts_run):
     segs = ts_run(44100, 2)
     conv, outputs, keys = await _run(ffmpeg, segs)
@@ -299,4 +345,19 @@ def test_splitter_gives_a_skipped_key_no_output():
 def test_splitter_drops_output_ahead_of_any_key():
     splitter = Splitter()
     assert splitter.push(_stream((1000, False))) == []
-    assert splitter._buf == bytearray()
+    # only the PAT and PMT stay
+    assert splitter.size == 2 * PACKET
+
+
+def test_splitter_keeps_headers_for_the_first_key_after_dropped_output():
+    data = _stream((1000, False), (4000, False), (7000, False))
+    # PAT, PMT, then three packets per frame
+    first = 5 * PACKET
+    splitter = Splitter()
+    assert splitter.push(data[:first]) == []
+    splitter.expect(4000)
+    splitter.expect(7000)
+    done = splitter.push(data[first:]) + splitter.end()
+    assert [k for k, _ in done] == [4000, 7000]
+    assert done[0][1][: 2 * PACKET] == data[: 2 * PACKET]
+    assert sorted(_video_pts(done[0][1])) == [4000]

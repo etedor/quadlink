@@ -36,6 +36,9 @@ _PAT = b"\x47\x40\x00"
 _SDT_PID = 0x11
 # seconds ffmpeg gets to drain after EOF before it is killed
 _FINISH_WAIT = 5.0
+# bytes of ffmpeg output that may wait for a cut: ~8 segments at Twitch's top
+# bitrate. More means no cut is coming, and the run must end before it exhausts memory
+MAX_PENDING = 16 << 20
 
 OnOutput = Callable[[int, bytes | None], None]
 
@@ -89,6 +92,10 @@ class Splitter:
     def pending(self) -> list[int]:
         return list(self._keys)
 
+    @property
+    def size(self) -> int:
+        return len(self._buf)
+
     def expect(self, key: int) -> None:
         self._keys.append(key)
 
@@ -118,10 +125,20 @@ class Splitter:
                 done.append((self._keys.popleft(), b""))
         self._scanned = end
         if not self._keys:
-            # output of a segment without video PTS, ahead of any key
+            # output of a segment without video PTS, ahead of any key; its PAT and PMT
+            # stay, so the first keyed output still starts with them
+            self._keep_headers(end)
             del self._buf[:end]
+            self._buf[0:0] = self._headers
             self._scanned = 0
         return done
+
+    def _keep_headers(self, hi: int) -> None:
+        assert self._pmt is not None
+        pat = _last_packet(self._buf, _PAT, hi)
+        pmt = _last_packet(self._buf, self._pmt, hi)
+        if pat is not None and pmt is not None:
+            self._headers = pat + pmt
 
     def _find_program(self, end: int) -> bool:
         pmt, streams = program(bytes(self._buf[:end]))
@@ -140,10 +157,7 @@ class Splitter:
         while cut >= PACKET and _pid_at(self._buf, cut - PACKET) in self._psi:
             cut -= PACKET
         moved = {_pid_at(self._buf, p) for p in range(cut, i, PACKET)}
-        pat = _last_packet(self._buf, _PAT, cut)
-        pmt = _last_packet(self._buf, self._pmt, cut)
-        if pat is not None and pmt is not None:
-            self._headers = pat + pmt
+        self._keep_headers(cut)
         with memoryview(self._buf) as view:
             done.append((self._keys.popleft(), bytes(view[:cut])))
         del self._buf[:cut]
@@ -187,6 +201,8 @@ class AudioConverter:
         self._last: int | None = None
         # set once EOF is ours, so the reader leaves the tail to finish()
         self._finishing = False
+        # set once the reader has given up; later feeds fail at once
+        self.failed = False
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
@@ -239,6 +255,18 @@ class AudioConverter:
         )
         self._reader = asyncio.create_task(self._read())
 
+    def continues(self, data: bytes) -> bool:
+        """Whether the segment can join this run.
+
+        A video PTS not after the run's last key (a step back, or a jump past half
+        the PTS range) would never close the head output; such a segment starts a new
+        run. Segments without video PTS always join.
+        """
+        if self.failed:
+            return False
+        pts = first_video_pts(data)
+        return pts is None or self._last is None or before(self._last, pts)
+
     def register(self, data: bytes) -> int | None:
         """Note the next input segment; return the key its output is delivered under.
 
@@ -254,6 +282,8 @@ class AudioConverter:
 
     async def feed(self, data: bytes) -> None:
         """Write one input segment, after register()."""
+        if self.failed:
+            raise RuntimeError("relay conversion already failed")
         assert self._proc is not None and self._proc.stdin is not None
         self._proc.stdin.write(data)
         await self._proc.stdin.drain()
@@ -263,17 +293,25 @@ class AudioConverter:
             self._on_output(key, data or None)
 
     async def _read(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
-        stdout = self._proc.stdout
+        proc = self._proc
+        assert proc is not None and proc.stdout is not None
+        stdout = proc.stdout
         try:
             while chunk := await stdout.read(_READ):
                 self._emit(self._splitter.push(chunk))
+                if self._splitter.size > MAX_PENDING:
+                    raise BufferError(f"{self._splitter.size} bytes of output with no cut")
         except Exception as e:
             logger.warning("relay conversion output failed", error=repr(e))
+            self.failed = True
+            # nothing reads stdout now; a live ffmpeg would block the next feed until FEED_WAIT
+            if proc.returncode is None:
+                proc.kill()
             self._emit((key, None) for key in self._splitter.abandon())
             return
         if not self._finishing:
             # ffmpeg died: what it wrote of the head output ends mid-segment
+            self.failed = True
             self._emit((key, None) for key in self._splitter.abandon())
 
     async def finish(self) -> None:

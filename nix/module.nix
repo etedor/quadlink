@@ -117,7 +117,8 @@ in {
         Environment = [
           "PYTHONUNBUFFERED=1"
           # segment-sized buffers go to mmap and back to the kernel on free; the
-          # glibc heap otherwise keeps ~25 MiB of them
+          # glibc heap otherwise keeps ~25 MiB of them. ffmpeg children inherit it,
+          # which is harmless there: their anon memory drops (bench: 72 -> 61 MiB)
           "MALLOC_MMAP_THRESHOLD_=131072"
         ];
 
