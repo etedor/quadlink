@@ -110,19 +110,49 @@ def media_names() -> list[str]:
 
 
 def _remux_fmp4(ffmpeg: str, src: Path, out: Path) -> None:
-    """The TS segments of src as fMP4 HLS in out: init.mp4 and s0000.m4s.."""
-    listing = out / "list.txt"
-    listing.write_text("".join(f"file '{p}'\n" for p in sorted(src.glob("s*.ts"))))
+    """The TS segments of src as chunked CMAF in out: init.mp4 and s0000.m4s.."""
+    from quadlink.relay import mp4info
+
+    # one byte stream keeps the source timestamps; the concat demuxer would re-time
+    # each file by its estimated duration, which overruns 2 s and breaks the loop shift
+    joined = out / "all.ts"
+    joined.write_bytes(b"".join(p.read_bytes() for p in sorted(src.glob("s*.ts"))))
+    whole = out / "all.mp4"
+    # Twitch-shaped CMAF, ~7 frames per moof: a long-lived mov demuxer's memory grows
+    # with the moofs it reads. Audio is encoded, not copied: with empty_moov, copied
+    # ADTS audio gets no AudioSpecificConfig in the init, and TS remuxes lack ADTS
     subprocess.run(
         [
-            ffmpeg, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
-            "-c", "copy", "-bsf:a", "aac_adtstoasc", "-copyts",
-            "-f", "hls", "-hls_segment_type", "fmp4",
-            "-hls_time", "2", "-hls_list_size", "0", "-hls_fmp4_init_filename", "init.mp4",
-            "-hls_segment_filename", str(out / "s%04d.m4s"), str(out / "p.m3u8"),
+            ffmpeg, "-v", "error", "-y", "-i", str(joined),
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-copyts",
+            "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
+            "-frag_duration", "116000", "-f", "mp4", str(whole),
         ],
         check=True,
     )  # fmt: skip
+    data = whole.read_bytes()
+    boxes = list(mp4info._boxes(data))
+    init = b"".join(data[lo - 8 : hi] for kind, lo, hi in boxes if kind in (b"ftyp", b"moov"))
+    (out / "init.mp4").write_bytes(init)
+    video = mp4info.video_track(init)
+    assert video is not None
+    # frag_keyframe opens a moof at every keyframe, so whole moofs make up each source
+    # segment's frames
+    counts = [video_frames(p.read_bytes()) for p in sorted(src.glob("s*.ts"))]
+    segs: list[bytearray] = [bytearray()]
+    taken = 0
+    for (kind, lo, _), (_, _, mdat_hi) in zip(boxes, boxes[1:], strict=False):
+        if kind != b"moof":
+            continue
+        if taken == counts[len(segs) - 1]:
+            segs.append(bytearray())
+            taken = 0
+        segs[-1] += data[lo - 8 : mdat_hi]
+        taken += sum(len(m) for m in mp4info._video_moofs(data[lo - 8 : mdat_hi], video))
+    whole.unlink()
+    joined.unlink()
+    for index, seg in enumerate(segs):
+        (out / f"s{index:04d}.m4s").write_bytes(seg)
 
 
 def gen(args: argparse.Namespace) -> None:
@@ -242,9 +272,15 @@ def _timescales(init: bytes) -> dict[int, int]:
     moov = mp4info._first(init, 0, len(init), [b"moov"])
     assert moov is not None
     for lo, hi in mp4info._find(init, *moov, [b"trak"]):
-        found = mp4info._track(init, lo, hi, 0)
-        if found is not None:
-            scales[found[1].track_id] = found[1].timescale
+        tkhd = mp4info._first(init, lo, hi, [b"tkhd"])
+        mdhd = mp4info._first(init, lo, hi, [b"mdia", b"mdhd"])
+        assert tkhd is not None and mdhd is not None
+        # version 1 boxes hold 64-bit times ahead of these fields
+        track = tkhd[0] + (20 if init[tkhd[0]] == 1 else 12)
+        scale = mdhd[0] + (20 if init[mdhd[0]] == 1 else 12)
+        scales[int.from_bytes(init[track : track + 4], "big")] = int.from_bytes(
+            init[scale : scale + 4], "big"
+        )
     return scales
 
 

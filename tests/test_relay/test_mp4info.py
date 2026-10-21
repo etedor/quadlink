@@ -1,54 +1,53 @@
-"""Tests for the fMP4 parsing behind fMP4 conversion."""
+"""Tests for the fMP4 parsing behind fMP4 remuxing."""
 
-import asyncio
 import random
 
-import pytest
-
-from quadlink.relay.convert import remux
-from quadlink.relay.mp4info import fragment_video_pts, init_info
-from quadlink.relay.tsinfo import first_video_pts
+from quadlink.relay.mp4info import lift_offsets, video_track
 
 
-@pytest.mark.parametrize("rate", [44100, 48000])
-def test_init_info_finds_video_and_audio_rate(fmp4_run, rate):
-    init, _ = fmp4_run(rate, 1)
-    info = init_info(init)
-    assert info.video is not None and info.video.timescale > 0
-    assert info.audio_rate == rate
-
-
-def test_init_info_without_moov():
-    assert init_info(b"") == init_info(b"\x00\x00\x00\x08free")
-    assert init_info(b"").video is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "shape",
-    [{}, {"chunked": True}, {"negative_cts": True}, {"offset": 95440}],
-    ids=["edit-list", "chunked", "negative-cts", "pts-wrap"],
-)
-async def test_fragment_key_is_the_pts_ffmpeg_outputs(ffmpeg, fmp4_run, shape):
-    init, segs = fmp4_run(44100, 4, **shape)
-    video = init_info(init).video
-    assert video is not None
-    keys = [fragment_video_pts(seg, video) for seg in segs]
-    outs = await asyncio.gather(*(remux(ffmpeg, init, seg, 10) for seg in segs))
-    assert keys == [first_video_pts(out or b"") for out in outs]
-    assert len(set(keys)) == len(keys)
-
-
-def test_fragment_without_video_has_no_key(fmp4_run):
+def test_video_track_has_a_timescale(fmp4_run):
     init, _ = fmp4_run(44100, 1)
-    video = init_info(init).video
+    video = video_track(init)
+    assert video is not None and video.timescale > 0
+
+
+def test_video_track_without_moov():
+    assert video_track(b"") is None
+    assert video_track(b"\x00\x00\x00\x08free") is None
+
+
+def test_segment_needing_no_more_lift_is_unchanged(fmp4_run):
+    init, segs = fmp4_run(44100, 2, negative_cts=True)
+    video = video_track(init)
     assert video is not None
-    assert fragment_video_pts(b"not an fMP4 fragment", video) is None
+    data, lift = lift_offsets(segs[0], video, 0)
+    assert data is segs[0] and lift > 0
+    # the same depth again adds nothing either
+    assert lift_offsets(segs[1], video, lift) == (segs[1], lift)
+
+
+def test_segment_after_a_deeper_one_gets_its_offsets_raised(fmp4_run):
+    init, segs = fmp4_run(44100, 1, negative_cts=True, bframes=1)
+    video = video_track(init)
+    assert video is not None
+    _, own = lift_offsets(segs[0], video, 0)
+    data, lift = lift_offsets(segs[0], video, own + 512)
+    assert lift == own + 512
+    assert len(data) == len(segs[0]) and data != segs[0]
+    # no offset is negative now, so the segment adds no lift of its own
+    assert lift_offsets(data, video, 0) == (data, 0)
+
+
+def test_segment_without_video_keeps_the_lift(fmp4_run):
+    init, _ = fmp4_run(44100, 1)
+    video = video_track(init)
+    assert video is not None
+    assert lift_offsets(b"not an fMP4 fragment", video, 7) == (b"not an fMP4 fragment", 7)
 
 
 def test_corrupt_boxes_never_raise(fmp4_run):
-    init, segs = fmp4_run(44100, 1)
-    video = init_info(init).video
+    init, segs = fmp4_run(44100, 1, negative_cts=True)
+    video = video_track(init)
     assert video is not None
     rng = random.Random(7)
     for _ in range(300):
@@ -56,5 +55,5 @@ def test_corrupt_boxes_never_raise(fmp4_run):
         for buf in (bad_init, bad_seg):
             for _ in range(4):
                 buf[rng.randrange(len(buf))] = rng.randrange(256)
-        init_info(bytes(bad_init))
-        fragment_video_pts(bytes(bad_seg), video)
+        video_track(bytes(bad_init))
+        lift_offsets(bytes(bad_seg), video, 10**6)

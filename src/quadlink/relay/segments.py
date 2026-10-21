@@ -15,19 +15,18 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from quadlink.relay.convert import AudioConverter, remux
-from quadlink.relay.mp4info import init_info
+from quadlink.relay.convert import AudioConverter, Remuxer
 from quadlink.relay.playlist import Segment
 from quadlink.relay.tsinfo import audio_sample_rate
 
 logger = structlog.get_logger()
 
 # seconds a client request waits for a converted segment before getting the original;
-# for fMP4 this includes the fallback remux
+# for fMP4 this includes the remux
 CONVERT_WAIT = 6.0
 # seconds ffmpeg may take to accept one segment; the segment's clients wait on it
 FEED_WAIT = 3.0
-# seconds a one-shot fMP4 to MPEG-TS remux may take; its clients wait on it
+# seconds the MPEG-TS remux of one fMP4 segment may take; its clients wait on it
 REMUX_WAIT = 2.0
 # seconds all attempts at one init segment may take; its segment's clients wait on it
 INIT_WAIT = 4.0
@@ -48,8 +47,6 @@ class _Entry:
     converted: bytes | None = None
     # fMP4 only: the init segment its media segment needs
     init: bytes | None = None
-    # fMP4 only: the remux every client of an unconverted segment shares
-    remuxed: "asyncio.Task[bytes] | None" = None
 
     def set_converted(self, data: bytes) -> None:
         # converted is final once set: every client of a segment gets the same bytes,
@@ -80,6 +77,10 @@ class _Slot:
     init: tuple[int, str, bytes] | None = None
     # (map generation, URI without query, loop time) of the last init that failed
     init_failed: tuple[int, str, float] | None = None
+    # remuxes the fMP4 segments of the newest init that had any
+    remuxer: Remuxer | None = None
+    # init of the open run's segments; None for TS
+    run_init: bytes | None = None
 
     def notify(self) -> None:
         event, self.changed = self.changed, asyncio.Event()
@@ -174,6 +175,8 @@ class SegmentProxy:
             return
         if entry.seg.map_gen is not None and self._ffmpeg is not None:
             entry.init = await self._init(slot, state, entry.seg)
+            # the TS stands in for the fetched bytes: clients get it unconverted too
+            data = await self._as_ts(slot, state, entry, data)
         # route decides entry.converter before raw is visible to get(), so a
         # waiting client never observes an entry mid-decision as unconverted
         try:
@@ -238,6 +241,24 @@ class SegmentProxy:
         state.init = (map_gen, path, state.init[2])
         return state.init[2]
 
+    async def _as_ts(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> bytes:
+        """An fMP4 segment as MPEG-TS; b"" when none could be made, served as filler."""
+        assert self._ffmpeg is not None
+        out: bytes | None = None
+        if entry.init is not None:
+            if state.remuxer is None or state.remuxer.init != entry.init:
+                state.remuxer = Remuxer(self._ffmpeg, entry.init)
+            try:
+                out = await state.remuxer.remux(data, REMUX_WAIT)
+            except Exception as e:
+                logger.warning("relay remux failed", slot=slot, seq=entry.seg.seq, error=repr(e))
+        if out is None:
+            logger.warning(
+                "relay serving filler in place of an fMP4 segment", slot=slot, seq=entry.seg.seq
+            )
+            return b""
+        return out
+
     @staticmethod
     def _discard(state: _Slot, entry: _Entry) -> None:
         """Stop an uncached entry from taking its output once no client waits on it.
@@ -248,22 +269,24 @@ class SegmentProxy:
             entry.converter = None
 
     async def _route(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> None:
-        ts = entry.seg.map_gen is None
-        if not ts and entry.init is None:
-            if self._ffmpeg is not None:
-                # without its init this segment gets filler and no converter can take
-                # it; the next segment starts a new run
+        """Feed a TS segment, or an fMP4 one remuxed to TS, to its run's converter."""
+        if entry.seg.map_gen is not None:
+            if self._ffmpeg is None:
+                return
+            if not data:
+                # without TS this segment gets filler and no converter can take it;
+                # the next segment starts a new run
                 if state.converter is not None:
                     self._retire(state, state.converter)
                     state.converter = None
                 state.decided = False
-            return
+                return
         # a PTS step without a discontinuity tag, a new init segment, or a failed
         # ffmpeg also ends the run: the old converter could never complete this
         # segment's output
         conv = state.converter
         # init bytes compare by value: a refetch under a new URI can return the same init
-        broken = conv is not None and (conv.init != entry.init or not conv.continues(data))
+        broken = conv is not None and (state.run_init != entry.init or not conv.continues(data))
         # every TS run with audio goes through the encoder, so all tiles get the same
         # 48 kHz AAC whatever the channel sends; a run decides once, at its first segment
         if entry.seg.discontinuity or not state.decided or broken:
@@ -272,16 +295,11 @@ class SegmentProxy:
                 state.converter = None
             state.run += 1
             state.decided = True
-            if ts:
-                rate = audio_sample_rate(data)
-            else:
-                assert entry.init is not None
-                info = init_info(entry.init)
-                # without a video track no segment gets a key, so nothing would convert
-                rate = info.audio_rate if info.video is not None else None
+            state.run_init = entry.init
+            rate = audio_sample_rate(data)
             if self._ffmpeg and rate is not None:
                 new = AudioConverter(
-                    self._ffmpeg, lambda key, out: self._deliver(state, new, key, out), entry.init
+                    self._ffmpeg, lambda key, out: self._deliver(state, new, key, out)
                 )
                 # held before start so aclose() reaches it if cancelled mid-start
                 state.converter = new
@@ -400,56 +418,25 @@ class SegmentProxy:
                 return None
             wait = CONVERT_WAIT
             if entry.seg.map_gen is not None and self._ffmpeg is not None:
-                # an unconverted fMP4 segment still needs its remux, and the whole
+                # the remux took up to REMUX_WAIT before raw was set, and the whole
                 # request must fit the client's buffer
                 wait -= REMUX_WAIT
             deadline = asyncio.get_running_loop().time() + wait
             while entry.converted is None:
                 if entry.converter is None:
-                    return await self._unconverted(slot, entry, data)
+                    return data
                 if not await state.wait_change(deadline):
                     logger.warning(
                         "relay conversion late, serving this segment at the source rate",
                         slot=slot,
                         seq=seq,
                     )
-                    return await self._unconverted(slot, entry, data)
+                    return data
             return entry.converted
         finally:
             state.waiting.remove(entry)
             if state.entries.get(seq) is not entry:
                 self._discard(state, entry)
-
-    async def _unconverted(self, slot: int, entry: _Entry, data: bytes) -> bytes:
-        """What a client gets for a segment without converted output.
-
-        A TS segment is served as fetched. An fMP4 one was listed as .ts, so it is
-        remuxed on its own; b"" means no TS could be made and the caller serves filler.
-        """
-        if entry.seg.map_gen is None or self._ffmpeg is None:
-            return data
-        if entry.remuxed is None:
-            entry.remuxed = asyncio.create_task(self._remux(slot, entry, data))
-        # shielded: one client disconnecting must not cancel the remux for all
-        return await asyncio.shield(entry.remuxed)
-
-    async def _remux(self, slot: int, entry: _Entry, data: bytes) -> bytes:
-        assert self._ffmpeg is not None
-        out: bytes | None = None
-        if entry.init is not None:
-            try:
-                out = await remux(self._ffmpeg, entry.init, data, REMUX_WAIT)
-            except Exception as e:
-                logger.warning("relay remux failed", slot=slot, seq=entry.seg.seq, error=repr(e))
-        if out is None:
-            logger.warning(
-                "relay serving filler in place of an fMP4 segment", slot=slot, seq=entry.seg.seq
-            )
-            return b""
-        entry.set_converted(out)
-        # a converter output that landed first stays what every client gets
-        assert entry.converted is not None
-        return entry.converted
 
     async def aclose(self) -> None:
         workers = [s.worker for s in self._slots.values() if s.worker is not None]
@@ -465,8 +452,6 @@ class SegmentProxy:
             for entry in pending:
                 if not entry.raw.done():
                     entry.raw.set_exception(RuntimeError("relay segment proxy closed"))
-                if entry.remuxed is not None:
-                    entry.remuxed.cancel()
             if state.converter is not None:
                 await state.converter.close()
                 state.converter = None

@@ -7,7 +7,7 @@ import subprocess
 import pytest
 import structlog.testing
 
-from quadlink.relay import segments
+from quadlink.relay import convert, segments
 from quadlink.relay.convert import AudioConverter, remux
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
@@ -361,23 +361,35 @@ async def test_failed_fmp4_conversion_serves_a_ts_remux(ffmpeg, fmp4_run, monkey
 
 
 @pytest.mark.asyncio
-async def test_fmp4_remux_failure_asks_for_filler(ffmpeg, fmp4_run, monkeypatch):
-    init, segs = fmp4_run(44100, 1)
+@pytest.mark.parametrize("hang", [False, True], ids=["fails", "hangs"])
+async def test_fmp4_remux_failure_asks_for_filler(ffmpeg, fmp4_run, monkeypatch, hang):
+    init, segs = fmp4_run(44100, 2)
     fetch, _ = _fmp4_source(init, segs)
+    real_remux = convert.remux
 
-    async def boom(self: AudioConverter, data: bytes) -> None:
-        raise RuntimeError("ffmpeg died")
-
-    async def no_remux(*args: object) -> None:
+    async def bad_remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes | None:
+        if data != segs[0]:
+            return await real_remux(ffmpeg, init, data, timeout)
+        if hang:
+            await asyncio.sleep(60)
         return None
 
-    monkeypatch.setattr(AudioConverter, "feed", boom)
-    monkeypatch.setattr(segments, "remux", no_remux)
+    monkeypatch.setattr(segments, "REMUX_WAIT", 0.3)
+    monkeypatch.setattr(convert, "remux", bad_remux)
     proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _fmp4(0, "0"))
+    proxy.register(1, _fmp4(1, "1"))
+    proxy.flush(1)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
     with structlog.testing.capture_logs() as logs:
         assert await proxy.get(1, 0) == b""
+    # bounded by REMUX_WAIT, so the tile gets filler before its buffer runs out
+    assert loop.time() - start < 1
     assert any("filler" in log["event"] for log in logs)
+    # the next segment starts a new run and is converted
+    out = await proxy.get(1, 1)
+    assert out is not None and audio_sample_rate(out) == 48000
     await proxy.aclose()
 
 
@@ -960,28 +972,28 @@ async def test_late_fmp4_conversion_and_remux_fit_convert_wait(monkeypatch):
     monkeypatch.setattr(segments, "CONVERT_WAIT", 0.6)
     monkeypatch.setattr(segments, "REMUX_WAIT", 0.4)
     loop = asyncio.get_running_loop()
-    started: list[float] = []
 
     async def slow_remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes:
-        started.append(loop.time())
-        await asyncio.sleep(timeout)
+        await asyncio.sleep(0.3)
         return b"ts"
 
-    monkeypatch.setattr(segments, "remux", slow_remux)
+    async def nothing(*args: object) -> None:
+        pass
+
+    # a converter that takes the segment and never delivers
+    monkeypatch.setattr(convert, "remux", slow_remux)
+    monkeypatch.setattr(segments, "audio_sample_rate", lambda data: 44100)
+    monkeypatch.setattr(AudioConverter, "start", nothing)
+    monkeypatch.setattr(AudioConverter, "feed", nothing)
+    monkeypatch.setattr(AudioConverter, "register", lambda self, data: 5)
 
     async def fetch(uri: str) -> bytes:
-        return b"fmp4"
+        return b"init" if uri.startswith("init") else b"fmp4"
 
-    proxy = SegmentProxy(fetch, None)
-    proxy.register(1, _fmp4(0, "0"))
-    await _fetched(proxy, 1, 0)
-    # a converter that never delivers
-    proxy._ffmpeg = "ffmpeg"
-    entry = proxy._slots[1].entries[0]
-    entry.init, entry.converter, entry.pts = b"init", object(), 5  # type: ignore[assignment]
+    proxy = SegmentProxy(fetch, "ffmpeg")
     start = loop.time()
+    proxy.register(1, _fmp4(0, "0"))
     assert await proxy.get(1, 0) == b"ts"
-    assert started[0] - start == pytest.approx(0.2, abs=0.1)
-    assert loop.time() - start == pytest.approx(0.6, abs=0.1)
-    proxy._ffmpeg = None
+    # the remux, then CONVERT_WAIT less the REMUX_WAIT it may take
+    assert loop.time() - start == pytest.approx(0.5, abs=0.1)
     await proxy.aclose()

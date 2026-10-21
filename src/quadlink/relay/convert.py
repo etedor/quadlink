@@ -7,8 +7,7 @@ audible seams, because independent AAC encoder states never agree at a boundary.
 
 ffmpeg reads the run's segments on stdin and writes one MPEG-TS stream to stdout,
 which Splitter cuts back into one output per input segment. Nothing touches disk.
-A run of fMP4 segments is fed as one fragmented MP4 file: the init segment, then
-each media segment, so its output is MPEG-TS like every other.
+fMP4 segments reach it as MPEG-TS too, each remuxed on its own by Remuxer.
 """
 
 import asyncio
@@ -17,12 +16,13 @@ from collections.abc import Callable, Iterable
 
 import structlog
 
-from quadlink.relay.mp4info import fragment_video_pts, init_info, video_lift
+from quadlink.relay.mp4info import lift_offsets, video_track
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
     PACKET,
     _packets,
     before,
+    continue_stream,
     first_video_pts,
     pes_pts,
     program,
@@ -193,16 +193,11 @@ class AudioConverter:
 
     on_output(key, data) runs once per segment that register() gave a key: with the
     converted bytes once complete, or with None when the run failed before that.
-    With `init`, the run's segments are fMP4 media segments of that init segment.
     """
 
-    def __init__(self, ffmpeg: str, on_output: OnOutput, init: bytes | None = None) -> None:
+    def __init__(self, ffmpeg: str, on_output: OnOutput) -> None:
         self.ffmpeg = ffmpeg
-        self.init = init
         self._on_output = on_output
-        self._video = None if init is None else init_info(init).video
-        # composition offset lift ffmpeg's demuxer has reached over the segments fed
-        self._lift = 0
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._splitter = Splitter()
@@ -223,7 +218,7 @@ class AudioConverter:
             "-analyzeduration",
             "500000",
             "-f",
-            "mpegts" if self.init is None else "mp4",
+            "mpegts",
             "-i",
             "pipe:0",
             "-map",
@@ -262,19 +257,6 @@ class AudioConverter:
             stdout=asyncio.subprocess.PIPE,
         )
         self._reader = asyncio.create_task(self._read())
-        if self.init is not None:
-            assert self._proc.stdin is not None
-            # a few KB: the pipe takes it without a drain
-            self._proc.stdin.write(self.init)
-
-    def _key(self, data: bytes) -> int | None:
-        if self.init is None:
-            return first_video_pts(data)
-        if self._video is None:
-            return None
-        # the demuxer keeps the deepest lift of the run, never a segment's own
-        lift = max(self._lift, video_lift(data, self._video, first=True))
-        return fragment_video_pts(data, self._video, lift)
 
     def continues(self, data: bytes) -> bool:
         """Whether the segment can join this run.
@@ -285,7 +267,7 @@ class AudioConverter:
         """
         if self.failed:
             return False
-        pts = self._key(data)
+        pts = first_video_pts(data)
         return pts is None or self._last is None or before(self._last, pts)
 
     def register(self, data: bytes) -> int | None:
@@ -294,9 +276,7 @@ class AudioConverter:
         None means the segment gets no output of its own: without a video PTS (or
         with one not after the previous segment's) its content joins the one before.
         """
-        pts = self._key(data)
-        if self._video is not None:
-            self._lift = max(self._lift, video_lift(data, self._video))
+        pts = first_video_pts(data)
         if pts is None or (self._last is not None and not before(self._last, pts)):
             return None
         self._last = pts
@@ -428,3 +408,34 @@ async def remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes 
         )
         return None
     return out
+
+
+class Remuxer:
+    """Remuxes the media segments of one fMP4 init to MPEG-TS that reads as one stream.
+
+    Each segment gets its own short ffmpeg: one long-lived mov demuxer keeps an index
+    entry for every sample it has read, ~20 MiB an hour. Joined, the outputs match a
+    single remux of all segments fed so far, so they feed a converter like TS segments:
+    each video PTS gets the lift one demuxer would have reached (see lift_offsets),
+    and continuity counters run on.
+    """
+
+    def __init__(self, ffmpeg: str, init: bytes) -> None:
+        self.ffmpeg = ffmpeg
+        self.init = init
+        self._video = video_track(init)
+        self._lift = 0
+        self._counters: dict[int, int] = {}
+
+    async def remux(self, data: bytes, timeout: float) -> bytes | None:
+        """One media segment as MPEG-TS; None on failure. Call in stream order."""
+        lift = self._lift
+        if self._video is not None:
+            data, lift = lift_offsets(data, self._video, lift)
+        # remux() bounds only its pipe; this also covers starting ffmpeg
+        async with asyncio.timeout(timeout):
+            out = await remux(self.ffmpeg, self.init, data, timeout)
+        if out is None:
+            return None
+        self._lift = lift
+        return continue_stream(out, self._counters)

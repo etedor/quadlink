@@ -4,21 +4,25 @@ import asyncio
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
-from quadlink.relay import convert
-from quadlink.relay.convert import AudioConverter, Splitter, remux
-from quadlink.relay.mp4info import _video_trafs, fragment_video_pts, init_info
+from quadlink.relay import convert, mp4info
+from quadlink.relay.convert import AudioConverter, Remuxer, Splitter, remux
 from quadlink.relay.tsinfo import (
+    _AAC_ADTS,
     _VIDEO_TYPES,
     PACKET,
     PTS_WRAP,
     _packets,
     _pes_starts,
+    _pes_times,
     _pid,
     audio_pts,
     audio_sample_rate,
+    before,
+    continue_stream,
     first_video_pts,
 )
 from tests.test_relay import synth
@@ -54,11 +58,9 @@ class _Outputs:
         return self.got[key]
 
 
-async def _run(
-    ffmpeg: str, segs: list[bytes], init: bytes | None = None
-) -> tuple[AudioConverter, _Outputs, list[int]]:
+async def _run(ffmpeg: str, segs: list[bytes]) -> tuple[AudioConverter, _Outputs, list[int]]:
     outputs = _Outputs()
-    conv = AudioConverter(ffmpeg, outputs, init)
+    conv = AudioConverter(ffmpeg, outputs)
     await conv.start()
     keys = []
     for seg in segs:
@@ -375,36 +377,6 @@ def _decode_errors(ffmpeg: str, data: bytes) -> bytes:
     ).stderr
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("rate", [44100, 48000])
-@pytest.mark.parametrize(
-    "shape",
-    [{}, {"chunked": True}, {"negative_cts": True}],
-    ids=["one-fragment", "chunked", "negative-cts"],
-)
-async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, shape):
-    init, segs = fmp4_run(rate, 4, **shape)
-    video = init_info(init).video
-    assert video is not None
-    conv, outputs, keys = await _run(ffmpeg, segs, init)
-    assert keys == [fragment_video_pts(seg, video) for seg in segs]
-    # a run's first output completes once the next segment's keyframe is fed
-    assert await outputs.get(keys[0], timeout=3) is not None
-    await conv.finish()
-    assert outputs.calls == keys
-    for seg, key in zip(segs, keys, strict=True):
-        out = outputs.got[key]
-        assert out is not None and len(out) % PACKET == 0
-        assert first_video_pts(out) == key
-        # the same frames a plain remux of the segment holds, each exactly once
-        alone = await remux(ffmpeg, init, seg, 10)
-        assert alone is not None
-        assert sorted(_video_pts(out)) == sorted(_video_pts(alone))
-        assert len(set(_video_pts(out))) == len(_video_pts(out)) == 60
-        assert audio_sample_rate(out) == 48000
-        assert _decode_errors(ffmpeg, out) == b""
-
-
 def _first_video_packet(data: bytes) -> tuple[int, str]:
     """(PTS, ffprobe flags) of the first video packet in decode order."""
     ffprobe = shutil.which("ffprobe")
@@ -441,47 +413,124 @@ def _fragments(seg: bytes) -> list[bytes]:
     return [a + b for a, b in zip(boxes[::2], boxes[1::2], strict=True)]
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("depths", "mid"),
-    [((3, 1), False), ((1, 3), False), ((1, 3), True)],
-    ids=["shallower", "deeper", "deeper-mid-segment"],
-)
-async def test_fmp4_run_keys_follow_ffmpeg_lift_as_b_frame_depth_changes(
-    ffmpeg, fmp4_run, depths, mid
-):
-    # ffmpeg lifts every PTS by the deepest negative offset read so far in the run,
-    # so a segment's own offsets alone give the wrong key once the depth falls, or
-    # once it rises only in a fragment after the segment's first
+def _depth_change(fmp4_run, depths: tuple[int, int], mid: bool) -> tuple[bytes, list[bytes]]:
+    """A negative-CTS run whose B-frame depth changes at segment 3, or inside it."""
     init, first = fmp4_run(44100, 6, negative_cts=True, bframes=depths[0])
     _, second = fmp4_run(44100, 6, negative_cts=True, bframes=depths[1])
     segs = first[:3] + second[3:]
     if mid:
         head, tail = _fragments(first[3]), _fragments(second[3])
         segs[3] = b"".join(head[:4] + tail[4:])
-    video = init_info(init).video
-    assert video is not None
-    conv, outputs, keys = await _run(ffmpeg, segs, init)
-    await conv.finish()
-    # one demuxer over the whole run assigns each input sample its PTS, in file order
+    return init, segs
+
+
+async def _as_ts(ffmpeg: str, init: bytes, segs: list[bytes]) -> list[bytes]:
+    remuxer = Remuxer(ffmpeg, init)
+    out = []
+    for seg in segs:
+        ts = await remuxer.remux(seg, 10)
+        assert ts is not None
+        out.append(ts)
+    return out
+
+
+def _times(data: bytes, types: set[int] = _VIDEO_TYPES) -> list[tuple[int, int]]:
+    pid = _pid(data, types)
+    assert pid is not None
+    return list(_pes_times(data, pid))
+
+
+def _counter_jumps(data: bytes) -> int:
+    last: dict[int, int] = {}
+    jumps = 0
+    for i in range(0, len(data), PACKET):
+        pid = ((data[i + 1] & 0x1F) << 8) | data[i + 2]
+        cc, payload = data[i + 3] & 0x0F, bool(data[i + 3] & 0x10)
+        if pid in last and cc != ((last[pid] + 1) & 0x0F if payload else last[pid]):
+            jumps += 1
+        last[pid] = cc
+    return jumps
+
+
+_SHAPES: dict[str, dict[str, object]] = {
+    "edit-list": {},
+    "chunked": {"chunked": True},
+    "negative-cts": {"negative_cts": True},
+    "pts-wrap": {"offset": 95440},
+}
+_DEPTHS = {
+    "shallower": ((3, 1), False),
+    "deeper": ((1, 3), False),
+    "deeper-mid-segment": ((1, 3), True),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", [*_SHAPES, *_DEPTHS])
+async def test_remuxed_segments_join_into_one_remux(ffmpeg, fmp4_run, shape):
+    # a reader of the joined outputs sees what one mov demuxer over the whole stream
+    # gives; its lift only rises, while a segment alone would start from its own
+    if shape in _SHAPES:
+        init, segs = fmp4_run(44100, 5, **_SHAPES[shape])
+    else:
+        init, segs = _depth_change(fmp4_run, *_DEPTHS[shape])
+    ts = await _as_ts(ffmpeg, init, segs)
     whole = await remux(ffmpeg, init, b"".join(segs), 30)
     assert whole is not None
-    frames = _video_pts(whole)
-    for seg, key in zip(segs, keys, strict=True):
-        count = sum(len(samples) for _, _, samples in _video_trafs(seg, video))
-        expected, frames = frames[:count], frames[count:]
+    assert [t for out in ts for t in _times(out)] == _times(whole)
+    if shape in _SHAPES:
+        # spliced encodes differ by a rounding tick at the splice
+        assert [t for out in ts for t in _times(out, {_AAC_ADTS})] == _times(whole, {_AAC_ADTS})
+    assert _counter_jumps(b"".join(ts)) == 0
+    keys = [first_video_pts(out) for out in ts]
+    for out, key in zip(ts[:-1], keys[1:], strict=True):
+        assert key is not None
+        assert all(before(pts, key) for pts, _ in _times(out))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", [44100, 48000])
+@pytest.mark.parametrize("shape", ["edit-list", "chunked", "negative-cts"])
+async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, shape):
+    init, segs = fmp4_run(rate, 4, **_SHAPES[shape])
+    ts = await _as_ts(ffmpeg, init, segs)
+    conv, outputs, keys = await _run(ffmpeg, ts)
+    assert keys == [first_video_pts(t) for t in ts]
+    # a run's first output completes once the next segment's keyframe is fed
+    assert await outputs.get(keys[0], timeout=3) is not None
+    await conv.finish()
+    assert outputs.calls == keys
+    for t, key in zip(ts, keys, strict=True):
+        out = outputs.got[key]
+        assert out is not None and len(out) % PACKET == 0
+        assert first_video_pts(out) == key
+        assert sorted(_video_pts(out)) == sorted(_video_pts(t))
+        assert len(set(_video_pts(out))) == len(_video_pts(out)) == 60
+        assert audio_sample_rate(out) == 48000
+        assert _decode_errors(ffmpeg, out) == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", [*_DEPTHS])
+async def test_fmp4_run_keeps_each_frame_in_its_output_as_b_frame_depth_changes(
+    ffmpeg, fmp4_run, shape
+):
+    init, segs = _depth_change(fmp4_run, *_DEPTHS[shape])
+    ts = await _as_ts(ffmpeg, init, segs)
+    conv, outputs, keys = await _run(ffmpeg, ts)
+    await conv.finish()
+    for t, key in zip(ts, keys, strict=True):
         out = outputs.got[key]
         assert out is not None
         assert _first_video_packet(out) == (key, "K__")
-        assert sorted(_video_pts(out)) == sorted(expected)
-    assert frames == []
+        assert _times(out) == _times(t)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("chunked", [False, True], ids=["one-fragment", "chunked"])
 async def test_fmp4_audio_runs_on_across_outputs(ffmpeg, fmp4_run, chunked):
     init, segs = fmp4_run(44100, 5, chunked=chunked)
-    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    conv, outputs, keys = await _run(ffmpeg, await _as_ts(ffmpeg, init, segs))
     await conv.finish()
     # the chunked source's first AAC frame holds the encoder priming as a longer
     # duration, a gap in the source itself; the last output holds the EOF flush
@@ -502,7 +551,7 @@ async def test_fmp4_audio_runs_on_across_outputs(ffmpeg, fmp4_run, chunked):
 @pytest.mark.asyncio
 async def test_fmp4_run_across_the_pts_wrap(ffmpeg, fmp4_run):
     init, segs = fmp4_run(44100, 4, offset=95440)
-    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    conv, outputs, keys = await _run(ffmpeg, await _as_ts(ffmpeg, init, segs))
     assert any(a > b for a, b in zip(keys, keys[1:], strict=False))
     await conv.finish()
     assert outputs.calls == keys
@@ -511,5 +560,81 @@ async def test_fmp4_run_across_the_pts_wrap(ffmpeg, fmp4_run):
 
 @pytest.mark.asyncio
 async def test_remux_fails_on_bad_input(ffmpeg, fmp4_run):
-    init, _ = fmp4_run(44100, 1)
+    init, segs = fmp4_run(44100, 2)
     assert await remux(ffmpeg, init, b"not a fragment", 10) is None
+    remuxer = Remuxer(ffmpeg, init)
+    first = await remuxer.remux(segs[0], 10)
+    assert first is not None
+    assert await remuxer.remux(b"not a fragment", 10) is None
+    # a failed segment leaves the stream as it was: counters run on from the first
+    second = await remuxer.remux(segs[1], 10)
+    assert second is not None
+    assert _counter_jumps(first + second) == 0
+
+
+def _timescales(init: bytes) -> dict[int, int]:
+    scales = {}
+    moov = mp4info._first(init, 0, len(init), [b"moov"])
+    assert moov is not None
+    for lo, hi in mp4info._find(init, *moov, [b"trak"]):
+        tkhd = mp4info._first(init, lo, hi, [b"tkhd"])
+        mdhd = mp4info._first(init, lo, hi, [b"mdia", b"mdhd"])
+        assert tkhd is not None and mdhd is not None and init[tkhd[0]] == init[mdhd[0]] == 0
+        track = int.from_bytes(init[tkhd[0] + 12 : tkhd[0] + 16], "big")
+        scales[track] = int.from_bytes(init[mdhd[0] + 12 : mdhd[0] + 16], "big")
+    return scales
+
+
+def _looped(init: bytes, segs: list[bytes], count: int) -> list[bytes]:
+    """count segments repeating segs, each pass moved on in time like a live stream."""
+    scales = _timescales(init)
+    out = []
+    for i in range(count):
+        passes, seg = divmod(i, len(segs))
+        data = segs[seg]
+        buf = bytearray(data)
+        for lo, hi in mp4info._find(data, 0, len(data), [b"moof", b"traf"]):
+            tfhd = mp4info._first(data, lo, hi, [b"tfhd"])
+            tfdt = mp4info._first(data, lo, hi, [b"tfdt"])
+            assert tfhd is not None and tfdt is not None
+            scale = scales[int.from_bytes(data[tfhd[0] + 4 : tfhd[0] + 8], "big")]
+            width = 8 if data[tfdt[0]] == 1 else 4
+            pos = tfdt[0] + 4
+            value = int.from_bytes(data[pos : pos + width], "big")
+            buf[pos : pos + width] = (value + passes * len(segs) * 2 * scale).to_bytes(width, "big")
+        out.append(bytes(buf))
+    return out
+
+
+# the nix dev shell's ps on macOS lacks rss
+_PS = "/bin/ps" if Path("/bin/ps").exists() else "ps"
+
+
+def _rss_mib(pid: int) -> float:
+    ps = subprocess.run([_PS, "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
+    return int(ps.stdout) / 1024
+
+
+@pytest.mark.asyncio
+async def test_long_fmp4_run_keeps_the_converter_memory_flat(ffmpeg, fmp4_run):
+    # a long-lived mov demuxer indexes every sample it reads: ~5 MiB over this run
+    init, segs = fmp4_run(44100, 6, chunked=True)
+    looped = _looped(init, segs, 600)
+    conv, outputs, _ = await _run(ffmpeg, [])
+    counters: dict[int, int] = {}
+    rss = []
+    for start in range(0, len(looped), 10):
+        # remuxes run ahead in parallel; their outputs join in order
+        batch = looped[start : start + 10]
+        for out in await asyncio.gather(*(remux(ffmpeg, init, seg, 10) for seg in batch)):
+            assert out is not None
+            ts = continue_stream(out, counters)
+            conv.register(ts)
+            await conv.feed(ts)
+        if start in (100, len(looped) - 10):
+            await asyncio.sleep(0.2)
+            assert conv._proc is not None
+            rss.append(_rss_mib(conv._proc.pid))
+    assert not conv.failed and len(outputs.got) > 500
+    await conv.close()
+    assert rss[1] - rss[0] < 1.5, rss

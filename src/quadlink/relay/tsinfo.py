@@ -103,6 +103,31 @@ def _pes_times(data: bytes, wanted: int) -> Iterator[tuple[int, int]]:
         yield pts, dts
 
 
+def continue_stream(data: bytes, counters: dict[int, int]) -> bytes:
+    """data with each PID's continuity counter running on from `counters`.
+
+    `counters` maps PID to the last counter written and is updated, so consecutive
+    calls join their outputs into one stream: a counter that jumps makes ffmpeg's
+    demuxer flag the PES in progress as corrupt.
+    """
+    buf = bytearray(data)
+    for i in range(0, len(buf) - PACKET + 1, PACKET):
+        if buf[i] != 0x47:
+            continue
+        pid = ((buf[i + 1] & 0x1F) << 8) | buf[i + 2]
+        last = counters.get(pid)
+        if last is None:
+            cc = buf[i + 3] & 0x0F
+        # only a packet with payload advances the counter (ISO/IEC 13818-1 2.4.3.3)
+        elif buf[i + 3] & 0x10:
+            cc = (last + 1) & 0x0F
+        else:
+            cc = last
+        buf[i + 3] = (buf[i + 3] & 0xF0) | cc
+        counters[pid] = cc
+    return bytes(buf)
+
+
 def before(a: int, b: int) -> bool:
     """Whether 33-bit timestamp a is earlier than b, across a wrap."""
     return (a - b) % PTS_WRAP >= PTS_WRAP // 2
