@@ -3,8 +3,8 @@
 Fetches the slot's current Twitch media playlist on demand (short cache),
 folds it into a rolling window via the pure core in playlist.py, and serves
 our own continuously-live playlist. With a SegmentProxy, segments point at
-relay URLs that fetch each Twitch segment once (converting its audio to 48 kHz
-when needed); without one, segments stay absolute Twitch CDN URLs.
+relay URLs that fetch each Twitch segment once (re-encoding its audio to 48 kHz
+when ffmpeg is present); without one, segments stay absolute Twitch CDN URLs.
 """
 
 import asyncio

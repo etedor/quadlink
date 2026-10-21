@@ -13,7 +13,7 @@ from pathlib import Path
 
 import structlog
 
-from quadlink.relay.convert import TARGET_RATE, AudioConverter
+from quadlink.relay.convert import AudioConverter
 from quadlink.relay.playlist import Segment
 from quadlink.relay.tsinfo import audio_sample_rate, first_video_pts
 
@@ -160,7 +160,8 @@ class SegmentProxy:
 
     async def _route(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> None:
         ts = entry.seg.map_gen is None
-        # each run decides conversion once, from its first segment's audio rate
+        # every TS run with audio goes through the encoder, so all tiles get the same
+        # 48 kHz AAC whatever the channel sends; a run decides once, at its first segment
         if entry.seg.discontinuity or not state.decided:
             if state.converter is not None:
                 self._retire(state, state.converter)
@@ -168,7 +169,7 @@ class SegmentProxy:
             state.run += 1
             state.decided = True
             rate = audio_sample_rate(data) if ts else None
-            if self._ffmpeg and rate is not None and rate != TARGET_RATE:
+            if self._ffmpeg and rate is not None:
                 new = AudioConverter(self._ffmpeg, self._workroot / f"slot{slot}-run{state.run}")
                 # held before start so aclose() reaches it if cancelled mid-start
                 state.converter = new

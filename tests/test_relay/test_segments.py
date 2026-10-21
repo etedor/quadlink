@@ -67,7 +67,7 @@ async def test_without_ffmpeg_441k_passes_through(ts_run, tmp_path):
 
 @pytest.mark.asyncio
 async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_path):
-    segs = ts_run(48000, 1)
+    segs = ts_run(48000, 2)
     gate = asyncio.Event()
 
     async def fetch(uri: str) -> bytes:
@@ -76,6 +76,7 @@ async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_p
 
     proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
     proxy.register(1, _seg(0, "0"))
+    proxy.register(1, _seg(1, "1"))
     assert not await proxy.wait_ready(1, 0, 0.1)
     gate.set()
     assert await proxy.wait_ready(1, 0, 2.0)
@@ -291,22 +292,18 @@ async def test_ready_converting_run(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ready_passthrough_run(ffmpeg, ts_run, tmp_path):
-    segs = [*ts_run(48000, 2), *ts_run(44100, 1)]
-    fetch, gates = _gated(segs)
+async def test_native_48k_run_is_reencoded(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(48000, 3)
+
+    async def fetch(uri: str) -> bytes:
+        return segs[int(uri)]
+
     proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
-    proxy.register(1, _seg(0, "0"))
-    proxy.register(1, _seg(1, "1"))
-    proxy.register(1, _seg(2, "2", disc=True))
-    assert not proxy.ready(1, 0)
-    gates["0"].set()
-    await _fetched(proxy, 1, 0)
-    # fetched, not converting
-    assert proxy.ready(1, 0)
-    # unfetched, mid-run of a run decided not to convert
-    assert proxy.ready(1, 1)
-    # unfetched, first of a new run
-    assert not proxy.ready(1, 2)
+    for n in range(3):
+        proxy.register(1, _seg(n, str(n)))
+    data = await proxy.get(1, 0)
+    assert data is not None and data != segs[0]
+    assert audio_sample_rate(data) == 48000
     await proxy.aclose()
 
 

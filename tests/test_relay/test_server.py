@@ -506,7 +506,7 @@ async def test_steady_state_polls_wait_only_for_new_segments():
     assert len(proxy.waits) == 4
 
 
-def _growing_relay(segs: list[bytes], first: int, ffmpeg: str, tmp_path, now: list[float]):
+def _growing_relay(segs: list[bytes], first: int, ffmpeg: str | None, tmp_path, now: list[float]):
     """A relay over a source that lists `first` segments, then one more per append."""
     store = SlotStore()
     store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
@@ -540,10 +540,11 @@ async def test_converted_poll_lists_segment_before_newest(ffmpeg, ts_run, tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_unconverted_polls_do_not_wait(ffmpeg, ts_run, tmp_path):
+async def test_unconverted_polls_do_not_wait(ts_run, tmp_path):
     segs = ts_run(48000, 8)
     now = [0.0]
-    relay, count = _growing_relay(segs, 4, ffmpeg, tmp_path, now)
+    # without ffmpeg every segment passes through unconverted
+    relay, count = _growing_relay(segs, 4, None, tmp_path, now)
     loop = asyncio.get_running_loop()
     try:
         await _call(relay, "1")
