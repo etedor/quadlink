@@ -15,7 +15,7 @@ import structlog
 
 from quadlink.relay.convert import AudioConverter
 from quadlink.relay.playlist import Segment
-from quadlink.relay.tsinfo import audio_sample_rate, first_video_pts
+from quadlink.relay.tsinfo import audio_sample_rate
 
 logger = structlog.get_logger()
 
@@ -186,7 +186,7 @@ class SegmentProxy:
             return
         try:
             # a hung ffmpeg must not hold this segment's clients past their buffer
-            await asyncio.wait_for(conv.feed(data), FEED_WAIT)
+            pts = await asyncio.wait_for(conv.feed(data), FEED_WAIT)
         except Exception as e:
             logger.warning(
                 "relay conversion failed, serving the rest of the run at the source rate",
@@ -197,10 +197,10 @@ class SegmentProxy:
             state.converter = None
             self._retire(state, conv)
             return
-        # ffmpeg still gets every segment, so a segment without video only skips
-        # conversion itself, keeping the encoder continuous
-        entry.pts = first_video_pts(data)
-        if entry.pts is not None:
+        # ffmpeg still gets every segment, so a segment without its own output only
+        # skips conversion itself, keeping the encoder continuous
+        if pts is not None:
+            entry.pts = pts
             entry.converter = conv
 
     def _retire(self, state: _Slot, conv: AudioConverter) -> None:

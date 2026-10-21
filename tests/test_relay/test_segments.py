@@ -9,13 +9,18 @@ import structlog.testing
 from quadlink.relay.convert import AudioConverter
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
-from quadlink.relay.tsinfo import audio_sample_rate
+from quadlink.relay.tsinfo import _VIDEO_TYPES, _pes_starts, _pid, audio_sample_rate
 
 
 def _seg(seq: int, uri: str, disc: bool = False) -> Segment:
     return Segment(
         seq=seq, uri=uri, duration=2.0, program_date_time=None, discontinuity=disc, map_gen=None
     )
+
+
+def _video_frames(data: bytes) -> int:
+    pid = _pid(data, _VIDEO_TYPES)
+    return 0 if pid is None else sum(1 for _ in _pes_starts(data, pid))
 
 
 def _source(segs: list[bytes]):
@@ -227,9 +232,9 @@ async def test_fmp4_is_never_fed(ffmpeg, ts_run, tmp_path, monkeypatch):
     fed: list[bytes] = []
     real_feed = AudioConverter.feed
 
-    async def record(self: AudioConverter, data: bytes) -> None:
+    async def record(self: AudioConverter, data: bytes) -> int | None:
         fed.append(data)
-        await real_feed(self, data)
+        return await real_feed(self, data)
 
     monkeypatch.setattr(AudioConverter, "feed", record)
     proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
@@ -514,8 +519,30 @@ async def test_long_run_keeps_outputs_bounded(ffmpeg, ts_run, tmp_path):
     conv = proxy._slots[1].converter
     assert conv is not None
     # the cache's 4 entries plus at most the newest output still being written
-    assert len(conv._by_pts) <= 5
+    assert len(conv._ranges) <= 5
     assert len(list(conv.workdir.glob("*.ts"))) <= 5
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_long_run_with_mid_segment_keyframes_stays_bounded(ffmpeg, ts_run, tmp_path):
+    """Extra keyframes split each segment into several outputs; all are served and deleted."""
+    segs = ts_run(44100, 16, (1.2, 1.6))
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=4)
+    for i in range(len(segs)):
+        proxy.register(1, _seg(i, str(i)))
+        await _fetched(proxy, 1, i)
+        if i:
+            out = await proxy.get(1, i - 1)
+            assert out is not None and audio_sample_rate(out) == 48000
+            # every video frame of the input, not just those up to the first extra keyframe
+            assert _video_frames(out) == _video_frames(segs[i - 1])
+    conv = proxy._slots[1].converter
+    assert conv is not None
+    assert len(conv._ranges) <= 5
+    # three pieces for each of those 5 ranges
+    assert len(list(conv.workdir.glob("*.ts"))) <= 15
     await proxy.aclose()
 
 

@@ -16,13 +16,19 @@ def ffmpeg() -> str:
 
 
 @pytest.fixture(scope="session")
-def ts_run(
-    ffmpeg: str, tmp_path_factory: pytest.TempPathFactory
-) -> Callable[[int, int], list[bytes]]:
-    """Consecutive 2s TS segments with continuous timestamps, like one Twitch broadcast."""
+def ts_run(ffmpeg: str, tmp_path_factory: pytest.TempPathFactory) -> Callable[..., list[bytes]]:
+    """Consecutive 2s TS segments with continuous timestamps, like one Twitch broadcast.
 
-    def make(rate: int, count: int) -> list[bytes]:
+    `extra_keyframes` adds keyframes at these offsets (seconds) inside every segment,
+    as some Twitch channels do; segments still start at every 2s keyframe.
+    """
+
+    def make(rate: int, count: int, extra_keyframes: tuple[float, ...] = ()) -> list[bytes]:
         out = tmp_path_factory.mktemp(f"ts{rate}")
+        times = [2 * i + off for i in range(count) for off in (0.0, *extra_keyframes)]
+        force = (
+            ["-force_key_frames", ",".join(f"{t:.3f}" for t in times)] if extra_keyframes else []
+        )
         subprocess.run(
             [
                 ffmpeg,
@@ -51,6 +57,7 @@ def ts_run(
                 "60",
                 "-sc_threshold",
                 "0",
+                *force,
                 "-c:a",
                 "aac",
                 "-ar",

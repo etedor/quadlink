@@ -8,6 +8,8 @@ audible seams, because independent AAC encoder states never agree at a boundary.
 
 import asyncio
 import shutil
+from bisect import bisect_left, bisect_right
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -20,22 +22,46 @@ TARGET_RATE = 48000
 # the native AAC encoder emits its first frame 1024 samples early; shifting input
 # timestamps by the same amount keeps audio aligned with the copied video
 _ENCODER_DELAY = 1024
-# bounds out.m3u8 over a long run; the scan reads only the newest name, so any size works
+# bounds out.m3u8 over a long run; the scan reads only names it has not seen, so
+# any size works as long as the scan keeps up with ffmpeg
 _LIST_SIZE = 40
+_PTS_HZ = 90000
+# EXTINF carries microseconds, so a piece's end lands within a tick of the next
+# keyframe; any slack below one frame (750 ticks at 120 fps) is safe
+_END_SLACK = 90
+
+
+@dataclass
+class _Range:
+    """Output pieces of one fed segment, in order."""
+
+    pieces: list[Path] = field(default_factory=list)
+    dropped: bool = False
 
 
 class AudioConverter:
-    """Pipes consecutive TS segments through ffmpeg; output segments match inputs 1:1."""
+    """Pipes consecutive TS segments through ffmpeg and maps outputs back to inputs.
+
+    ffmpeg cuts an output piece at every keyframe. Twitch puts one at each segment
+    start, and some channels add more inside a segment, so an input segment's output
+    is every piece whose first video PTS lies between its own and the next segment's.
+    """
 
     def __init__(self, ffmpeg: str, workdir: Path) -> None:
         self.ffmpeg = ffmpeg
         self.workdir = workdir
         self._proc: asyncio.subprocess.Process | None = None
-        self._by_pts: dict[int, Path] = {}
+        # first video PTS of each fed segment, increasing; keys of _ranges
+        self._bounds: list[int] = []
+        self._ranges: dict[int, _Range] = {}
         # index of the next o<N>.ts to scan
         self._next = 0
-        # discarded before their output was scanned; deleted once it appears
-        self._dropped: set[int] = set()
+        # range of the newest scanned piece; a piece without video joins it
+        self._last: int | None = None
+        # PTS where the newest scanned piece ends, i.e. where ffmpeg cut next
+        self._end: int | None = None
+        # after EOF ffmpeg writes no more pieces, so every range is complete
+        self._finished = False
 
     async def start(self) -> None:
         # a run dir left by a crashed daemon holds an out.m3u8 the scan would trust
@@ -71,8 +97,8 @@ class AudioConverter:
             "1",
             "-filter_threads",
             "1",
-            # a tiny hls_time makes ffmpeg cut at every keyframe, which Twitch places
-            # at each segment start, so outputs line up with inputs
+            # a tiny hls_time makes ffmpeg cut at every keyframe, so every input
+            # segment boundary is also an output piece boundary
             "-f",
             "hls",
             "-hls_time",
@@ -89,10 +115,22 @@ class AudioConverter:
             stdin=asyncio.subprocess.PIPE,
         )
 
-    async def feed(self, data: bytes) -> None:
+    async def feed(self, data: bytes) -> int | None:
+        """Write one input segment; return the video PTS its output is looked up by.
+
+        None means the segment has no output of its own: without video PTS (or with
+        one not after the previous segment's) its content folds into the range before.
+        """
         assert self._proc is not None and self._proc.stdin is not None
+        pts = first_video_pts(data)
+        if pts is not None and (not self._bounds or pts > self._bounds[-1]):
+            self._bounds.append(pts)
+            self._ranges[pts] = _Range()
+        else:
+            pts = None
         self._proc.stdin.write(data)
         await self._proc.stdin.drain()
+        return pts
 
     def _scan(self) -> None:
         # the workdir can vanish under a reader once close() runs; treat that as no output
@@ -100,53 +138,92 @@ class AudioConverter:
             text = (self.workdir / "out.m3u8").read_text()
         except OSError:
             return
-        names = [ln for ln in text.splitlines() if ln.endswith(".ts")]
-        if not names:
+        durations: dict[str, float] = {}
+        extinf: float | None = None
+        for ln in text.splitlines():
+            if ln.startswith("#EXTINF:"):
+                extinf = float(ln[len("#EXTINF:") :].split(",")[0])
+            elif ln.endswith(".ts") and extinf is not None:
+                durations[ln] = extinf
+        if not durations:
             return
         # outputs are o<N>.ts in order and listed only once complete
-        newest = int(names[-1][1:-3])
+        newest = max(int(name[1:-3]) for name in durations)
         while self._next <= newest:
-            path = self.workdir / f"o{self._next}.ts"
+            name = f"o{self._next}.ts"
+            path = self.workdir / name
             try:
                 pts = first_video_pts(path.read_bytes())
             except FileNotFoundError:
-                pts = None
+                self._next += 1
+                continue
             except OSError:
                 return
             self._next += 1
-            if pts is None:
-                continue
-            if pts in self._dropped:
-                self._dropped.discard(pts)
+            if pts is not None:
+                i = bisect_right(self._bounds, pts) - 1
+                self._last = self._bounds[i] if i >= 0 else None
+                if name in durations:
+                    self._end = pts + round(durations[name] * _PTS_HZ)
+            rng = self._ranges.get(self._last) if self._last is not None else None
+            if rng is None or rng.dropped:
                 path.unlink(missing_ok=True)
             else:
-                self._by_pts[pts] = path
+                rng.pieces.append(path)
+        self._prune()
+
+    def _complete(self, i: int) -> bool:
+        """Whether range i can gain no more pieces: ffmpeg has cut at the next boundary."""
+        if self._finished:
+            return True
+        if i + 1 >= len(self._bounds):
+            return False
+        return self._end is not None and self._end >= self._bounds[i + 1] - _END_SLACK
+
+    def _prune(self) -> None:
+        # only a complete range can go: a later piece could still map into it
+        while self._bounds and self._ranges[self._bounds[0]].dropped and self._complete(0):
+            del self._ranges[self._bounds.pop(0)]
+
+    def _ready(self, video_pts: int) -> _Range | None:
+        rng = self._ranges.get(video_pts)
+        if rng is None or rng.dropped or not rng.pieces:
+            return None
+        if not self._complete(bisect_left(self._bounds, video_pts)):
+            return None
+        return rng
 
     def discard(self, video_pts: int) -> None:
-        """Delete the output for this input's video PTS; no reader may ask for it again."""
+        """Delete every output piece for this input's video PTS, now and once written."""
         self._scan()
-        path = self._by_pts.pop(video_pts, None)
-        if path is None:
-            self._dropped.add(video_pts)
-        else:
+        rng = self._ranges.get(video_pts)
+        if rng is None:
+            return
+        for path in rng.pieces:
             path.unlink(missing_ok=True)
+        rng.pieces.clear()
+        rng.dropped = True
+        self._prune()
 
     def has_output(self, video_pts: int) -> bool:
-        """Whether a finished output segment already exists for this input's video PTS."""
+        """Whether the whole output of the input segment at this video PTS exists."""
         self._scan()
-        return video_pts in self._by_pts
+        return self._ready(video_pts) is not None
 
     async def output_for(self, video_pts: int, timeout: float) -> bytes | None:
-        """Converted bytes of the input segment starting at this video PTS, once written."""
+        """Converted bytes of the input segment starting at this video PTS, once written.
+
+        MPEG-TS concatenates byte-wise, so the pieces join into one segment.
+        """
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             self._scan()
-            path = self._by_pts.get(video_pts)
-            if path is not None:
+            rng = self._ready(video_pts)
+            if rng is not None:
                 try:
-                    return path.read_bytes()
+                    return b"".join(path.read_bytes() for path in rng.pieces)
                 except OSError:
-                    del self._by_pts[video_pts]
+                    pass
             if asyncio.get_running_loop().time() >= deadline:
                 return None
             await asyncio.sleep(0.1)
@@ -162,7 +239,10 @@ class AudioConverter:
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
+        self._finished = True
 
     async def close(self) -> None:
         await self.finish()
         shutil.rmtree(self.workdir, ignore_errors=True)
+        self._bounds.clear()
+        self._ranges.clear()

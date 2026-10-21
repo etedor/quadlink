@@ -3,7 +3,20 @@
 import pytest
 
 from quadlink.relay.convert import AudioConverter
-from quadlink.relay.tsinfo import audio_pts, audio_sample_rate, first_video_pts
+from quadlink.relay.tsinfo import (
+    _VIDEO_TYPES,
+    _pes_starts,
+    _pid,
+    audio_pts,
+    audio_sample_rate,
+    first_video_pts,
+)
+
+
+def _video_pts(data: bytes) -> list[int]:
+    pid = _pid(data, _VIDEO_TYPES)
+    assert pid is not None
+    return [pts for pts, _ in _pes_starts(data, pid) if pts is not None]
 
 
 @pytest.mark.asyncio
@@ -108,10 +121,10 @@ async def test_discard_deletes_output_even_before_it_is_written(ffmpeg, ts_run, 
     conv = AudioConverter(ffmpeg, tmp_path / "w")
     await conv.start()
     pts = [first_video_pts(s) for s in segs]
-    # discarded before ffmpeg has written it: deleted once the scan finds it
-    conv.discard(pts[0])
     for seg in segs:
         await conv.feed(seg)
+    # discarded before ffmpeg has written it: deleted once the scan finds it
+    conv.discard(pts[0])
     assert await conv.output_for(pts[1], timeout=10) is not None
     assert not conv.has_output(pts[0])
     conv.discard(pts[1])
@@ -133,4 +146,70 @@ async def test_start_clears_a_stale_run_dir(ffmpeg, ts_run, tmp_path):
     conv = AudioConverter(ffmpeg, work)
     await conv.start()
     assert not conv.has_output(first_video_pts(segs[1]))
+    await conv.close()
+
+
+# keyframes at 1.2s and 1.6s make ffmpeg cut three pieces per 2s input segment
+_SPLIT = (1.2, 1.6)
+
+
+@pytest.mark.asyncio
+async def test_mid_segment_keyframes_serve_whole_segments(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 4, _SPLIT)
+    conv = AudioConverter(ffmpeg, tmp_path / "w")
+    await conv.start()
+    pts = [await conv.feed(seg) for seg in segs]
+    assert pts == [first_video_pts(s) for s in segs]
+    outs = []
+    # the last closes only at EOF
+    for p in pts[:-1]:
+        assert p is not None
+        outs.append(await conv.output_for(p, timeout=10))
+    await conv.finish()
+    assert pts[-1] is not None and conv.has_output(pts[-1])
+    outs.append(await conv.output_for(pts[-1], timeout=0))
+    # every piece went into some output
+    assert len(list((tmp_path / "w").glob("*.ts"))) == 3 * len(segs)
+    await conv.close()
+
+    for i, (seg, out) in enumerate(zip(segs, outs, strict=True)):
+        assert out is not None
+        assert sorted(_video_pts(out)) == sorted(_video_pts(seg))
+        assert audio_sample_rate(out) == 48000
+        audio = audio_pts(out)
+        start = pts[i]
+        assert start is not None
+        assert audio[0] - start <= 9000
+        # the last segment's tail audio may end slightly early at EOF
+        if i + 1 < len(pts):
+            nxt = pts[i + 1]
+            assert nxt is not None
+            assert nxt - audio[-1] <= 9000
+
+
+@pytest.mark.asyncio
+async def test_discard_deletes_every_piece(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 3, _SPLIT)
+    conv = AudioConverter(ffmpeg, tmp_path / "w")
+    await conv.start()
+    pts = [await conv.feed(seg) for seg in segs]
+    assert pts[0] is not None and pts[1] is not None
+    # discarded before all its pieces exist: later pieces go once scanned
+    conv.discard(pts[0])
+    assert await conv.output_for(pts[1], timeout=10) is not None
+    conv.discard(pts[1])
+    await conv.finish()
+    assert not conv.has_output(pts[0]) and not conv.has_output(pts[1])
+    assert sorted(p.name for p in (tmp_path / "w").glob("*.ts")) == ["o6.ts", "o7.ts", "o8.ts"]
+    await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_segment_without_new_video_pts_has_no_output(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 2)
+    conv = AudioConverter(ffmpeg, tmp_path)
+    await conv.start()
+    assert await conv.feed(segs[1]) is not None
+    # not after the previous boundary: a range for it would never complete in order
+    assert await conv.feed(segs[0]) is None
     await conv.close()
