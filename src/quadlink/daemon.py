@@ -93,9 +93,11 @@ class Daemon:
 
     async def _fetch_segment(self, uri: str) -> bytes:
         """Fetch one relay segment from its origin URI."""
-        resp = await self._segment_client.get(uri)
-        resp.raise_for_status()
-        return resp.content
+        # streamed: resp.content would keep the body on a Response that sits in a
+        # reference cycle until the cyclic GC runs, holding up to ~120 MiB of old segments
+        async with self._segment_client.stream("GET", uri) as resp:
+            resp.raise_for_status()
+            return b"".join([chunk async for chunk in resp.aiter_bytes()])
 
     async def start(self) -> None:
         """Start the daemon and optional health/webui servers."""

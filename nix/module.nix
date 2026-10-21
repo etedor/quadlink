@@ -116,6 +116,9 @@ in {
 
         Environment = [
           "PYTHONUNBUFFERED=1"
+          # segment-sized buffers go to mmap and back to the kernel on free; the
+          # glibc heap otherwise keeps ~25 MiB of them
+          "MALLOC_MMAP_THRESHOLD_=131072"
         ];
 
         MemoryMax = "512M";

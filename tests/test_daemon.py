@@ -724,6 +724,27 @@ class TestDaemonRelayWiring:
         assert daemon.slot_relay._segments is not None
 
     @pytest.mark.asyncio
+    async def test_fetch_segment_returns_the_body_and_raises_on_error(self):
+        import httpx
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/gone.ts":
+                return httpx.Response(404)
+            return httpx.Response(200, content=b"x" * 100_000)
+
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                daemon = Daemon()
+        await daemon._segment_client.aclose()
+        daemon._segment_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        try:
+            assert await daemon._fetch_segment("http://cdn/a.ts") == b"x" * 100_000
+            with pytest.raises(httpx.HTTPStatusError):
+                await daemon._fetch_segment("http://cdn/gone.ts")
+        finally:
+            await daemon._segment_client.aclose()
+
+    @pytest.mark.asyncio
     async def test_main_loop_writes_quad_to_slot_store(self, mock_config):
         from quadlink.types import Quad
 
