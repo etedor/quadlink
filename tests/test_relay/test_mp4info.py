@@ -26,8 +26,8 @@ def test_init_info_without_moov():
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "shape",
-    [{}, {"chunked": True}, {"offset": 95440}],
-    ids=["edit-list", "chunked", "pts-wrap"],
+    [{}, {"chunked": True}, {"negative_cts": True}, {"offset": 95440}],
+    ids=["edit-list", "chunked", "negative-cts", "pts-wrap"],
 )
 async def test_fragment_key_is_the_pts_ffmpeg_outputs(ffmpeg, fmp4_run, shape):
     init, segs = fmp4_run(44100, 4, **shape)

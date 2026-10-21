@@ -22,7 +22,8 @@ from quadlink.relay.tsinfo import audio_sample_rate
 
 logger = structlog.get_logger()
 
-# seconds a client request waits for a converted segment before getting the original
+# seconds a client request waits for a converted segment before getting the original;
+# for fMP4 this includes the fallback remux
 CONVERT_WAIT = 6.0
 # seconds ffmpeg may take to accept one segment; the segment's clients wait on it
 FEED_WAIT = 3.0
@@ -45,7 +46,10 @@ class _Entry:
     remuxed: "asyncio.Task[bytes] | None" = None
 
     def set_converted(self, data: bytes) -> None:
-        # converted is final once set, so the raw bytes are never served again
+        # converted is final once set: every client of a segment gets the same bytes,
+        # and the raw bytes are never served again
+        if self.converted is not None:
+            return
         self.converted = data
         released: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
         released.set_result(b"")
@@ -66,8 +70,8 @@ class _Slot:
     waiting: "list[_Entry]" = field(default_factory=list)
     # set and replaced whenever anything ready() reads changes
     changed: asyncio.Event = field(default_factory=asyncio.Event)
-    # (map generation, bytes) of the newest fMP4 init segment
-    init: tuple[int, bytes] | None = None
+    # (map generation, URI without query, bytes) of the newest fMP4 init segment
+    init: tuple[int, str, bytes] | None = None
 
     def notify(self) -> None:
         event, self.changed = self.changed, asyncio.Event()
@@ -175,19 +179,31 @@ class SegmentProxy:
             self._discard(state, entry)
 
     async def _init(self, slot: int, state: _Slot, seg: Segment) -> bytes | None:
-        """The init segment of seg's map generation, fetched once per generation."""
+        """The init segment of seg's map generation and URI, fetched once for both."""
         assert seg.map_gen is not None
-        if state.init is not None and state.init[0] == seg.map_gen:
-            return state.init[1]
         if seg.map_uri is None:
             return None
-        try:
-            data = await self._fetch(seg.map_uri)
-        except Exception as e:
-            # not cached: the next segment of the generation tries again
-            logger.warning("relay init fetch failed", slot=slot, seq=seg.seq, error=str(e))
-            return None
-        state.init = (seg.map_gen, data)
+        # the query holds the CDN token, which changes for the same init
+        path = seg.map_uri.split("?", 1)[0]
+        if state.init is not None and state.init[:2] == (seg.map_gen, path):
+            return state.init[2]
+        data: bytes | None = None
+        for attempt in range(2):
+            try:
+                data = await self._fetch(seg.map_uri)
+                break
+            except Exception as e:
+                logger.warning(
+                    "relay init fetch failed", slot=slot, seq=seg.seq, attempt=attempt, error=str(e)
+                )
+        if data is None:
+            if state.init is None or state.init[1] != path:
+                # not cached: the next segment tries again
+                return None
+            # filler under a listed segment URI has no DISCONTINUITY, so an init at
+            # the same path is the better guess
+            data = state.init[2]
+        state.init = (seg.map_gen, path, data)
         return data
 
     @staticmethod
@@ -349,7 +365,12 @@ class SegmentProxy:
                 data = await asyncio.shield(entry.raw)
             except Exception:
                 return None
-            deadline = asyncio.get_running_loop().time() + CONVERT_WAIT
+            wait = CONVERT_WAIT
+            if entry.seg.map_gen is not None and self._ffmpeg is not None:
+                # an unconverted fMP4 segment still needs its remux, and the whole
+                # request must fit the client's buffer
+                wait -= REMUX_WAIT
+            deadline = asyncio.get_running_loop().time() + wait
             while entry.converted is None:
                 if entry.converter is None:
                     return await self._unconverted(slot, entry, data)
@@ -393,7 +414,9 @@ class SegmentProxy:
             )
             return b""
         entry.set_converted(out)
-        return out
+        # a converter output that landed first stays what every client gets
+        assert entry.converted is not None
+        return entry.converted
 
     async def aclose(self) -> None:
         workers = [s.worker for s in self._slots.values() if s.worker is not None]

@@ -113,17 +113,25 @@ def fmp4_run(
     `chunked` cuts every segment into 0.25s fragments, as Twitch's CMAF segments are;
     otherwise each segment is one fragment, as ffmpeg's HLS muxer writes them. `offset`
     is the first timestamp in seconds, which ffmpeg stores as an edit list delay.
+    `negative_cts` writes chunked fragments with signed composition offsets (trun v1),
+    as CMAF muxers do, so B-frame offsets go below zero instead of an edit list.
     """
 
     def make(
-        rate: int, count: int, offset: float = 10, chunked: bool = False
+        rate: int,
+        count: int,
+        offset: float = 10,
+        chunked: bool = False,
+        negative_cts: bool = False,
     ) -> tuple[bytes, list[bytes]]:
         out = tmp_path_factory.mktemp(f"fmp4{rate}")
+        chunked = chunked or negative_cts
         if chunked:
             # one fragmented file, cut at the fragments holding each 2s keyframe below
             container = [
                 "-movflags",
-                "+frag_keyframe+empty_moov+default_base_moof",
+                "+frag_keyframe+empty_moov+default_base_moof"
+                + ("+negative_cts_offsets" if negative_cts else ""),
                 "-frag_duration",
                 "250000",
                 "-f",

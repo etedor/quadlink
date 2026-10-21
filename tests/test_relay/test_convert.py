@@ -377,9 +377,13 @@ def _decode_errors(ffmpeg: str, data: bytes) -> bytes:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rate", [44100, 48000])
-@pytest.mark.parametrize("chunked", [False, True], ids=["one-fragment", "chunked"])
-async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, chunked):
-    init, segs = fmp4_run(rate, 4, chunked=chunked)
+@pytest.mark.parametrize(
+    "shape",
+    [{}, {"chunked": True}, {"negative_cts": True}],
+    ids=["one-fragment", "chunked", "negative-cts"],
+)
+async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, shape):
+    init, segs = fmp4_run(rate, 4, **shape)
     video = init_info(init).video
     assert video is not None
     conv, outputs, keys = await _run(ffmpeg, segs, init)
@@ -391,6 +395,7 @@ async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, c
     for seg, key in zip(segs, keys, strict=True):
         out = outputs.got[key]
         assert out is not None and len(out) % PACKET == 0
+        assert first_video_pts(out) == key
         # the same frames a plain remux of the segment holds, each exactly once
         alone = await remux(ffmpeg, init, seg, 10)
         assert alone is not None

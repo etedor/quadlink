@@ -172,8 +172,7 @@ def _samples(data: bytes, lo: int, hi: int, default: int) -> Iterator[tuple[int,
 def fragment_video_pts(data: bytes, video: Track) -> int | None:
     """Lowest video PTS of an fMP4 media segment, in 90 kHz ticks as ffmpeg outputs it.
 
-    Reads the first fragment that holds video, and stops at the first sample whose
-    DTS reaches the lowest PTS so far, as tsinfo.first_video_pts does.
+    Reads the first fragment that holds video.
     """
     try:
         return _fragment_video_pts(data, video)
@@ -181,7 +180,8 @@ def fragment_video_pts(data: bytes, video: Track) -> int | None:
         return None
 
 
-def _fragment_video_pts(data: bytes, video: Track) -> int | None:
+def _video_trafs(data: bytes, video: Track) -> Iterator[tuple[int, list[tuple[int, int]]]]:
+    """(base DTS less the edit shift, samples) of each video traf with a tfdt."""
     for lo, hi in _find(data, 0, len(data), [b"moof", b"traf"]):
         tfhd = _first(data, lo, hi, [b"tfhd"])
         tfdt = _first(data, lo, hi, [b"tfdt"])
@@ -191,17 +191,25 @@ def _fragment_video_pts(data: bytes, video: Track) -> int | None:
             continue
         fmt = ">Q" if data[tfdt[0]] == 1 else ">I"
         dts = struct.unpack_from(fmt, data, tfdt[0] + 4)[0] - video.shift
-        low: int | None = None
-        for duration, offset in _samples(data, lo, hi, video.default_duration):
-            pts = dts + offset
-            if low is None or pts < low:
-                low = pts
-            if dts >= low:
-                break
-            dts += duration
-        if low is None:
-            continue
-        # av_rescale_q rounds half away from zero
-        scaled = (abs(low) * 90000 + video.timescale // 2) // video.timescale
-        return (scaled if low >= 0 else -scaled) % PTS_WRAP
-    return None
+        samples = list(_samples(data, lo, hi, video.default_duration))
+        if samples:
+            yield dts, samples
+
+
+def _fragment_video_pts(data: bytes, video: Track) -> int | None:
+    trafs = list(_video_trafs(data, video))
+    if not trafs:
+        return None
+    # ffmpeg's mov demuxer raises every PTS by the most negative composition offset
+    # it has read (trun v1, e.g. CMAF), so no PTS precedes its DTS
+    lift = max(0, -min(offset for _, samples in trafs for _, offset in samples))
+    dts, samples = trafs[0]
+    # negative offsets let any sample hold the lowest PTS, so all are scanned
+    low = dts + samples[0][1]
+    for duration, offset in samples:
+        low = min(low, dts + offset)
+        dts += duration
+    low += lift
+    # av_rescale_q rounds half away from zero
+    scaled = (abs(low) * 90000 + video.timescale // 2) // video.timescale
+    return (scaled if low >= 0 else -scaled) % PTS_WRAP

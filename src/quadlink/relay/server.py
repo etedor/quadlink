@@ -186,6 +186,9 @@ class SlotRelay:
             if self._waits.get(slot) is wait:
                 del self._waits[slot]
 
+        # also here: a failed source fetch skips _fold, and the listed segments
+        # must still match how the proxy serves them
+        self._sync_format(state)
         self._fill_gap(slot, state)
         if not state.segments:
             return web.Response(status=503, text="no segments")
@@ -265,11 +268,14 @@ class SlotRelay:
                     return
         self._fold(slot, state, entry, text)
 
-    def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
-        now = self._time()
+    def _sync_format(self, state: SlotState) -> None:
         as_ts = self._proxying() and self._segments is not None and self._segments.converts_fmp4
         if set_fmp4_as_ts(state, as_ts) and state.edge is not None:
             state.edge += FILLER_DURATION
+
+    def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
+        now = self._time()
+        self._sync_format(state)
         resumed = state.edge is not None
         if state.edge is None or now - state.edge > IDLE_RESET:
             budget = None

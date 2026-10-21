@@ -999,3 +999,35 @@ async def test_turning_conversion_on_restarts_an_fmp4_window():
     resp = await _call(relay, "1")
     assert _listed(resp.text) == ["https://cdn/c.mp4"]
     assert '#EXT-X-MAP:URI="/streams/1/init/' in resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("turn_on", [True, False], ids=["on", "off"])
+async def test_toggling_conversion_while_the_source_fails_keeps_the_format(turn_on):
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    up = [True]
+
+    async def fetch(url):
+        if not up[0]:
+            raise httpx.ConnectError("down")
+        return _fmp4_src(0, ["https://cdn/a.mp4"])
+
+    relay = SlotRelay(
+        store,
+        fetch=fetch,
+        cache_ttl=0,
+        time_fn=lambda: now[0],
+        segments=FakeProxy(converts_fmp4=True),
+    )
+    relay.proxy_segments = not turn_on
+    await _call(relay, "1")
+    up[0] = False
+    relay.proxy_segments = turn_on
+    now[0] += 1
+    resp = await _call(relay, "1")
+    assert resp.status == 200
+    # either way the listed fMP4 segment cannot change format in place
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == ["/streams/filler/2s.ts"]

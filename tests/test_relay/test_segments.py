@@ -397,8 +397,8 @@ async def test_fmp4_without_its_init_asks_for_filler(ffmpeg, fmp4_run):
     proxy.register(1, _fmp4(1, "1"))
     assert await proxy.get(1, 0) == b""
     assert await proxy.get(1, 1) == b""
-    # a failed init fetch is tried again by the next segment
-    assert calls.count("init1") == 2
+    # a failed init fetch is tried twice, and again by the next segment
+    assert calls.count("init1") == 4
     await proxy.aclose()
 
 
@@ -788,4 +788,143 @@ async def test_empty_output_serves_raw():
     entry.converter, entry.pts = conv, 5  # type: ignore[assignment]
     SegmentProxy._deliver(state, conv, 5, b"")  # type: ignore[arg-type]
     assert await proxy.get(1, 0) == b"raw"
+    await proxy.aclose()
+
+
+def _init_seg(seq: int, map_gen: int, map_uri: str) -> Segment:
+    return Segment(
+        seq=seq,
+        uri=str(seq),
+        duration=2.0,
+        program_date_time=None,
+        discontinuity=False,
+        map_gen=map_gen,
+        map_uri=map_uri,
+    )
+
+
+def _init_source(fail: set[str]):
+    calls: list[str] = []
+
+    async def fetch(uri: str) -> bytes:
+        calls.append(uri)
+        if uri in fail:
+            raise RuntimeError("403")
+        return f"init:{uri}".encode()
+
+    return fetch, calls
+
+
+@pytest.mark.asyncio
+async def test_init_fetch_failure_reuses_the_init_at_the_same_path():
+    fetch, calls = _init_source({"https://cdn/init.mp4?t=2", "https://cdn/other.mp4?t=3"})
+    proxy = SegmentProxy(fetch, None)
+    state = segments._Slot()
+    first = await proxy._init(1, state, _init_seg(0, 1, "https://cdn/init.mp4?t=1"))
+    assert first == b"init:https://cdn/init.mp4?t=1"
+    # a new generation at the same path, its fetch failing twice
+    assert await proxy._init(1, state, _init_seg(1, 2, "https://cdn/init.mp4?t=2")) is first
+    assert calls.count("https://cdn/init.mp4?t=2") == 2
+    # cached for the generation: no more fetches
+    assert await proxy._init(1, state, _init_seg(2, 2, "https://cdn/init.mp4?t=2")) is first
+    assert calls.count("https://cdn/init.mp4?t=2") == 2
+    # another path is a different init, so nothing is reused
+    assert await proxy._init(1, state, _init_seg(3, 3, "https://cdn/other.mp4?t=3")) is None
+
+
+@pytest.mark.asyncio
+async def test_init_retry_after_one_failure():
+    failed: list[str] = []
+
+    async def fetch(uri: str) -> bytes:
+        if not failed:
+            failed.append(uri)
+            raise RuntimeError("timeout")
+        return b"init"
+
+    proxy = SegmentProxy(fetch, None)
+    state = segments._Slot()
+    assert await proxy._init(1, state, _init_seg(0, 1, "https://cdn/init.mp4")) == b"init"
+
+
+@pytest.mark.asyncio
+async def test_new_init_path_within_a_generation_is_fetched():
+    fetch, calls = _init_source(set())
+    proxy = SegmentProxy(fetch, None)
+    state = segments._Slot()
+    a = await proxy._init(1, state, _init_seg(0, 1, "https://cdn/a.mp4?t=1"))
+    # token churn alone keeps the cached init
+    assert await proxy._init(1, state, _init_seg(1, 1, "https://cdn/a.mp4?t=2")) is a
+    b = await proxy._init(1, state, _init_seg(2, 1, "https://cdn/b.mp4?t=2"))
+    assert b == b"init:https://cdn/b.mp4?t=2"
+    assert calls == ["https://cdn/a.mp4?t=1", "https://cdn/b.mp4?t=2"]
+
+
+@pytest.mark.asyncio
+async def test_new_init_path_within_a_generation_starts_a_new_run(ffmpeg, fmp4_run):
+    init, segs = fmp4_run(44100, 3, chunked=True)
+
+    async def fetch(uri: str) -> bytes:
+        # same bytes, but a fresh object per fetch, as from the network
+        return bytes(bytearray(init)) if uri.startswith("init") else segs[int(uri)]
+
+    proxy = SegmentProxy(fetch, ffmpeg)
+    seg0, seg1, seg2 = (_fmp4(i, str(i)) for i in range(3))
+    seg2.map_uri = "init-moved"
+    for seg in (seg0, seg1, seg2):
+        proxy.register(1, seg)
+    proxy.flush(1)
+    outs = await asyncio.gather(*(proxy.get(1, i) for i in range(3)))
+    assert all(out is not None and audio_sample_rate(out) == 48000 for out in outs)
+    assert proxy._slots[1].run == 2
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_late_converter_output_never_replaces_served_bytes():
+    async def fetch(uri: str) -> bytes:
+        return b"raw"
+
+    proxy = SegmentProxy(fetch, None)
+    proxy.register(1, _seg(0, "0"))
+    await _fetched(proxy, 1, 0)
+    state = proxy._slots[1]
+    entry = state.entries[0]
+    conv = object()
+    entry.converter, entry.pts = conv, 5  # type: ignore[assignment]
+    entry.set_converted(b"remuxed")
+    SegmentProxy._deliver(state, conv, 5, b"late")  # type: ignore[arg-type]
+    assert await proxy.get(1, 0) == b"remuxed"
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_late_fmp4_conversion_and_remux_fit_convert_wait(monkeypatch):
+    monkeypatch.setattr(segments, "CONVERT_WAIT", 0.6)
+    monkeypatch.setattr(segments, "REMUX_WAIT", 0.4)
+    loop = asyncio.get_running_loop()
+    started: list[float] = []
+
+    async def slow_remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes:
+        started.append(loop.time())
+        await asyncio.sleep(timeout)
+        return b"ts"
+
+    monkeypatch.setattr(segments, "remux", slow_remux)
+
+    async def fetch(uri: str) -> bytes:
+        return b"fmp4"
+
+    proxy = SegmentProxy(fetch, None)
+    proxy.register(1, _fmp4(0, "0"))
+    await _fetched(proxy, 1, 0)
+    # a converter that never delivers
+    proxy._ffmpeg = "ffmpeg"
+    entry = proxy._slots[1].entries[0]
+    entry.init, entry.converter, entry.pts = b"init", object(), 5  # type: ignore[assignment]
+    start = loop.time()
+    assert await proxy.get(1, 0) == b"ts"
+    assert started[0] - start == pytest.approx(0.2, abs=0.1)
+    assert loop.time() - start == pytest.approx(0.6, abs=0.1)
+    proxy._ffmpeg = None
     await proxy.aclose()
