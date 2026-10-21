@@ -119,7 +119,8 @@ in {
         ];
 
         MemoryMax = "512M";
-        TasksMax = "50";
+        # each ffmpeg converter runs several threads, up to 4 slots plus retiring runs
+        TasksMax = "200";
       };
 
       environment = {

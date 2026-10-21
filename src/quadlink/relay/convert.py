@@ -20,6 +20,9 @@ TARGET_RATE = 48000
 # the native AAC encoder emits its first frame 1024 samples early; shifting input
 # timestamps by the same amount keeps audio aligned with the copied video
 _ENCODER_DELAY = 1024
+# outputs listed in out.m3u8; the scan reads only the newest name, so this need only
+# cover outputs written between two scans
+_LIST_SIZE = 40
 
 
 class AudioConverter:
@@ -30,10 +33,15 @@ class AudioConverter:
         self.workdir = workdir
         self._proc: asyncio.subprocess.Process | None = None
         self._by_pts: dict[int, Path] = {}
-        self._listed = 0
+        # index of the next o<N>.ts to scan
+        self._next = 0
+        # discarded before their output was scanned; deleted once it appears
+        self._dropped: set[int] = set()
 
     async def start(self) -> None:
-        self.workdir.mkdir(parents=True, exist_ok=True)
+        # a run dir left by a crashed daemon holds an out.m3u8 the scan would trust
+        shutil.rmtree(self.workdir, ignore_errors=True)
+        self.workdir.mkdir(parents=True)
         self._proc = await asyncio.create_subprocess_exec(
             self.ffmpeg,
             "-v",
@@ -59,6 +67,11 @@ class AudioConverter:
             "aac",
             "-b:a",
             "160k",
+            # one stereo AAC encode needs no worker threads; each one counts toward TasksMax
+            "-threads",
+            "1",
+            "-filter_threads",
+            "1",
             # a tiny hls_time makes ffmpeg cut at every keyframe, which Twitch places
             # at each segment start, so outputs line up with inputs
             "-f",
@@ -66,7 +79,7 @@ class AudioConverter:
             "-hls_time",
             "0.1",
             "-hls_list_size",
-            "0",
+            str(_LIST_SIZE),
             "-hls_segment_filename",
             str(self.workdir / "o%d.ts"),
             "-muxdelay",
@@ -85,19 +98,39 @@ class AudioConverter:
     def _scan(self) -> None:
         # the workdir can vanish under a reader once close() runs; treat that as no output
         try:
-            names = [
-                ln
-                for ln in (self.workdir / "out.m3u8").read_text().splitlines()
-                if ln.endswith(".ts")
-            ]
-            for name in names[self._listed :]:
-                path = self.workdir / name
-                pts = first_video_pts(path.read_bytes())
-                if pts is not None:
-                    self._by_pts[pts] = path
-                self._listed += 1
+            text = (self.workdir / "out.m3u8").read_text()
         except OSError:
             return
+        names = [ln for ln in text.splitlines() if ln.endswith(".ts")]
+        if not names:
+            return
+        # outputs are o<N>.ts in order and listed only once complete
+        newest = int(names[-1][1:-3])
+        while self._next <= newest:
+            path = self.workdir / f"o{self._next}.ts"
+            try:
+                pts = first_video_pts(path.read_bytes())
+            except FileNotFoundError:
+                pts = None
+            except OSError:
+                return
+            self._next += 1
+            if pts is None:
+                continue
+            if pts in self._dropped:
+                self._dropped.discard(pts)
+                path.unlink(missing_ok=True)
+            else:
+                self._by_pts[pts] = path
+
+    def discard(self, video_pts: int) -> None:
+        """Delete the output for this input's video PTS; no reader may ask for it again."""
+        self._scan()
+        path = self._by_pts.pop(video_pts, None)
+        if path is None:
+            self._dropped.add(video_pts)
+        else:
+            path.unlink(missing_ok=True)
 
     def has_output(self, video_pts: int) -> bool:
         """Whether a finished output segment already exists for this input's video PTS."""

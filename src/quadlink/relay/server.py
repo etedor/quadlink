@@ -251,8 +251,10 @@ class SlotRelay:
                 self._wait_ready(slot, state, 2, FRESH_WAIT)
             elif state.next_seq > before:
                 self._wait_ready(slot, state, 1, STEP_WAIT)
-        else:
-            self._proxy_first_seq.pop(slot, None)
+        elif self._proxy_first_seq.pop(slot, None) is not None:
+            assert self._segments is not None
+            # no later listing will flush the run, so its ffmpeg would idle until shutdown
+            self._segments.flush(slot)
         if state.next_seq > before:
             self._arrivals[slot] = (entry.identity, now)
             state.served_until = now

@@ -2,7 +2,6 @@
 
 from quadlink.relay.playlist import (
     SlotState,
-    add_filler,
     ingest,
     parse_media_playlist,
     render,
@@ -375,16 +374,6 @@ def test_render_holds_back_trailing_unready_mid_run_segment():
     out = render(state, 3, ready=_unready("b.ts", "c.ts"))
     assert "a.ts" in out
     assert "b.ts" not in out and "c.ts" not in out
-
-
-def test_render_lists_unready_run_start_after_filler():
-    state = SlotState()
-    ingest(state, _src(100, ["a.ts"]), "chan-A")
-    add_filler(state)
-    ingest(state, _src(101, ["b.ts"]), "chan-A")
-    state.segments[-1].discontinuity = False
-    out = render(state, 3, ready=_unready("b.ts"))
-    assert out.rstrip().endswith("b.ts")
 
 
 def test_render_lists_unready_run_start_at_discontinuity():

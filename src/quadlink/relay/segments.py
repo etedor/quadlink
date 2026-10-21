@@ -5,6 +5,7 @@ feed ffmpeg its input in sequence. A run is a stretch without a discontinuity.
 """
 
 import asyncio
+import shutil
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -36,6 +37,13 @@ class _Entry:
     pts: int | None = None
     converted: bytes | None = None
 
+    def set_converted(self, data: bytes) -> None:
+        # converted is final once set, so the raw bytes are never served again
+        self.converted = data
+        released: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+        released.set_result(b"")
+        self.raw = released
+
 
 @dataclass
 class _Slot:
@@ -47,7 +55,8 @@ class _Slot:
     run: int = 0
     # false until the next fetched segment decides whether its run converts
     decided: bool = False
-    # entries with a client in get(); harvested even once evicted from the cache
+    # entries with a client in get(); harvested even once evicted from the cache, and
+    # their outputs kept until the last client leaves
     waiting: "list[_Entry]" = field(default_factory=list)
 
 
@@ -63,10 +72,12 @@ class SegmentProxy:
         fetch: Callable[[str], Awaitable[bytes]],
         ffmpeg: str | None,
         workroot: Path,
-        keep: int = 30,
+        keep: int = 14,
     ) -> None:
         self._fetch = fetch
         self._ffmpeg = ffmpeg
+        # run dir names repeat across restarts
+        shutil.rmtree(workroot, ignore_errors=True)
         self._workroot = workroot
         self._keep = keep
         self._slots: dict[int, _Slot] = {}
@@ -81,7 +92,8 @@ class SegmentProxy:
         entry.raw.add_done_callback(_mark_retrieved)
         state.entries[seg.seq] = entry
         while len(state.entries) > self._keep:
-            state.entries.popitem(last=False)
+            _, evicted = state.entries.popitem(last=False)
+            self._discard(state, evicted)
         state.queue.put_nowait(entry)
         if state.worker is None or state.worker.done():
             state.worker = asyncio.create_task(self._work(slot, state))
@@ -130,6 +142,21 @@ class SegmentProxy:
                 )
             if not entry.raw.done():
                 entry.raw.set_result(data)
+            # evicted while still queued: its converter was set only now
+            if state.entries.get(entry.seg.seq) is not entry:
+                self._discard(state, entry)
+
+    @staticmethod
+    def _discard(state: _Slot, entry: _Entry) -> None:
+        """Delete an uncached entry's converted output once no client waits on it.
+
+        A run can last hours; without this its outputs fill the workdir until harvest.
+        """
+        if entry.converter is None or entry in state.waiting:
+            return
+        assert entry.pts is not None
+        entry.converter.discard(entry.pts)
+        entry.converter = None
 
     async def _route(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> None:
         ts = entry.seg.map_gen is None
@@ -160,8 +187,12 @@ class SegmentProxy:
             # a hung ffmpeg must not hold this segment's clients past their buffer
             await asyncio.wait_for(conv.feed(data), FEED_WAIT)
         except Exception as e:
-            # the rest of the run passes through raw
-            logger.warning("relay conversion failed", slot=slot, seq=entry.seg.seq, error=repr(e))
+            logger.warning(
+                "relay conversion failed, serving the rest of the run at the source rate",
+                slot=slot,
+                seq=entry.seg.seq,
+                error=repr(e),
+            )
             state.converter = None
             self._retire(state, conv)
             return
@@ -191,7 +222,9 @@ class SegmentProxy:
                 if entry.converter is not conv:
                     continue
                 if entry.converted is None and entry.pts is not None:
-                    entry.converted = await conv.output_for(entry.pts, 0)
+                    out = await conv.output_for(entry.pts, 0)
+                    if out is not None:
+                        entry.set_converted(out)
                 entry.converter = None
             await conv.close()
 
@@ -234,18 +267,19 @@ class SegmentProxy:
     async def get(self, slot: int, seq: int) -> bytes | None:
         state = self._slots.get(slot)
         entry = state.entries.get(seq) if state is not None else None
-        if entry is None:
+        if state is None or entry is None:
             return None
-        try:
-            # shielded: one client disconnecting must not cancel the fetch for all
-            data = await asyncio.shield(entry.raw)
-        except Exception:
-            return None
-        assert state is not None
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + CONVERT_WAIT
+        # listed while still fetching too: the worker discards an evicted entry's
+        # output after the fetch, which this client still waits to read
         state.waiting.append(entry)
         try:
+            try:
+                # shielded: one client disconnecting must not cancel the fetch for all
+                data = await asyncio.shield(entry.raw)
+            except Exception:
+                return None
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + CONVERT_WAIT
             # re-read entry each pass: a retiring run moves its outputs into entry.converted
             while entry.converted is None:
                 conv = entry.converter
@@ -254,15 +288,21 @@ class SegmentProxy:
                 assert entry.pts is not None
                 out = await conv.output_for(entry.pts, 0)
                 if out is not None:
-                    entry.converted = out
+                    entry.set_converted(out)
                     break
                 if loop.time() >= deadline:
-                    logger.warning("relay conversion late, serving original", slot=slot, seq=seq)
+                    logger.warning(
+                        "relay conversion late, serving this segment at the source rate",
+                        slot=slot,
+                        seq=seq,
+                    )
                     return data
                 await asyncio.sleep(0.1)
             return entry.converted
         finally:
             state.waiting.remove(entry)
+            if state.entries.get(seq) is not entry:
+                self._discard(state, entry)
 
     async def aclose(self) -> None:
         workers = [s.worker for s in self._slots.values() if s.worker is not None]

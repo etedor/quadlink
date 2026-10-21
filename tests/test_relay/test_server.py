@@ -386,6 +386,27 @@ async def test_proxy_disabled_keeps_cdn_uris():
 
 
 @pytest.mark.asyncio
+async def test_proxy_disabled_flushes_the_open_run():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+
+    async def fetch(url):
+        return _src(100, ["https://cdn/a.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    await _call(relay, "1")
+    assert proxy.flushes == []
+    relay.proxy_segments = False
+    now[0] += 1
+    await _call(relay, "1")
+    now[0] += 1
+    await _call(relay, "1")
+    assert proxy.flushes == [1]
+
+
+@pytest.mark.asyncio
 async def test_proxy_enabled_mid_stream_keeps_cdn_uri_for_segments_already_in_window():
     store = SlotStore()
     store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])

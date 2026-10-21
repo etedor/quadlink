@@ -502,3 +502,49 @@ async def test_harvest_failure_is_logged(ffmpeg, ts_run, tmp_path, monkeypatch):
     await proxy.aclose()
     gc.collect()
     assert reported == []
+
+
+@pytest.mark.asyncio
+async def test_long_run_keeps_outputs_bounded(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 16)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=4)
+    for i in range(len(segs)):
+        proxy.register(1, _seg(i, str(i)))
+        await _fetched(proxy, 1, i)
+        if i:
+            assert await proxy.get(1, i - 1) is not None
+    conv = proxy._slots[1].converter
+    assert conv is not None
+    # the cache's 4 entries plus at most the newest output still being written
+    assert len(conv._by_pts) <= 5
+    assert len(list(conv.workdir.glob("*.ts"))) <= 5
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_converted_entry_releases_its_raw_bytes(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 3)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    for i in range(3):
+        proxy.register(1, _seg(i, str(i)))
+    out = await proxy.get(1, 0)
+    assert out is not None and audio_sample_rate(out) == 48000
+    assert proxy._slots[1].entries[0].raw.result() == b""
+    assert await proxy.get(1, 0) == out
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_construction_clears_the_workroot(tmp_path):
+    stale = tmp_path / "relay" / "slot1-run1"
+    stale.mkdir(parents=True)
+    (stale / "out.m3u8").write_text("#EXTM3U\n")
+
+    async def fetch(uri: str) -> bytes:
+        raise AssertionError("not fetched")
+
+    proxy = SegmentProxy(fetch, None, tmp_path / "relay")
+    assert not (tmp_path / "relay").exists()
+    await proxy.aclose()

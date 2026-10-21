@@ -100,3 +100,37 @@ async def test_fresh_run_lags_one_segment(ffmpeg, ts_run, tmp_path):
     out = await conv.output_for(first_video_pts(segs[0]), timeout=2)
     assert out is not None and audio_sample_rate(out) == 48000
     await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_discard_deletes_output_even_before_it_is_written(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 3)
+    conv = AudioConverter(ffmpeg, tmp_path / "w")
+    await conv.start()
+    pts = [first_video_pts(s) for s in segs]
+    # discarded before ffmpeg has written it: deleted once the scan finds it
+    conv.discard(pts[0])
+    for seg in segs:
+        await conv.feed(seg)
+    assert await conv.output_for(pts[1], timeout=10) is not None
+    assert not conv.has_output(pts[0])
+    conv.discard(pts[1])
+    assert not conv.has_output(pts[1])
+    await conv.finish()
+    assert conv.has_output(pts[2])
+    assert sorted(p.name for p in (tmp_path / "w").glob("*.ts")) == ["o2.ts"]
+    await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_start_clears_a_stale_run_dir(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 2)
+    work = tmp_path / "w"
+    work.mkdir()
+    # left by a crashed daemon: a listing whose o0.ts holds another run's segment
+    (work / "out.m3u8").write_text("#EXTM3U\n#EXTINF:2.0,\no0.ts\n")
+    (work / "o0.ts").write_bytes(segs[1])
+    conv = AudioConverter(ffmpeg, work)
+    await conv.start()
+    assert not conv.has_output(first_video_pts(segs[1]))
+    await conv.close()

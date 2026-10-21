@@ -69,7 +69,8 @@ class Daemon:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
             logger.warning("relay ffmpeg not found, audio passes through")
-        self._segment_client = httpx.AsyncClient(timeout=10)
+        # a hung fetch holds the slot's serial fetch queue; segments arrive every 2s
+        self._segment_client = httpx.AsyncClient(timeout=5)
         self.slot_relay = SlotRelay(
             self.slot_store,
             segments=SegmentProxy(

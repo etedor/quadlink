@@ -342,7 +342,7 @@ def render(
     segments = list(state.segments)
     if ready is not None:
         while len(segments) > 1 and not segments[-1].filler and not ready(segments[-1]):
-            if segments[-1].discontinuity or segments[-2].filler:
+            if segments[-1].discontinuity:
                 break
             segments.pop()
     target = max(1, max((math.ceil(s.duration) for s in segments), default=1))
