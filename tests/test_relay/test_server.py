@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from quadlink.relay.segments import SegmentProxy
-from quadlink.relay.server import FRESH_WAIT, STALL_AFTER, SlotRelay
+from quadlink.relay.server import FRESH_WAIT, STALL_AFTER, STEP_WAIT, SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.webui import WebUI
 
@@ -460,7 +460,7 @@ async def test_fresh_window_lists_up_to_two_before_newest(rate, ffmpeg, ts_run, 
 
 
 @pytest.mark.asyncio
-async def test_steady_state_polls_do_not_wait():
+async def test_steady_state_polls_wait_only_for_new_segments():
     store = SlotStore()
     store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
     now = [0.0]
@@ -477,7 +477,64 @@ async def test_steady_state_polls_do_not_wait():
         now[0] += 2
         uris.append(f"{len(uris)}.ts")
         await _call(relay, "1")
-    assert len(proxy.waits) == 1
+    # each new segment waits for the one before it
+    assert proxy.waits[1:] == [(1, 1, STEP_WAIT), (1, 2, STEP_WAIT), (1, 3, STEP_WAIT)]
+    # a poll that adds nothing does not wait
+    now[0] += 1
+    await _call(relay, "1")
+    assert len(proxy.waits) == 4
+
+
+def _growing_relay(segs: list[bytes], first: int, ffmpeg: str, tmp_path, now: list[float]):
+    """A relay over a source that lists `first` segments, then one more per append."""
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    count = [first]
+
+    async def fetch_segment(uri):
+        return segs[int(uri)]
+
+    async def fetch(url):
+        return _src(100, [str(i) for i in range(count[0])])
+
+    proxy = SegmentProxy(fetch_segment, ffmpeg, tmp_path)
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    return relay, count
+
+
+@pytest.mark.asyncio
+async def test_converted_poll_lists_segment_before_newest(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 9)
+    now = [0.0]
+    relay, count = _growing_relay(segs, 4, ffmpeg, tmp_path, now)
+    try:
+        await _call(relay, "1")
+        while count[0] < len(segs):
+            count[0] += 1
+            now[0] += 2
+            resp = await _call(relay, "1")
+            assert f"/streams/1/seg/{count[0] - 2}.ts" in resp.text
+    finally:
+        await relay.aclose()
+
+
+@pytest.mark.asyncio
+async def test_unconverted_polls_do_not_wait(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(48000, 8)
+    now = [0.0]
+    relay, count = _growing_relay(segs, 4, ffmpeg, tmp_path, now)
+    loop = asyncio.get_running_loop()
+    try:
+        await _call(relay, "1")
+        while count[0] < len(segs):
+            count[0] += 1
+            now[0] += 2
+            start = loop.time()
+            resp = await _call(relay, "1")
+            assert loop.time() - start < STEP_WAIT / 2
+            assert f"/streams/1/seg/{count[0] - 1}.ts" in resp.text
+    finally:
+        await relay.aclose()
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,11 @@ IDLE_RESET = 10.0
 # the newest listed segment and never skips, so a window listed before its
 # segments are ready keeps the tile that far behind live for good
 FRESH_WAIT = 4.0
+# seconds a poll that adds a segment waits for the one before it. A running
+# converter finishes segment N-1 within about 0.5s of being fed N; without the
+# wait the listed end moves only on the next poll, and AVPlayer fails a playlist
+# unchanged for 1.5 x target duration (3s)
+STEP_WAIT = 1.0
 
 _FILLER_DIR = Path(__file__).parent / "filler"
 _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
@@ -99,8 +104,9 @@ class SlotRelay:
         # slot -> lowest seq registered with the proxy since it was last turned on;
         # segments below it were never registered and must keep their CDN URI
         self._proxy_first_seq: dict[int, int] = {}
-        # slot -> wait on a fresh window's proxy readiness, shared by concurrent polls
-        self._fresh_waits: dict[int, asyncio.Task[bool]] = {}
+        # slot -> wait on the proxy readiness of newly listed segments, shared by
+        # concurrent polls
+        self._waits: dict[int, asyncio.Task[bool]] = {}
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -171,12 +177,12 @@ class SlotRelay:
                 return web.Response(status=503, text="source unavailable")
         else:
             await self._ingest_slot(slot, state, entry, text)
-        wait = self._fresh_waits.get(slot)
+        wait = self._waits.get(slot)
         if wait is not None:
             # shielded: one client disconnecting must not end the wait for the others
             await asyncio.shield(wait)
-            if self._fresh_waits.get(slot) is wait:
-                del self._fresh_waits[slot]
+            if self._waits.get(slot) is wait:
+                del self._waits[slot]
 
         self._fill_gap(slot, state)
         if not state.segments:
@@ -242,26 +248,30 @@ class SlotRelay:
                     self._segments.register(slot, seg)
                     self._proxy_first_seq.setdefault(slot, seg.seq)
             if budget is None:
-                self._wait_fresh(slot, state)
+                self._wait_ready(slot, state, 2, FRESH_WAIT)
+            elif state.next_seq > before:
+                self._wait_ready(slot, state, 1, STEP_WAIT)
         else:
             self._proxy_first_seq.pop(slot, None)
         if state.next_seq > before:
             self._arrivals[slot] = (entry.identity, now)
             state.served_until = now
 
-    def _wait_fresh(self, slot: int, state: SlotState) -> None:
-        """Start the wait for a fresh window to list up to two before its newest segment.
+    def _wait_ready(self, slot: int, state: SlotState, back: int, timeout: float) -> None:
+        """Start the wait for the live segment `back` before the newest to be ready.
 
-        ffmpeg finalizes a converted output after about two more input segments.
+        A fresh window waits for two back: ffmpeg finalizes a converted output
+        after about two more input segments. A running converter needs one.
+        Unconverted segments are ready once their run is decided, so this costs
+        an unconverted slot at most one fetch.
         """
         assert self._segments is not None
         live = [seg for seg in state.segments if not seg.filler]
-        if not live or slot in self._fresh_waits:
+        current = self._waits.get(slot)
+        if not live or (current is not None and not current.done()):
             return
-        target = live[max(0, len(live) - 3)].seq
-        self._fresh_waits[slot] = asyncio.create_task(
-            self._segments.wait_ready(slot, target, FRESH_WAIT)
-        )
+        target = live[max(0, len(live) - 1 - back)].seq
+        self._waits[slot] = asyncio.create_task(self._segments.wait_ready(slot, target, timeout))
 
     def _fill_gap(self, slot: int, state: SlotState) -> None:
         """Add one filler segment once a slot's video has stalled or fallen behind.
@@ -376,10 +386,10 @@ class SlotRelay:
 
     async def aclose(self) -> None:
         """Close the segment proxy and the internal httpx client, if created."""
-        for wait in self._fresh_waits.values():
+        for wait in self._waits.values():
             wait.cancel()
-        await asyncio.gather(*self._fresh_waits.values(), return_exceptions=True)
-        self._fresh_waits.clear()
+        await asyncio.gather(*self._waits.values(), return_exceptions=True)
+        self._waits.clear()
         if self._segments is not None:
             await self._segments.aclose()
         if self._client is not None:
