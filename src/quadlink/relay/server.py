@@ -15,6 +15,7 @@ from aiohttp import web
 
 from quadlink.relay.playlist import (
     FILLER_DURATION,
+    Segment,
     SlotState,
     add_filler,
     first_map_uri,
@@ -22,6 +23,7 @@ from quadlink.relay.playlist import (
     ingest,
     render,
 )
+from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.store import SlotEntry, SlotStore
 
 logger = structlog.get_logger()
@@ -69,6 +71,7 @@ class SlotRelay:
         cache_ttl: float = 1.0,
         window: int = 12,
         time_fn: Callable[[], float] = time.monotonic,
+        segments: SegmentProxy | None = None,
     ) -> None:
         self.store = store
         self._fetch = fetch
@@ -84,6 +87,11 @@ class SlotRelay:
         self._source_urls: dict[int, str] = {}
         self._filler = {name: (_FILLER_DIR / name).read_bytes() for name in _FILLER_TYPES}
         self._client: httpx.AsyncClient | None = None
+        self._segments = segments
+        self.proxy_segments = True
+        # slot -> lowest seq registered with the proxy since it was last turned on;
+        # segments below it were never registered and must keep their CDN URI
+        self._proxy_first_seq: dict[int, int] = {}
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -158,7 +166,25 @@ class SlotRelay:
         self._fill_gap(state)
         if not state.segments:
             return web.Response(status=503, text="no segments")
-        return self._playlist_response(render(state, slot))
+        return self._playlist_response(self._render(state, slot))
+
+    def _proxying(self) -> bool:
+        return self._segments is not None and self.proxy_segments
+
+    def _render(self, state: SlotState, slot: int) -> str:
+        if not self._proxying():
+            return render(state, slot)
+        assert self._segments is not None
+        proxy = self._segments
+        first = self._proxy_first_seq.get(slot)
+
+        def uri_for(seg: Segment) -> str:
+            if first is None or seg.seq < first:
+                return seg.uri
+            ext = "m4s" if seg.map_gen is not None else "ts"
+            return f"/streams/{slot}/seg/{seg.seq}.{ext}"
+
+        return render(state, slot, uri_for, lambda seg: proxy.ready(slot, seg.seq))
 
     async def _ingest_slot(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
         """Fold the slot's channel into its window, or the outgoing one during a preroll."""
@@ -189,6 +215,14 @@ class SlotRelay:
         else:
             state.edge += ingest(state, text, entry.identity, budget)
         self._source_urls[slot] = entry.url
+        if self._proxying():
+            assert self._segments is not None
+            for seg in state.segments:
+                if seg.seq >= before:
+                    self._segments.register(slot, seg)
+                    self._proxy_first_seq.setdefault(slot, seg.seq)
+        else:
+            self._proxy_first_seq.pop(slot, None)
         if state.next_seq > before:
             self._arrivals[slot] = (entry.identity, now)
             state.served_until = now
@@ -258,6 +292,28 @@ class SlotRelay:
             headers={"Cache-Control": "public, max-age=86400"},
         )
 
+    async def handle_segment(self, request: web.Request) -> web.Response:
+        """Route handler for GET /streams/{slot}/seg/{seq}.{ts|m4s}."""
+        name = request.match_info.get("name", "")
+        stem, _, ext = name.partition(".")
+        try:
+            slot, seq = int(request.match_info.get("slot", "")), int(stem)
+        except ValueError:
+            return web.Response(status=404, text="bad segment")
+        types = {"ts": "video/mp2t", "m4s": "video/iso.segment"}
+        if slot not in (1, 2, 3, 4) or ext not in types or self._segments is None:
+            return web.Response(status=404, text="bad segment")
+        try:
+            body = await self._segments.get(slot, seq)
+        except Exception as e:
+            logger.warning("relay segment fetch failed", slot=slot, seq=seq, error=str(e))
+            return web.Response(status=502, text="segment fetch failed")
+        if body is None:
+            return web.Response(status=404, text="no such segment")
+        return web.Response(
+            body=body, content_type=types[ext], headers={"Cache-Control": "max-age=60"}
+        )
+
     def _playlist_response(self, body: str) -> web.Response:
         return web.Response(
             text=body,
@@ -269,10 +325,13 @@ class SlotRelay:
         """Register the relay routes on an existing aiohttp router."""
         router.add_get("/streams/{slot}", self.handle)
         router.add_get("/streams/filler/{name}", self.handle_filler)
+        router.add_get("/streams/{slot}/seg/{name}", self.handle_segment)
         router.add_get("/streams/{slot}/init/{gen}", self.handle_init)
 
     async def aclose(self) -> None:
-        """Close the internal httpx client, if one was created."""
+        """Close the segment proxy and the internal httpx client, if created."""
+        if self._segments is not None:
+            await self._segments.aclose()
         if self._client is not None:
             await self._client.aclose()
             self._client = None

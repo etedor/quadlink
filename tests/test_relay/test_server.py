@@ -302,3 +302,117 @@ async def test_dead_newest_url_without_window_returns_503():
     relay = SlotRelay(store, fetch=fetch)
     resp = await _call(relay, "1")
     assert resp.status == 503
+
+
+class FakeProxy:
+    def __init__(self, unready: set[int] | None = None) -> None:
+        self.registered: list[tuple[int, int]] = []
+        self.unready = unready or set()
+
+    def register(self, slot, seg):
+        self.registered.append((slot, seg.seq))
+
+    def ready(self, slot, seq):
+        return seq not in self.unready
+
+    async def get(self, slot, seq):
+        return b"seg-%d" % seq
+
+    async def aclose(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_proxied_playlist_points_at_relay_segments():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, ["https://cdn/a.ts", "https://cdn/b.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, segments=proxy)
+    resp = await _call(relay, "1")
+    assert "/streams/1/seg/0.ts" in resp.text
+    assert "/streams/1/seg/1.ts" in resp.text
+    assert "https://cdn/" not in resp.text
+    assert proxy.registered == [(1, 0), (1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_unready_trailing_segment_is_held_back():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, ["https://cdn/a.ts", "https://cdn/b.ts"])
+
+    relay = SlotRelay(store, fetch=fetch, segments=FakeProxy(unready={1}))
+    resp = await _call(relay, "1")
+    assert "/streams/1/seg/0.ts" in resp.text
+    assert "/streams/1/seg/1.ts" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_proxy_disabled_keeps_cdn_uris():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, ["https://cdn/a.ts"])
+
+    relay = SlotRelay(store, fetch=fetch, segments=FakeProxy())
+    relay.proxy_segments = False
+    resp = await _call(relay, "1")
+    assert "https://cdn/a.ts" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_proxy_enabled_mid_stream_keeps_cdn_uri_for_segments_already_in_window():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    calls: list[str] = []
+
+    async def fetch(url):
+        calls.append(url)
+        if len(calls) == 1:
+            return _src(100, ["https://cdn/a.ts"])
+        return _src(100, ["https://cdn/a.ts", "https://cdn/b.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    relay.proxy_segments = False
+    resp = await _call(relay, "1")
+    assert "https://cdn/a.ts" in resp.text
+    assert proxy.registered == []
+
+    relay.proxy_segments = True
+    now[0] += 1
+    resp = await _call(relay, "1")
+    # already in the window before proxying turned on: never registered, keeps its CDN URI
+    assert "https://cdn/a.ts" in resp.text
+    # registered once proxying began: served through the relay
+    assert "/streams/1/seg/1.ts" in resp.text
+    assert proxy.registered == [(1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_segment_route_serves_proxy_bytes():
+    relay = SlotRelay(SlotStore(), segments=FakeProxy())
+    request = make_mocked_request(
+        "GET", "/streams/2/seg/7.ts", match_info={"slot": "2", "name": "7.ts"}
+    )
+    resp = await relay.handle_segment(request)
+    assert resp.status == 200
+    assert resp.body == b"seg-7"
+    assert resp.content_type == "video/mp2t"
+
+
+@pytest.mark.asyncio
+async def test_segment_route_rejects_bad_names():
+    relay = SlotRelay(SlotStore(), segments=FakeProxy())
+    request = make_mocked_request(
+        "GET", "/streams/2/seg/x.ts", match_info={"slot": "2", "name": "x.ts"}
+    )
+    assert (await relay.handle_segment(request)).status == 404

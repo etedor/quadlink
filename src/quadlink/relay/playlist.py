@@ -8,6 +8,7 @@ with a monotonic MEDIA-SEQUENCE and DISCONTINUITY splices on source change.
 import math
 import re
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -324,9 +325,21 @@ def add_filler(state: SlotState) -> None:
     _trim(state)
 
 
-def render(state: SlotState, slot: int) -> str:
-    """Render our current window as a live HLS media playlist."""
+def render(
+    state: SlotState,
+    slot: int,
+    uri_for: Callable[[Segment], str] | None = None,
+    ready: Callable[[Segment], bool] | None = None,
+) -> str:
+    """Render our current window as a live HLS media playlist.
+
+    `ready` holds back trailing segments a client could not fetch yet (a converted
+    segment exists only once ffmpeg has seen the next keyframe); earlier ones stay.
+    """
     segments = list(state.segments)
+    if ready is not None:
+        while len(segments) > 1 and not segments[-1].filler and not ready(segments[-1]):
+            segments.pop()
     target = max(1, max((math.ceil(s.duration) for s in segments), default=1))
     lines = [
         "#EXTM3U",
@@ -351,5 +364,5 @@ def render(state: SlotState, slot: int) -> str:
         if seg.program_date_time:
             lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{seg.program_date_time}")
         lines.append(f"#EXTINF:{seg.duration:.3f},")
-        lines.append(seg.uri)
+        lines.append(uri_for(seg) if uri_for is not None and not seg.filler else seg.uri)
     return "\n".join(lines) + "\n"
