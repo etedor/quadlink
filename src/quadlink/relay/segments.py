@@ -29,6 +29,12 @@ CONVERT_WAIT = 6.0
 FEED_WAIT = 3.0
 # seconds a one-shot fMP4 to MPEG-TS remux may take; its clients wait on it
 REMUX_WAIT = 2.0
+# seconds all attempts at one init segment may take; its segment's clients wait on it
+INIT_WAIT = 4.0
+# seconds under which a failed init fetch is tried again within INIT_WAIT
+INIT_RETRY_UNDER = 1.0
+# seconds the segments of a generation whose init failed skip fetching it
+INIT_BACKOFF = 10.0
 
 
 # identity equality: entries go in sets and are compared by object
@@ -72,6 +78,8 @@ class _Slot:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     # (map generation, URI without query, bytes) of the newest fMP4 init segment
     init: tuple[int, str, bytes] | None = None
+    # (map generation, URI without query, loop time) of the last init that failed
+    init_failed: tuple[int, str, float] | None = None
 
     def notify(self) -> None:
         event, self.changed = self.changed, asyncio.Event()
@@ -187,24 +195,48 @@ class SegmentProxy:
         path = seg.map_uri.split("?", 1)[0]
         if state.init is not None and state.init[:2] == (seg.map_gen, path):
             return state.init[2]
+        loop = asyncio.get_running_loop()
+        failed = state.init_failed
+        if failed is not None and failed[:2] == (seg.map_gen, path):
+            if loop.time() - failed[2] < INIT_BACKOFF:
+                return self._init_fallback(state, seg.map_gen, path)
         data: bytes | None = None
+        deadline = loop.time() + INIT_WAIT
         for attempt in range(2):
+            started = loop.time()
             try:
-                data = await self._fetch(seg.map_uri)
+                async with asyncio.timeout_at(deadline):
+                    data = await self._fetch(seg.map_uri)
                 break
             except Exception as e:
                 logger.warning(
-                    "relay init fetch failed", slot=slot, seq=seg.seq, attempt=attempt, error=str(e)
+                    "relay init fetch failed",
+                    slot=slot,
+                    seq=seg.seq,
+                    attempt=attempt,
+                    error=repr(e),
                 )
+                # a slow failure would leave the retry too little of INIT_WAIT
+                now = loop.time()
+                if now - started >= INIT_RETRY_UNDER or now >= deadline:
+                    break
         if data is None:
-            if state.init is None or state.init[1] != path:
-                # not cached: the next segment tries again
-                return None
-            # filler under a listed segment URI has no DISCONTINUITY, so an init at
-            # the same path is the better guess
-            data = state.init[2]
+            state.init_failed = (seg.map_gen, path, loop.time())
+            return self._init_fallback(state, seg.map_gen, path)
+        state.init_failed = None
         state.init = (seg.map_gen, path, data)
         return data
+
+    @staticmethod
+    def _init_fallback(state: _Slot, map_gen: int, path: str) -> bytes | None:
+        """The cached init to use when a generation's own init could not be fetched."""
+        if state.init is None or state.init[1] != path:
+            # not cached: a later segment tries again once INIT_BACKOFF has passed
+            return None
+        # filler under a listed segment URI has no DISCONTINUITY, so an init at
+        # the same path is the better guess
+        state.init = (map_gen, path, state.init[2])
+        return state.init[2]
 
     @staticmethod
     def _discard(state: _Slot, entry: _Entry) -> None:
@@ -230,7 +262,8 @@ class SegmentProxy:
         # ffmpeg also ends the run: the old converter could never complete this
         # segment's output
         conv = state.converter
-        broken = conv is not None and (conv.init is not entry.init or not conv.continues(data))
+        # init bytes compare by value: a refetch under a new URI can return the same init
+        broken = conv is not None and (conv.init != entry.init or not conv.continues(data))
         # every TS run with audio goes through the encoder, so all tiles get the same
         # 48 kHz AAC whatever the channel sends; a run decides once, at its first segment
         if entry.seg.discontinuity or not state.decided or broken:

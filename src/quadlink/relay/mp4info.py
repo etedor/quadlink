@@ -169,41 +169,64 @@ def _samples(data: bytes, lo: int, hi: int, default: int) -> Iterator[tuple[int,
             yield duration, offset
 
 
-def fragment_video_pts(data: bytes, video: Track) -> int | None:
+def fragment_video_pts(data: bytes, video: Track, lift: int | None = None) -> int | None:
     """Lowest video PTS of an fMP4 media segment, in 90 kHz ticks as ffmpeg outputs it.
 
-    Reads the first fragment that holds video.
+    Reads the first fragment that holds video. `lift` is the composition offset lift
+    ffmpeg applies to that fragment (see video_lift); None takes the segment's own, as
+    a demuxer reading only this segment applies it.
     """
     try:
-        return _fragment_video_pts(data, video)
+        return _fragment_video_pts(data, video, lift)
     except (struct.error, IndexError):
         return None
 
 
-def _video_trafs(data: bytes, video: Track) -> Iterator[tuple[int, list[tuple[int, int]]]]:
-    """(base DTS less the edit shift, samples) of each video traf with a tfdt."""
-    for lo, hi in _find(data, 0, len(data), [b"moof", b"traf"]):
-        tfhd = _first(data, lo, hi, [b"tfhd"])
-        tfdt = _first(data, lo, hi, [b"tfdt"])
-        if tfhd is None or tfdt is None:
-            continue
-        if struct.unpack_from(">I", data, tfhd[0] + 4)[0] != video.track_id:
-            continue
-        fmt = ">Q" if data[tfdt[0]] == 1 else ">I"
-        dts = struct.unpack_from(fmt, data, tfdt[0] + 4)[0] - video.shift
-        samples = list(_samples(data, lo, hi, video.default_duration))
-        if samples:
-            yield dts, samples
+def video_lift(data: bytes, video: Track, first: bool = False) -> int:
+    """Media ticks ffmpeg's mov demuxer adds to each video PTS once it has read this segment.
+
+    The demuxer raises every PTS by the most negative composition offset it has read
+    so far (trun v1, e.g. CMAF), so no PTS precedes its DTS; the lift only ever rises.
+    `first` counts only the fragment holding the first video sample: the demuxer reads
+    a whole moof before any of its samples, and later moofs only after them.
+    """
+    try:
+        trafs = list(_video_trafs(data, video))
+    except (struct.error, IndexError):
+        return 0
+    if first:
+        trafs = [t for t in trafs if t[0] == trafs[0][0]]
+    return _lift(trafs)
 
 
-def _fragment_video_pts(data: bytes, video: Track) -> int | None:
+def _lift(trafs: list[tuple[int, int, list[tuple[int, int]]]]) -> int:
+    return max([0, *(-offset for _, _, samples in trafs for _, offset in samples)])
+
+
+def _video_trafs(data: bytes, video: Track) -> Iterator[tuple[int, int, list[tuple[int, int]]]]:
+    """(moof start, base DTS less the edit shift, samples) of each video traf with a tfdt."""
+    for moof, moof_end in _find(data, 0, len(data), [b"moof"]):
+        for lo, hi in _find(data, moof, moof_end, [b"traf"]):
+            tfhd = _first(data, lo, hi, [b"tfhd"])
+            tfdt = _first(data, lo, hi, [b"tfdt"])
+            if tfhd is None or tfdt is None:
+                continue
+            if struct.unpack_from(">I", data, tfhd[0] + 4)[0] != video.track_id:
+                continue
+            fmt = ">Q" if data[tfdt[0]] == 1 else ">I"
+            dts = struct.unpack_from(fmt, data, tfdt[0] + 4)[0] - video.shift
+            samples = list(_samples(data, lo, hi, video.default_duration))
+            if samples:
+                yield moof, dts, samples
+
+
+def _fragment_video_pts(data: bytes, video: Track, lift: int | None) -> int | None:
     trafs = list(_video_trafs(data, video))
     if not trafs:
         return None
-    # ffmpeg's mov demuxer raises every PTS by the most negative composition offset
-    # it has read (trun v1, e.g. CMAF), so no PTS precedes its DTS
-    lift = max(0, -min(offset for _, samples in trafs for _, offset in samples))
-    dts, samples = trafs[0]
+    if lift is None:
+        lift = _lift(trafs)
+    _, dts, samples = trafs[0]
     # negative offsets let any sample hold the lowest PTS, so all are scanned
     low = dts + samples[0][1]
     for duration, offset in samples:

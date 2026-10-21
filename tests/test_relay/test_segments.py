@@ -397,8 +397,8 @@ async def test_fmp4_without_its_init_asks_for_filler(ffmpeg, fmp4_run):
     proxy.register(1, _fmp4(1, "1"))
     assert await proxy.get(1, 0) == b""
     assert await proxy.get(1, 1) == b""
-    # a failed init fetch is tried twice, and again by the next segment
-    assert calls.count("init1") == 4
+    # a failed init fetch is tried twice; the next segment, within INIT_BACKOFF, skips it
+    assert calls.count("init1") == 2
     await proxy.aclose()
 
 
@@ -861,12 +861,17 @@ async def test_new_init_path_within_a_generation_is_fetched():
 
 
 @pytest.mark.asyncio
-async def test_new_init_path_within_a_generation_starts_a_new_run(ffmpeg, fmp4_run):
+@pytest.mark.parametrize(("changed", "runs"), [(False, 1), (True, 2)], ids=["same", "changed"])
+async def test_new_init_path_restarts_the_run_only_for_new_bytes(ffmpeg, fmp4_run, changed, runs):
     init, segs = fmp4_run(44100, 3, chunked=True)
+    # a top-level free box: the same media, different bytes
+    moved = init + b"\x00\x00\x00\x08free" if changed else init
 
     async def fetch(uri: str) -> bytes:
-        # same bytes, but a fresh object per fetch, as from the network
-        return bytes(bytearray(init)) if uri.startswith("init") else segs[int(uri)]
+        # a fresh object per fetch, as from the network
+        if uri.startswith("init"):
+            return bytes(bytearray(moved if uri == "init-moved" else init))
+        return segs[int(uri)]
 
     proxy = SegmentProxy(fetch, ffmpeg)
     seg0, seg1, seg2 = (_fmp4(i, str(i)) for i in range(3))
@@ -876,8 +881,60 @@ async def test_new_init_path_within_a_generation_starts_a_new_run(ffmpeg, fmp4_r
     proxy.flush(1)
     outs = await asyncio.gather(*(proxy.get(1, i) for i in range(3)))
     assert all(out is not None and audio_sample_rate(out) == 48000 for out in outs)
-    assert proxy._slots[1].run == 2
+    assert proxy._slots[1].run == runs
     await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_init_attempts_share_one_deadline(monkeypatch):
+    monkeypatch.setattr(segments, "INIT_WAIT", 0.3)
+    calls: list[str] = []
+
+    async def hang(uri: str) -> bytes:
+        calls.append(uri)
+        await asyncio.sleep(10)
+        return b"init"
+
+    proxy = SegmentProxy(hang, None)
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    assert await proxy._init(1, segments._Slot(), _init_seg(0, 1, "https://cdn/init.mp4")) is None
+    assert loop.time() - start == pytest.approx(0.3, abs=0.1)
+    # a slow failure gets no retry
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_slow_init_failure_is_not_retried(monkeypatch):
+    monkeypatch.setattr(segments, "INIT_RETRY_UNDER", 0.05)
+    calls: list[str] = []
+
+    async def slow_fail(uri: str) -> bytes:
+        calls.append(uri)
+        await asyncio.sleep(0.1)
+        raise RuntimeError("503")
+
+    proxy = SegmentProxy(slow_fail, None)
+    assert await proxy._init(1, segments._Slot(), _init_seg(0, 1, "https://cdn/init.mp4")) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_init_is_retried_only_after_the_backoff(monkeypatch):
+    monkeypatch.setattr(segments, "INIT_BACKOFF", 0.2)
+    fetch, calls = _init_source({"https://cdn/init.mp4"})
+    proxy = SegmentProxy(fetch, None)
+    state = segments._Slot()
+    assert await proxy._init(1, state, _init_seg(0, 1, "https://cdn/init.mp4")) is None
+    assert len(calls) == 2
+    assert await proxy._init(1, state, _init_seg(1, 1, "https://cdn/init.mp4")) is None
+    assert len(calls) == 2
+    # another generation is a different init, so it gets its own attempts
+    assert await proxy._init(1, state, _init_seg(2, 2, "https://cdn/init.mp4")) is None
+    assert len(calls) == 4
+    await asyncio.sleep(0.25)
+    assert await proxy._init(1, state, _init_seg(3, 2, "https://cdn/init.mp4")) is None
+    assert len(calls) == 6
 
 
 @pytest.mark.asyncio

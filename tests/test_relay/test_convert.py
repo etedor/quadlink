@@ -9,7 +9,7 @@ import pytest
 
 from quadlink.relay import convert
 from quadlink.relay.convert import AudioConverter, Splitter, remux
-from quadlink.relay.mp4info import fragment_video_pts, init_info
+from quadlink.relay.mp4info import _video_trafs, fragment_video_pts, init_info
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
     PACKET,
@@ -403,6 +403,78 @@ async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, s
         assert len(set(_video_pts(out))) == len(_video_pts(out)) == 60
         assert audio_sample_rate(out) == 48000
         assert _decode_errors(ffmpeg, out) == b""
+
+
+def _first_video_packet(data: bytes) -> tuple[int, str]:
+    """(PTS, ffprobe flags) of the first video packet in decode order."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        pytest.skip("ffprobe not on PATH")
+    probe = subprocess.run(
+        [
+            ffprobe,
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v",
+            "-show_packets",
+            "-of",
+            "json",
+            "-i",
+            "pipe:0",
+        ],
+        input=data,
+        capture_output=True,
+        check=True,
+    )
+    first = json.loads(probe.stdout)["packets"][0]
+    return int(first["pts"]), first["flags"]
+
+
+def _fragments(seg: bytes) -> list[bytes]:
+    """Each moof with the mdat after it."""
+    boxes, pos = [], 0
+    while pos < len(seg):
+        size = int.from_bytes(seg[pos : pos + 4], "big")
+        boxes.append(seg[pos : pos + size])
+        pos += size
+    return [a + b for a, b in zip(boxes[::2], boxes[1::2], strict=True)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("depths", "mid"),
+    [((3, 1), False), ((1, 3), False), ((1, 3), True)],
+    ids=["shallower", "deeper", "deeper-mid-segment"],
+)
+async def test_fmp4_run_keys_follow_ffmpeg_lift_as_b_frame_depth_changes(
+    ffmpeg, fmp4_run, depths, mid
+):
+    # ffmpeg lifts every PTS by the deepest negative offset read so far in the run,
+    # so a segment's own offsets alone give the wrong key once the depth falls, or
+    # once it rises only in a fragment after the segment's first
+    init, first = fmp4_run(44100, 6, negative_cts=True, bframes=depths[0])
+    _, second = fmp4_run(44100, 6, negative_cts=True, bframes=depths[1])
+    segs = first[:3] + second[3:]
+    if mid:
+        head, tail = _fragments(first[3]), _fragments(second[3])
+        segs[3] = b"".join(head[:4] + tail[4:])
+    video = init_info(init).video
+    assert video is not None
+    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    await conv.finish()
+    # one demuxer over the whole run assigns each input sample its PTS, in file order
+    whole = await remux(ffmpeg, init, b"".join(segs), 30)
+    assert whole is not None
+    frames = _video_pts(whole)
+    for seg, key in zip(segs, keys, strict=True):
+        count = sum(len(samples) for _, _, samples in _video_trafs(seg, video))
+        expected, frames = frames[:count], frames[count:]
+        out = outputs.got[key]
+        assert out is not None
+        assert _first_video_packet(out) == (key, "K__")
+        assert sorted(_video_pts(out)) == sorted(expected)
+    assert frames == []
 
 
 @pytest.mark.asyncio

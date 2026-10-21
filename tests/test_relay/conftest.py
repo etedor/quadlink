@@ -115,6 +115,7 @@ def fmp4_run(
     is the first timestamp in seconds, which ffmpeg stores as an edit list delay.
     `negative_cts` writes chunked fragments with signed composition offsets (trun v1),
     as CMAF muxers do, so B-frame offsets go below zero instead of an edit list.
+    `bframes` sets the B-frame depth, and with it the most negative offset.
     """
 
     def make(
@@ -123,6 +124,7 @@ def fmp4_run(
         offset: float = 10,
         chunked: bool = False,
         negative_cts: bool = False,
+        bframes: int = 3,
     ) -> tuple[bytes, list[bytes]]:
         out = tmp_path_factory.mktemp(f"fmp4{rate}")
         chunked = chunked or negative_cts
@@ -177,7 +179,7 @@ def fmp4_run(
                 "-c:v",
                 "libx264",
                 "-bf",
-                "3",
+                str(bframes),
                 "-g",
                 "60",
                 "-keyint_min",

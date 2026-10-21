@@ -17,7 +17,7 @@ from collections.abc import Callable, Iterable
 
 import structlog
 
-from quadlink.relay.mp4info import fragment_video_pts, init_info
+from quadlink.relay.mp4info import fragment_video_pts, init_info, video_lift
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
     PACKET,
@@ -200,11 +200,9 @@ class AudioConverter:
         self.ffmpeg = ffmpeg
         self.init = init
         self._on_output = on_output
-        if init is None:
-            self._key: Callable[[bytes], int | None] = first_video_pts
-        else:
-            video = init_info(init).video
-            self._key = lambda data: None if video is None else fragment_video_pts(data, video)
+        self._video = None if init is None else init_info(init).video
+        # composition offset lift ffmpeg's demuxer has reached over the segments fed
+        self._lift = 0
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._splitter = Splitter()
@@ -269,6 +267,15 @@ class AudioConverter:
             # a few KB: the pipe takes it without a drain
             self._proc.stdin.write(self.init)
 
+    def _key(self, data: bytes) -> int | None:
+        if self.init is None:
+            return first_video_pts(data)
+        if self._video is None:
+            return None
+        # the demuxer keeps the deepest lift of the run, never a segment's own
+        lift = max(self._lift, video_lift(data, self._video, first=True))
+        return fragment_video_pts(data, self._video, lift)
+
     def continues(self, data: bytes) -> bool:
         """Whether the segment can join this run.
 
@@ -288,6 +295,8 @@ class AudioConverter:
         with one not after the previous segment's) its content joins the one before.
         """
         pts = self._key(data)
+        if self._video is not None:
+            self._lift = max(self._lift, video_lift(data, self._video))
         if pts is None or (self._last is not None and not before(self._last, pts)):
             return None
         self._last = pts
