@@ -314,7 +314,24 @@ class SlotRelay:
         if not live or (current is not None and not current.done()):
             return
         target = live[max(0, len(live) - 1 - back)].seq
-        self._waits[slot] = asyncio.create_task(self._segments.wait_ready(slot, target, timeout))
+        self._waits[slot] = asyncio.create_task(
+            self._wait_then_stamp(slot, state, target, timeout, fresh=back == 2)
+        )
+
+    async def _wait_then_stamp(
+        self, slot: int, state: SlotState, seq: int, timeout: float, *, fresh: bool
+    ) -> bool:
+        """Wait for readiness, then count the served video from when clients get it.
+
+        The wait holds every playlist response for this slot, so its time is not
+        a stall. A step wait that times out may leave the new segment held back:
+        the client's playlist did not move, so the fold time stays.
+        """
+        assert self._segments is not None
+        ready = await self._segments.wait_ready(slot, seq, timeout)
+        if ready or fresh:
+            state.served_until = self._time()
+        return ready
 
     def _fill_gap(self, slot: int, state: SlotState) -> None:
         """Add one filler segment once a slot's video has stalled or fallen behind.
@@ -325,6 +342,10 @@ class SlotRelay:
         per poll.
         """
         if not state.segments or state.edge is None or state.served_until is None:
+            return
+        wait = self._waits.get(slot)
+        if wait is not None and not wait.done():
+            # playlist responses are held until the wait stamps served_until
             return
         now = self._time()
         if now - state.served_until < STALL_AFTER and now - state.edge < SLOW_AFTER:

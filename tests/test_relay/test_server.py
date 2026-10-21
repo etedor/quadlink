@@ -766,3 +766,70 @@ async def test_run_start_is_served_converted_without_a_playlist_poll(ffmpeg, ts_
         assert audio_sample_rate(seg.body) == 48000
     finally:
         await relay.aclose()
+
+
+class SlowProxy(FakeProxy):
+    """Readiness waits that take `delay` seconds on the relay's clock."""
+
+    def __init__(self, now: list[float], delay: float) -> None:
+        super().__init__()
+        self.now = now
+        self.delay = delay
+
+    async def wait_ready(self, slot, seq, timeout):
+        self.now[0] += min(self.delay, timeout)
+        return await super().wait_ready(slot, seq, timeout)
+
+
+@pytest.mark.asyncio
+async def test_slow_fresh_wait_is_not_a_stall():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    uris = ["a.ts", "b.ts", "c.ts"]
+
+    async def fetch(url):
+        return _src(100, uris)
+
+    proxy = SlowProxy(now, STALL_AFTER + 0.5)
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    resp = await _call(relay, "1")
+    # the client first sees the window when the wait ends
+    assert "/streams/filler/" not in resp.text
+    assert proxy.flushes == []
+    # the source kept up in real time during the wait
+    proxy.delay = 0.9
+    now[0] += 2
+    uris += ["d.ts", "e.ts", "f.ts"]
+    resp = await _call(relay, "1")
+    assert "/streams/filler/" not in resp.text
+    # a source that then stops still gets filler STALL_AFTER after the client saw video
+    now[0] += STALL_AFTER - 0.1
+    resp = await _call(relay, "1")
+    assert "/streams/filler/" not in resp.text
+    now[0] += 0.2
+    resp = await _call(relay, "1")
+    assert "/streams/filler/" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_no_filler_while_a_fresh_wait_is_pending():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+
+    async def fetch(url):
+        return _src(100, ["a.ts", "b.ts", "c.ts"])
+
+    proxy = FakeProxy()
+    proxy.wait_gate = asyncio.Event()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    call = asyncio.create_task(_call(relay, "1"))
+    await asyncio.sleep(0.01)
+    # a segment request's own source poll during the wait: no client saw the window yet
+    now[0] += STALL_AFTER + 0.5
+    await relay._poll(1)
+    proxy.wait_gate.set()
+    resp = await call
+    assert "/streams/filler/" not in resp.text
+    assert proxy.flushes == []
