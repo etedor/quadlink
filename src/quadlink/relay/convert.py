@@ -4,17 +4,26 @@ macOS AVPlayer resamples non-48 kHz audio with a small rate error, so a 44.1 kHz
 channel drifts out of lip sync on machina; delivering 48 kHz removes the resampling.
 A single long-running encoder is required: encoding segments separately leaves
 audible seams, because independent AAC encoder states never agree at a boundary.
+
+ffmpeg reads the run's segments on stdin and writes one MPEG-TS stream to stdout,
+which Splitter cuts back into one output per input segment. Nothing touches disk.
 """
 
 import asyncio
-import shutil
-from bisect import bisect_left, bisect_right
-from dataclasses import dataclass, field
-from pathlib import Path
+from collections import deque
+from collections.abc import Callable, Iterable
 
 import structlog
 
-from quadlink.relay.tsinfo import first_video_pts
+from quadlink.relay.tsinfo import (
+    _VIDEO_TYPES,
+    PACKET,
+    _packets,
+    before,
+    first_video_pts,
+    pes_pts,
+    program,
+)
 
 logger = structlog.get_logger()
 
@@ -22,58 +31,171 @@ TARGET_RATE = 48000
 # the native AAC encoder emits its first frame 1024 samples early; shifting input
 # timestamps by the same amount keeps audio aligned with the copied video
 _ENCODER_DELAY = 1024
-# bounds out.m3u8 over a long run; the scan reads only names it has not seen, so
-# any size works as long as the scan keeps up with ffmpeg
-_LIST_SIZE = 40
-_PTS_HZ = 90000
-# EXTINF carries microseconds, so a piece's end lands within a tick of the next
-# keyframe; any slack below one frame (750 ticks at 120 fps) is safe
-_END_SLACK = 90
+_READ = 1 << 16
+_PAT = b"\x47\x40\x00"
+_SDT_PID = 0x11
+# seconds ffmpeg gets to drain after EOF before it is killed
+_FINISH_WAIT = 5.0
+
+OnOutput = Callable[[int, bytes | None], None]
 
 
-@dataclass
-class _Range:
-    """Output pieces of one fed segment, in order."""
+def _pid_at(buf: bytearray, i: int) -> int:
+    return ((buf[i + 1] & 0x1F) << 8) | buf[i + 2]
 
-    pieces: list[Path] = field(default_factory=list)
-    dropped: bool = False
+
+def _pts_at(buf: bytearray, i: int) -> int | None:
+    for _, _, payload in _packets(bytes(buf[i : i + PACKET])):
+        return pes_pts(payload)
+    return None
+
+
+def _last_packet(buf: bytearray, header: bytes, hi: int) -> bytes | None:
+    i = buf.rfind(header, 0, hi)
+    while i > 0 and i % PACKET:
+        i = buf.rfind(header, 0, i)
+    return bytes(buf[i : i + PACKET]) if i >= 0 and i % PACKET == 0 else None
+
+
+class Splitter:
+    """Cuts ffmpeg's continuous MPEG-TS output back into one output per fed segment.
+
+    Each fed segment is known by its first video PTS (its key). The output for key k
+    runs up to the TS packet that starts the first video PES at or past key k+1,
+    which with -copyts is that segment's first keyframe; audio stays where ffmpeg
+    interleaved it. Cuts are whole packets, so outputs concatenate back into the
+    exact stream: continuity counters run on across outputs as in any HLS TS
+    segmenter, and a player starting at any output only sees a fresh start.
+
+    ffmpeg writes SDT, PAT and PMT right before each keyframe, so those packets
+    move to the output they introduce. If a cut has none, copies of the latest PAT
+    and PMT go first: same bytes and continuity counter, so a player reading
+    across the cut sees a legal duplicate packet (ISO/IEC 13818-1 2.4.3.3).
+    """
+
+    def __init__(self) -> None:
+        # keys of fed segments whose output is not complete; the head is being written
+        self._keys: deque[int] = deque()
+        self._buf = bytearray()
+        # packets of _buf before this offset hold no cut
+        self._scanned = 0
+        # first 3 bytes of a TS packet that starts a video PES
+        self._video: bytes | None = None
+        self._pmt: bytes | None = None
+        self._psi: set[int] = set()
+        self._headers = b""
+
+    @property
+    def pending(self) -> list[int]:
+        return list(self._keys)
+
+    def expect(self, key: int) -> None:
+        self._keys.append(key)
+
+    def push(self, chunk: bytes) -> list[tuple[int, bytes]]:
+        """Take more ffmpeg output; return (key, output) of each output now complete."""
+        self._buf += chunk
+        end = len(self._buf) - len(self._buf) % PACKET
+        if self._video is None and not self._find_program(end):
+            return []
+        assert self._video is not None
+        done: list[tuple[int, bytes]] = []
+        pos = self._scanned
+        while (i := self._buf.find(self._video, pos, end)) >= 0:
+            if i % PACKET:
+                pos = i + 1
+                continue
+            pos = i + PACKET
+            if len(self._keys) < 2:
+                continue
+            pts = _pts_at(self._buf, i)
+            if pts is None or before(pts, self._keys[1]):
+                continue
+            shift = self._cut(i, done)
+            pos, end = pos - shift, end - shift
+            # a lost segment's frames never show; its key gets no output
+            while len(self._keys) >= 2 and not before(pts, self._keys[1]):
+                done.append((self._keys.popleft(), b""))
+        self._scanned = end
+        if not self._keys:
+            # output of a segment without video PTS, ahead of any key
+            del self._buf[:end]
+            self._scanned = 0
+        return done
+
+    def _find_program(self, end: int) -> bool:
+        pmt, streams = program(bytes(self._buf[:end]))
+        video = next((pid for pid, t in streams.items() if t in _VIDEO_TYPES), None)
+        if pmt is None or video is None:
+            return False
+        self._video = bytes([0x47, 0x40 | video >> 8, video & 0xFF])
+        self._pmt = bytes([0x47, 0x40 | pmt >> 8, pmt & 0xFF])
+        self._psi = {0, _SDT_PID, pmt}
+        return True
+
+    def _cut(self, i: int, done: list[tuple[int, bytes]]) -> int:
+        """Complete the head output before packet i; return how far _buf shifted."""
+        assert self._pmt is not None
+        cut = i
+        while cut >= PACKET and _pid_at(self._buf, cut - PACKET) in self._psi:
+            cut -= PACKET
+        moved = {_pid_at(self._buf, p) for p in range(cut, i, PACKET)}
+        pat = _last_packet(self._buf, _PAT, cut)
+        pmt = _last_packet(self._buf, self._pmt, cut)
+        if pat is not None and pmt is not None:
+            self._headers = pat + pmt
+        with memoryview(self._buf) as view:
+            done.append((self._keys.popleft(), bytes(view[:cut])))
+        del self._buf[:cut]
+        if not self._psi - {_SDT_PID} <= moved:
+            self._buf[0:0] = self._headers
+            return cut - len(self._headers)
+        return cut
+
+    def end(self) -> list[tuple[int, bytes]]:
+        """Complete every output at EOF: the head gets the rest of the stream."""
+        done: list[tuple[int, bytes]] = []
+        if self._keys:
+            end = len(self._buf) - len(self._buf) % PACKET
+            done.append((self._keys.popleft(), bytes(self._buf[:end])))
+        done += [(key, b"") for key in self._keys]
+        self._keys.clear()
+        self._buf.clear()
+        return done
+
+    def abandon(self) -> list[int]:
+        """Drop every incomplete output; return their keys."""
+        keys = list(self._keys)
+        self._keys.clear()
+        self._buf.clear()
+        return keys
 
 
 class AudioConverter:
-    """Pipes consecutive TS segments through ffmpeg and maps outputs back to inputs.
+    """Pipes consecutive TS segments through ffmpeg and hands back one output per input.
 
-    ffmpeg cuts an output piece at every keyframe. Twitch puts one at each segment
-    start, and some channels add more inside a segment, so an input segment's output
-    is every piece whose first video PTS lies between its own and the next segment's.
+    on_output(key, data) runs once per segment that register() gave a key: with the
+    converted bytes once complete, or with None when the run failed before that.
     """
 
-    def __init__(self, ffmpeg: str, workdir: Path) -> None:
+    def __init__(self, ffmpeg: str, on_output: OnOutput) -> None:
         self.ffmpeg = ffmpeg
-        self.workdir = workdir
+        self._on_output = on_output
         self._proc: asyncio.subprocess.Process | None = None
-        # first video PTS of each fed segment, increasing; keys of _ranges
-        self._bounds: list[int] = []
-        self._ranges: dict[int, _Range] = {}
-        # index of the next o<N>.ts to scan
-        self._next = 0
-        # range of the newest scanned piece; a piece without video joins it
+        self._reader: asyncio.Task[None] | None = None
+        self._splitter = Splitter()
         self._last: int | None = None
-        # PTS where the newest scanned piece ends, i.e. where ffmpeg cut next
-        self._end: int | None = None
-        # after EOF ffmpeg writes no more pieces, so every range is complete
-        self._finished = False
+        # set once EOF is ours, so the reader leaves the tail to finish()
+        self._finishing = False
 
     async def start(self) -> None:
-        # a run dir left by a crashed daemon holds an out.m3u8 the scan would trust
-        shutil.rmtree(self.workdir, ignore_errors=True)
-        self.workdir.mkdir(parents=True)
         self._proc = await asyncio.create_subprocess_exec(
             self.ffmpeg,
             "-v",
             "error",
             "-copyts",
             # the default probe holds a new run's first output until a third segment
-            # is in; 0.5s finds both streams within the first, so it lags by one
+            # is in; 0.5s finds both streams within the first
             "-analyzeduration",
             "500000",
             "-f",
@@ -97,152 +219,97 @@ class AudioConverter:
             "1",
             "-filter_threads",
             "1",
-            # a tiny hls_time makes ffmpeg cut at every keyframe, so every input
-            # segment boundary is also an output piece boundary
             "-f",
-            "hls",
-            "-hls_time",
-            "0.1",
-            "-hls_list_size",
-            str(_LIST_SIZE),
-            "-hls_segment_filename",
-            str(self.workdir / "o%d.ts"),
+            "mpegts",
+            # each packet reaches the pipe as soon as it is muxed, so a segment's
+            # output completes as soon as the next segment's keyframe is fed
             "-muxdelay",
             "0",
             "-muxpreload",
             "0",
-            str(self.workdir / "out.m3u8"),
+            "-flush_packets",
+            "1",
+            "pipe:1",
             stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
         )
+        self._reader = asyncio.create_task(self._read())
 
-    async def feed(self, data: bytes) -> int | None:
-        """Write one input segment; return the video PTS its output is looked up by.
+    def register(self, data: bytes) -> int | None:
+        """Note the next input segment; return the key its output is delivered under.
 
-        None means the segment has no output of its own: without video PTS (or with
-        one not after the previous segment's) its content folds into the range before.
+        None means the segment gets no output of its own: without a video PTS (or
+        with one not after the previous segment's) its content joins the one before.
         """
-        assert self._proc is not None and self._proc.stdin is not None
         pts = first_video_pts(data)
-        if pts is not None and (not self._bounds or pts > self._bounds[-1]):
-            self._bounds.append(pts)
-            self._ranges[pts] = _Range()
-        else:
-            pts = None
-        self._proc.stdin.write(data)
-        await self._proc.stdin.drain()
+        if pts is None or (self._last is not None and not before(self._last, pts)):
+            return None
+        self._last = pts
+        self._splitter.expect(pts)
         return pts
 
-    def _scan(self) -> None:
-        # the workdir can vanish under a reader once close() runs; treat that as no output
+    async def feed(self, data: bytes) -> None:
+        """Write one input segment, after register()."""
+        assert self._proc is not None and self._proc.stdin is not None
+        self._proc.stdin.write(data)
+        await self._proc.stdin.drain()
+
+    def _emit(self, outputs: Iterable[tuple[int, bytes | None]]) -> None:
+        for key, data in outputs:
+            self._on_output(key, data or None)
+
+    async def _read(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        stdout = self._proc.stdout
         try:
-            text = (self.workdir / "out.m3u8").read_text()
-        except OSError:
+            while chunk := await stdout.read(_READ):
+                self._emit(self._splitter.push(chunk))
+        except Exception as e:
+            logger.warning("relay conversion output failed", error=repr(e))
+            self._emit((key, None) for key in self._splitter.abandon())
             return
-        durations: dict[str, float] = {}
-        extinf: float | None = None
-        for ln in text.splitlines():
-            if ln.startswith("#EXTINF:"):
-                extinf = float(ln[len("#EXTINF:") :].split(",")[0])
-            elif ln.endswith(".ts") and extinf is not None:
-                durations[ln] = extinf
-        if not durations:
-            return
-        # outputs are o<N>.ts in order and listed only once complete
-        newest = max(int(name[1:-3]) for name in durations)
-        while self._next <= newest:
-            name = f"o{self._next}.ts"
-            path = self.workdir / name
-            try:
-                pts = first_video_pts(path.read_bytes())
-            except FileNotFoundError:
-                self._next += 1
-                continue
-            except OSError:
-                return
-            self._next += 1
-            if pts is not None:
-                i = bisect_right(self._bounds, pts) - 1
-                self._last = self._bounds[i] if i >= 0 else None
-                if name in durations:
-                    self._end = pts + round(durations[name] * _PTS_HZ)
-            rng = self._ranges.get(self._last) if self._last is not None else None
-            if rng is None or rng.dropped:
-                path.unlink(missing_ok=True)
-            else:
-                rng.pieces.append(path)
-        self._prune()
-
-    def _complete(self, i: int) -> bool:
-        """Whether range i can gain no more pieces: ffmpeg has cut at the next boundary."""
-        if self._finished:
-            return True
-        if i + 1 >= len(self._bounds):
-            return False
-        return self._end is not None and self._end >= self._bounds[i + 1] - _END_SLACK
-
-    def _prune(self) -> None:
-        # only a complete range can go: a later piece could still map into it
-        while self._bounds and self._ranges[self._bounds[0]].dropped and self._complete(0):
-            del self._ranges[self._bounds.pop(0)]
-
-    def _ready(self, video_pts: int) -> _Range | None:
-        rng = self._ranges.get(video_pts)
-        if rng is None or rng.dropped or not rng.pieces:
-            return None
-        if not self._complete(bisect_left(self._bounds, video_pts)):
-            return None
-        return rng
-
-    def discard(self, video_pts: int) -> None:
-        """Delete every output piece for this input's video PTS, now and once written."""
-        self._scan()
-        rng = self._ranges.get(video_pts)
-        if rng is None:
-            return
-        for path in rng.pieces:
-            path.unlink(missing_ok=True)
-        rng.pieces.clear()
-        rng.dropped = True
-        self._prune()
-
-    def has_output(self, video_pts: int) -> bool:
-        """Whether the whole output of the input segment at this video PTS exists."""
-        self._scan()
-        return self._ready(video_pts) is not None
-
-    async def output_for(self, video_pts: int, timeout: float) -> bytes | None:
-        """Converted bytes of the input segment starting at this video PTS, once written.
-
-        MPEG-TS concatenates byte-wise, so the pieces join into one segment.
-        """
-        deadline = asyncio.get_running_loop().time() + timeout
-        while True:
-            self._scan()
-            rng = self._ready(video_pts)
-            if rng is not None:
-                try:
-                    return b"".join(path.read_bytes() for path in rng.pieces)
-                except OSError:
-                    pass
-            if asyncio.get_running_loop().time() >= deadline:
-                return None
-            await asyncio.sleep(0.1)
+        if not self._finishing:
+            # ffmpeg died: what it wrote of the head output ends mid-segment
+            self._emit((key, None) for key in self._splitter.abandon())
 
     async def finish(self) -> None:
-        """End the input so ffmpeg writes its last segment; outputs stay until close()."""
+        """End the input; deliver every remaining output once ffmpeg has drained."""
         proc, self._proc = self._proc, None
-        if proc is not None:
-            if proc.stdin is not None:
-                proc.stdin.close()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except TimeoutError:
-                proc.kill()
+        if proc is None:
+            return
+        self._finishing = True
+        if proc.stdin is not None:
+            proc.stdin.close()
+        assert self._reader is not None
+        try:
+            async with asyncio.timeout(_FINISH_WAIT):
+                await self._reader
                 await proc.wait()
-        self._finished = True
+        except TimeoutError:
+            await self._kill(proc)
+        if proc.returncode == 0:
+            self._emit(self._splitter.end())
+        else:
+            self._emit((key, None) for key in self._splitter.abandon())
+
+    async def _kill(self, proc: asyncio.subprocess.Process) -> None:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        if self._reader is not None:
+            self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
 
     async def close(self) -> None:
-        await self.finish()
-        shutil.rmtree(self.workdir, ignore_errors=True)
-        self._bounds.clear()
-        self._ranges.clear()
+        """Stop ffmpeg at once; outputs not yet delivered never are."""
+        proc, self._proc = self._proc, None
+        self._finishing = True
+        if proc is not None:
+            await self._kill(proc)
+        self._splitter.abandon()
+        # the proxy's callback refers back to this converter; drop the cycle
+        self._on_output = _ignore
+
+
+def _ignore(key: int, data: bytes | None) -> None:
+    pass

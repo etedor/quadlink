@@ -36,7 +36,8 @@ Linux (RssAnon) and from ps plus phys_footprint on macOS. macOS numbers do not
 transfer: RSS keeps freed malloc pages and the compressor shrinks the footprint, and
 glibc heap retention exists only on Linux. For production-like numbers, run in a
 Linux container with python 3.13, ffmpeg, aiohttp, httpx and structlog, with the repo
-mounted and --workroot on a container-local path:
+mounted and --workroot on a container-local path (only file-based converters, from
+--src trees before the stdout pipe, write there):
 
     docker run --rm -v "$PWD":/w -w /w <image> \\
         python bench/relay_memory.py run --realtime --duration 720 --workroot /tmp/qr
@@ -408,14 +409,23 @@ def disk_usage(root: Path) -> tuple[float, int, dict[str, int]]:
     return total / MIB, count, dict(sorted(per_slot.items()))
 
 
+# --src can load any of three converter layouts: one file per output (_by_pts), file
+# pieces per input (_ranges), or the stdout pipe (_splitter), which keeps no files
+PIPE = not hasattr(convert.AudioConverter, "_scan")
+
+
 def _outputs(conv: Any) -> dict[int, list[Path]]:
-    """Input video PTS -> output pieces; --src can load either converter layout."""
+    """Input video PTS -> output pieces."""
+    if hasattr(conv, "_splitter"):
+        return {pts: [] for pts in conv._splitter.pending}
     if hasattr(conv, "_by_pts"):
         return {pts: [path] for pts, path in conv._by_pts.items()}
     return {pts: list(rng.pieces) for pts, rng in conv._ranges.items()}
 
 
 def _dropped(conv: Any) -> int:
+    if hasattr(conv, "_splitter"):
+        return 0
     if hasattr(conv, "_dropped"):
         return len(conv._dropped)
     return sum(1 for rng in conv._ranges.values() if rng.dropped)
@@ -427,6 +437,8 @@ def orphans() -> tuple[int, float]:
     An output whose first video PTS matches no entry (ffmpeg cut a segment at a
     keyframe inside it) stays on disk and in _by_pts until the run's close().
     """
+    if PIPE:
+        return 0, 0.0
     live = [o for o in gc.get_objects() if isinstance(o, segments._Entry)]
     n, size = 0, 0
     for conv in list(CONVERTERS):
@@ -479,6 +491,8 @@ def proxy_stats(proxy: segments.SegmentProxy, relay: SlotRelay) -> dict[str, Any
     s["converters"] = len(convs)
     s["running"] = sum(1 for c in convs if c._proc is not None)
     s["by_pts"] = sum(len(_outputs(c)) for c in convs)
+    # output bytes the pipe converter holds before a cut
+    s["pipe_mib"] = sum(len(c._splitter._buf) for c in convs if hasattr(c, "_splitter")) / MIB
     s["dropped"] = sum(_dropped(c) for c in convs)
     s["retiring"] = len(proxy._retiring)
     s["tasks"] = len(asyncio.all_tasks())
@@ -532,10 +546,15 @@ def census(min_size: int = 256 * 1024) -> list[tuple[str, int, float]]:
 class LogCounter:
     def __init__(self) -> None:
         self.counts: dict[str, int] = {}
+        # (real seconds into the run, event) of each warning
+        self.warnings: list[tuple[float, dict[str, Any]]] = []
+        self.t0 = time.monotonic()
 
     def __call__(self, _logger: Any, level: str, event: dict[str, Any]) -> Any:
         key = f"{level}: {event.get('event')}"
         self.counts[key] = self.counts.get(key, 0) + 1
+        if level == "warning":
+            self.warnings.append((time.monotonic() - self.t0, dict(event)))
         raise structlog.DropEvent
 
 
@@ -627,7 +646,10 @@ async def run(args: argparse.Namespace) -> None:
 
     workroot = Path(args.workroot or DATA / "work") / label
     ffmpeg = None if args.no_convert else shutil.which("ffmpeg")
-    proxy = segments.SegmentProxy(fetch_segment, ffmpeg, workroot, keep=args.keep)
+    if PIPE:
+        proxy = segments.SegmentProxy(fetch_segment, ffmpeg, keep=args.keep)
+    else:
+        proxy = segments.SegmentProxy(fetch_segment, ffmpeg, workroot, keep=args.keep)
     relay = SlotRelay(store, fetch=playlist, time_fn=clock, segments=proxy)
     app = web.Application()
     relay.register_routes(app.router)
@@ -752,7 +774,7 @@ async def run(args: argparse.Namespace) -> None:
     await cdn_proc.wait()
     sample_file.close()
 
-    report(args, label, samples, fetched, client_stats, log.counts, early, late, profiler, held)
+    report(args, label, samples, fetched, client_stats, log, early, late, profiler, held)
 
 
 def slope(samples: list[dict[str, Any]], key: str) -> float:
@@ -772,7 +794,7 @@ def report(
     samples: list[dict[str, Any]],
     fetched: dict[str, int],
     client_stats: dict[str, Any],
-    logs: dict[str, int],
+    logs: LogCounter,
     early: tracemalloc.Snapshot | None,
     late: tracemalloc.Snapshot | None,
     profiler: cProfile.Profile | None,
@@ -805,7 +827,9 @@ def report(
         f"ffmpeg CPU {last['ff_cpu_s']:.1f}s = {1000 * last['ff_cpu_s'] / max(1, segs):.1f} ms/seg"
     )
     print("clients:", json.dumps(client_stats))
-    print("logs:", json.dumps(logs))
+    print("logs:", json.dumps(logs.counts))
+    for t, event in logs.warnings[:40]:
+        print(f"  {t:7.1f}s {json.dumps(event, default=str)}")
     print("\nlarge bytes (>= 256 KiB) at the end, by referrer:")
     for names, count, mib in held:
         print(f"  {mib:8.2f} MiB {count:4d}  {names}")
@@ -873,6 +897,9 @@ async def micro(args: argparse.Namespace) -> None:
     total = sum(len(s) for s in media.values())
     print(f"  first 64KiB gives the same PTS for {agree}/{total} segments")
 
+    if PIPE:
+        await _micro_fetch(data)
+        return
     # converter scan: an out.m3u8 plus outputs the size of real ones
     work = DATA / "work" / "micro"
     shutil.rmtree(work, ignore_errors=True)
@@ -890,8 +917,12 @@ async def micro(args: argparse.Namespace) -> None:
     path = work / "o3.ts"
     print(f"Path.read_bytes 2 MiB        {per_call(path.read_bytes, 50):7.3f} ms")
     shutil.rmtree(work)
+    await _micro_fetch(data)
 
-    # fetch peak memory: httpx .content vs a streamed bytearray
+
+async def _micro_fetch(data: bytes) -> None:
+    """Fetch peak memory: httpx .content vs a streamed bytearray."""
+
     async def serve(_r: web.Request) -> web.Response:
         return web.Response(body=data)
 

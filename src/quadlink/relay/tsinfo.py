@@ -45,8 +45,8 @@ def _section(payload: bytes) -> bytes:
     return payload[1 + pointer :]
 
 
-def _streams(data: bytes) -> dict[int, int]:
-    """pid -> stream_type from the first PAT/PMT."""
+def program(data: bytes) -> tuple[int | None, dict[int, int]]:
+    """PMT PID and pid -> stream_type from the first PAT/PMT."""
     pmt_pid = None
     for pid, start, payload in _packets(data):
         if pid == 0 and start and pmt_pid is None:
@@ -64,8 +64,12 @@ def _streams(data: bytes) -> dict[int, int]:
                 epid = ((sec[pos + 1] & 0x1F) << 8) | sec[pos + 2]
                 streams[epid] = stype
                 pos += 5 + (((sec[pos + 3] & 0x0F) << 8) | sec[pos + 4])
-            return streams
-    return {}
+            return pmt_pid, streams
+    return pmt_pid, {}
+
+
+def _streams(data: bytes) -> dict[int, int]:
+    return program(data)[1]
 
 
 def _timestamp(p: bytes) -> int:

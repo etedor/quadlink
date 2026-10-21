@@ -3,9 +3,7 @@
 import asyncio
 import shutil
 import signal
-import tempfile
 from collections.abc import Callable
-from pathlib import Path
 
 import httpx
 import structlog
@@ -73,11 +71,7 @@ class Daemon:
         self._segment_client = httpx.AsyncClient(timeout=5)
         self.slot_relay = SlotRelay(
             self.slot_store,
-            segments=SegmentProxy(
-                self._fetch_segment,
-                ffmpeg,
-                Path(tempfile.gettempdir()) / "quadlink-relay",
-            ),
+            segments=SegmentProxy(self._fetch_segment, ffmpeg),
         )
         self.webui: WebUI | None = None
         self.webui_runner: web.AppRunner | None = None

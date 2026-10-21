@@ -63,7 +63,7 @@ IDLE_RESET = 10.0
 # segments are ready keeps the tile that far behind live for good
 FRESH_WAIT = 4.0
 # seconds a poll that adds a segment waits for the one before it. A running
-# converter finishes segment N-1 within about 0.5s of being fed N; without the
+# converter finishes segment N-1 as soon as it reads N's first keyframe; without the
 # wait the listed end moves only on the next poll, and AVPlayer fails a playlist
 # unchanged for 1.5 x target duration (3s)
 STEP_WAIT = 1.0
@@ -262,8 +262,8 @@ class SlotRelay:
     def _wait_ready(self, slot: int, state: SlotState, back: int, timeout: float) -> None:
         """Start the wait for the live segment `back` before the newest to be ready.
 
-        A fresh window waits for two back: ffmpeg finalizes a converted output
-        after about two more input segments. A running converter needs one.
+        A converted output completes once ffmpeg reads the next segment's first
+        keyframe. A fresh window waits for two back, a running converter for one.
         Unconverted segments are ready once their run is decided, so this costs
         an unconverted slot at most one fetch.
         """

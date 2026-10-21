@@ -34,10 +34,10 @@ def _source(segs: list[bytes]):
 
 
 @pytest.mark.asyncio
-async def test_48k_passes_through_and_is_fetched_once(ffmpeg, ts_run, tmp_path):
+async def test_48k_passes_through_and_is_fetched_once(ffmpeg, ts_run):
     segs = ts_run(48000, 2)
     fetch, calls = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     first = await proxy.get(1, 0)
     again = await asyncio.gather(*(proxy.get(1, 0) for _ in range(5)))
@@ -48,10 +48,10 @@ async def test_48k_passes_through_and_is_fetched_once(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_441k_run_is_served_converted(ffmpeg, ts_run, tmp_path):
+async def test_441k_run_is_served_converted(ffmpeg, ts_run):
     segs = ts_run(44100, 3)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(3):
         proxy.register(1, _seg(i, str(i)))
     out = await proxy.get(1, 0)
@@ -61,17 +61,17 @@ async def test_441k_run_is_served_converted(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_without_ffmpeg_441k_passes_through(ts_run, tmp_path):
+async def test_without_ffmpeg_441k_passes_through(ts_run):
     segs = ts_run(44100, 1)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     proxy.register(1, _seg(0, "0"))
     assert await proxy.get(1, 0) == segs[0]
     await proxy.aclose()
 
 
 @pytest.mark.asyncio
-async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_path):
+async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run):
     segs = ts_run(48000, 2)
     gate = asyncio.Event()
 
@@ -79,7 +79,7 @@ async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_p
         await gate.wait()
         return segs[int(uri)]
 
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _seg(1, "1"))
     assert not await proxy.wait_ready(1, 0, 0.1)
@@ -89,21 +89,21 @@ async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_unknown_segment_is_none(tmp_path):
+async def test_unknown_segment_is_none():
     async def fetch(uri: str) -> bytes:
         raise AssertionError("not fetched")
 
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     assert await proxy.get(1, 99) is None
     await proxy.aclose()
 
 
 @pytest.mark.asyncio
-async def test_converter_crash_falls_back_to_raw(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_converter_crash_falls_back_to_raw(ffmpeg, ts_run, monkeypatch):
     """ffmpeg dying mid-feed must not wedge the slot: the segment is served raw."""
     segs = ts_run(44100, 2)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
 
     async def boom(self: AudioConverter, data: bytes) -> None:
         raise RuntimeError("ffmpeg died")
@@ -145,10 +145,10 @@ async def _fetched(proxy: SegmentProxy, slot: int, seq: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_failure_serves_raw(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_start_failure_serves_raw(ffmpeg, ts_run, monkeypatch):
     segs = ts_run(44100, 2)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
 
     async def boom(self: AudioConverter) -> None:
         raise OSError("no ffmpeg")
@@ -163,7 +163,7 @@ async def test_start_failure_serves_raw(ffmpeg, ts_run, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hung_feed_times_out_to_raw(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_hung_feed_times_out_to_raw(ffmpeg, ts_run, monkeypatch):
     segs = ts_run(44100, 2)
     fetch, _ = _source(segs)
     monkeypatch.setattr("quadlink.relay.segments.FEED_WAIT", 0.2)
@@ -172,7 +172,7 @@ async def test_hung_feed_times_out_to_raw(ffmpeg, ts_run, tmp_path, monkeypatch)
         await asyncio.Event().wait()
 
     monkeypatch.setattr(AudioConverter, "feed", hang)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _seg(1, "1"))
     async with asyncio.timeout(5):
@@ -182,13 +182,13 @@ async def test_hung_feed_times_out_to_raw(ffmpeg, ts_run, tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_discontinuity_keeps_old_run_served_converted(ffmpeg, ts_run, tmp_path):
+async def test_discontinuity_keeps_old_run_served_converted(ffmpeg, ts_run):
     """The old run's outputs, including its last (only flushed at EOF), outlive its ffmpeg."""
     old = ts_run(44100, 3)
     new = ts_run(48000, 1)
     segs = [*old, *new]
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(3):
         proxy.register(1, _seg(i, str(i)))
     proxy.register(1, _seg(3, "3", disc=True))
@@ -201,19 +201,19 @@ async def test_discontinuity_keeps_old_run_served_converted(ffmpeg, ts_run, tmp_
         assert out is not None and out != old[i]
         assert audio_sample_rate(out) == 48000
     async with asyncio.timeout(10):
-        while (tmp_path / "slot1-run1").exists():
+        while proxy._retiring:
             await asyncio.sleep(0.05)
     await proxy.aclose()
 
 
 @pytest.mark.asyncio
-async def test_discontinuity_starts_new_converter(ffmpeg, ts_run, tmp_path):
+async def test_discontinuity_starts_new_converter(ffmpeg, ts_run):
     first = ts_run(44100, 2)
-    # ffmpeg closes an output once two more segments are in, so the new run needs three
+    # the new run's first output completes only once its next segment is in
     second = ts_run(44100, 3)
     segs = [*first, *second]
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _seg(1, "1"))
     proxy.register(1, _seg(2, "2", disc=True))
@@ -226,18 +226,18 @@ async def test_discontinuity_starts_new_converter(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fmp4_is_never_fed(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_fmp4_is_never_fed(ffmpeg, ts_run, monkeypatch):
     segs = [*ts_run(44100, 1), b"fmp4 bytes"]
     fetch, _ = _source(segs)
     fed: list[bytes] = []
     real_feed = AudioConverter.feed
 
-    async def record(self: AudioConverter, data: bytes) -> int | None:
+    async def record(self: AudioConverter, data: bytes) -> None:
         fed.append(data)
-        return await real_feed(self, data)
+        await real_feed(self, data)
 
     monkeypatch.setattr(AudioConverter, "feed", record)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _fmp4(1, "1"))
     assert await proxy.get(1, 1) == segs[1]
@@ -247,10 +247,10 @@ async def test_fmp4_is_never_fed(ffmpeg, ts_run, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ready_without_ffmpeg_never_holds_back(ts_run, tmp_path):
+async def test_ready_without_ffmpeg_never_holds_back(ts_run):
     segs = ts_run(44100, 1)
     fetch, gates = _gated(segs)
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     proxy.register(1, _seg(0, "0"))
     assert proxy.ready(1, 0)
     gates["0"].set()
@@ -260,9 +260,9 @@ async def test_ready_without_ffmpeg_never_holds_back(ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ready_fmp4_first_of_run_is_not_held_back(ffmpeg, tmp_path):
+async def test_ready_fmp4_first_of_run_is_not_held_back(ffmpeg):
     fetch, gates = _gated([b"fmp4 bytes"])
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _fmp4(0, "0"))
     assert proxy.ready(1, 0)
     gates["0"].set()
@@ -272,10 +272,10 @@ async def test_ready_fmp4_first_of_run_is_not_held_back(ffmpeg, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_ready_converting_run(ffmpeg, ts_run, tmp_path):
+async def test_ready_converting_run(ffmpeg, ts_run):
     segs = ts_run(44100, 3)
     fetch, gates = _gated(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(3):
         proxy.register(1, _seg(i, str(i)))
     # unfetched, first of run: conversion not decided yet
@@ -297,13 +297,13 @@ async def test_ready_converting_run(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_native_48k_run_is_reencoded(ffmpeg, ts_run, tmp_path):
+async def test_native_48k_run_is_reencoded(ffmpeg, ts_run):
     segs = ts_run(48000, 3)
 
     async def fetch(uri: str) -> bytes:
         return segs[int(uri)]
 
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for n in range(3):
         proxy.register(1, _seg(n, str(n)))
     data = await proxy.get(1, 0)
@@ -313,12 +313,12 @@ async def test_native_48k_run_is_reencoded(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_aclose_fails_pending_requests(tmp_path):
+async def test_aclose_fails_pending_requests():
     async def fetch(uri: str) -> bytes:
         await asyncio.Event().wait()
         raise AssertionError
 
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _seg(1, "1"))
     waiting = asyncio.create_task(proxy.get(1, 0))
@@ -329,14 +329,14 @@ async def test_aclose_fails_pending_requests(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_unrequested_fetch_failure_is_quiet(tmp_path):
+async def test_unrequested_fetch_failure_is_quiet():
     reported: list[dict] = []
     asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: reported.append(ctx))
 
     async def fetch(uri: str) -> bytes:
         raise OSError("gone")
 
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     proxy.register(1, _seg(0, "0"))
     async with asyncio.timeout(1):
         while not proxy._slots[1].entries[0].raw.done():
@@ -347,7 +347,7 @@ async def test_unrequested_fetch_failure_is_quiet(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_spaced_registrations_keep_one_converter(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_spaced_registrations_keep_one_converter(ffmpeg, ts_run, monkeypatch):
     """Client polls leave seconds between registrations; the run must not restart."""
     loop = asyncio.get_running_loop()
     real_time = loop.time
@@ -364,7 +364,7 @@ async def test_spaced_registrations_keep_one_converter(ffmpeg, ts_run, tmp_path,
     monkeypatch.setattr(AudioConverter, "start", counted)
     segs = ts_run(44100, 4)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(4):
         proxy.register(1, _seg(i, str(i)))
         await _fetched(proxy, 1, i)
@@ -379,11 +379,11 @@ async def test_spaced_registrations_keep_one_converter(ffmpeg, ts_run, tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_flush_converts_the_tail_promptly(ffmpeg, ts_run, tmp_path):
+async def test_flush_converts_the_tail_promptly(ffmpeg, ts_run):
     """Filler lists a run's tail, which ffmpeg holds until EOF; flush must release it."""
     segs = ts_run(44100, 3)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(2):
         proxy.register(1, _seg(i, str(i)))
     await _fetched(proxy, 1, 1)
@@ -410,7 +410,7 @@ async def test_flush_converts_the_tail_promptly(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_flush_during_first_fetch_still_ends_the_run(ffmpeg, ts_run, tmp_path):
+async def test_flush_during_first_fetch_still_ends_the_run(ffmpeg, ts_run):
     """A flush while the run's first segment is still fetching must reach its converter."""
     segs = ts_run(44100, 1)
 
@@ -418,7 +418,7 @@ async def test_flush_during_first_fetch_still_ends_the_run(ffmpeg, ts_run, tmp_p
         await asyncio.sleep(0.2)
         return segs[int(uri)]
 
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     await asyncio.sleep(0.05)
     proxy.flush(1)
@@ -431,11 +431,11 @@ async def test_flush_during_first_fetch_still_ends_the_run(ffmpeg, ts_run, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_run_start_is_served_converted_once_next_segment_arrives(ffmpeg, ts_run, tmp_path):
+async def test_run_start_is_served_converted_once_next_segment_arrives(ffmpeg, ts_run):
     """The playlist lists a run's first segment before its output exists; get() waits."""
     segs = ts_run(44100, 2)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     await _fetched(proxy, 1, 0)
     request = asyncio.create_task(proxy.get(1, 0))
@@ -451,10 +451,10 @@ async def test_run_start_is_served_converted_once_next_segment_arrives(ffmpeg, t
 
 
 @pytest.mark.asyncio
-async def test_flush_without_converter_is_noop(ts_run, tmp_path):
+async def test_flush_without_converter_is_noop(ts_run):
     segs = ts_run(44100, 1)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, None, tmp_path)
+    proxy = SegmentProxy(fetch, None)
     proxy.flush(1)
     proxy.register(1, _seg(0, "0"))
     await _fetched(proxy, 1, 0)
@@ -464,10 +464,10 @@ async def test_flush_without_converter_is_noop(ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_evicted_entry_still_gets_harvested_output(ffmpeg, ts_run, tmp_path):
+async def test_evicted_entry_still_gets_harvested_output(ffmpeg, ts_run):
     segs = ts_run(44100, 2)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=2)
+    proxy = SegmentProxy(fetch, ffmpeg, keep=2)
     proxy.register(1, _seg(0, "0"))
     proxy.register(1, _seg(1, "1"))
     await _fetched(proxy, 1, 1)
@@ -483,7 +483,7 @@ async def test_evicted_entry_still_gets_harvested_output(ffmpeg, ts_run, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_harvest_failure_is_logged(ffmpeg, ts_run, tmp_path, monkeypatch):
+async def test_harvest_failure_is_logged(ffmpeg, ts_run, monkeypatch):
     reported: list[dict] = []
     asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: reported.append(ctx))
 
@@ -493,7 +493,7 @@ async def test_harvest_failure_is_logged(ffmpeg, ts_run, tmp_path, monkeypatch):
     monkeypatch.setattr(AudioConverter, "finish", boom)
     segs = ts_run(44100, 1)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     proxy.register(1, _seg(0, "0"))
     await _fetched(proxy, 1, 0)
     proxy.flush(1)
@@ -507,10 +507,10 @@ async def test_harvest_failure_is_logged(ffmpeg, ts_run, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_long_run_keeps_outputs_bounded(ffmpeg, ts_run, tmp_path):
+async def test_long_run_keeps_outputs_bounded(ffmpeg, ts_run):
     segs = ts_run(44100, 16)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=4)
+    proxy = SegmentProxy(fetch, ffmpeg, keep=4)
     for i in range(len(segs)):
         proxy.register(1, _seg(i, str(i)))
         await _fetched(proxy, 1, i)
@@ -518,18 +518,19 @@ async def test_long_run_keeps_outputs_bounded(ffmpeg, ts_run, tmp_path):
             assert await proxy.get(1, i - 1) is not None
     conv = proxy._slots[1].converter
     assert conv is not None
-    # the cache's 4 entries plus at most the newest output still being written
-    assert len(conv._ranges) <= 5
-    assert len(list(conv.workdir.glob("*.ts"))) <= 5
+    # only the newest output is still being written; the rest live in the entries
+    assert len(conv._splitter.pending) == 1
+    assert len(conv._splitter._buf) < 2 * max(len(s) for s in segs)
+    assert sum(e.converted is not None for e in proxy._slots[1].entries.values()) <= 4
     await proxy.aclose()
 
 
 @pytest.mark.asyncio
-async def test_long_run_with_mid_segment_keyframes_stays_bounded(ffmpeg, ts_run, tmp_path):
+async def test_long_run_with_mid_segment_keyframes_stays_bounded(ffmpeg, ts_run):
     """Extra keyframes split each segment into several outputs; all are served and deleted."""
     segs = ts_run(44100, 16, (1.2, 1.6))
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=4)
+    proxy = SegmentProxy(fetch, ffmpeg, keep=4)
     for i in range(len(segs)):
         proxy.register(1, _seg(i, str(i)))
         await _fetched(proxy, 1, i)
@@ -540,17 +541,16 @@ async def test_long_run_with_mid_segment_keyframes_stays_bounded(ffmpeg, ts_run,
             assert _video_frames(out) == _video_frames(segs[i - 1])
     conv = proxy._slots[1].converter
     assert conv is not None
-    assert len(conv._ranges) <= 5
-    # three pieces for each of those 5 ranges
-    assert len(list(conv.workdir.glob("*.ts"))) <= 15
+    assert len(conv._splitter.pending) == 1
+    assert len(conv._splitter._buf) < 2 * max(len(s) for s in segs)
     await proxy.aclose()
 
 
 @pytest.mark.asyncio
-async def test_converted_entry_releases_its_raw_bytes(ffmpeg, ts_run, tmp_path):
+async def test_converted_entry_releases_its_raw_bytes(ffmpeg, ts_run):
     segs = ts_run(44100, 3)
     fetch, _ = _source(segs)
-    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy = SegmentProxy(fetch, ffmpeg)
     for i in range(3):
         proxy.register(1, _seg(i, str(i)))
     out = await proxy.get(1, 0)
@@ -561,14 +561,44 @@ async def test_converted_entry_releases_its_raw_bytes(ffmpeg, ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_construction_clears_the_workroot(tmp_path):
-    stale = tmp_path / "relay" / "slot1-run1"
-    stale.mkdir(parents=True)
-    (stale / "out.m3u8").write_text("#EXTM3U\n")
+async def test_evicted_unrequested_output_is_dropped(ffmpeg, ts_run):
+    segs = ts_run(44100, 4)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, keep=2)
+    proxy.register(1, _seg(0, "0"))
+    proxy.register(1, _seg(1, "1"))
+    state = proxy._slots[1]
+    evicted = list(state.entries.values())
+    proxy.register(1, _seg(2, "2"))
+    proxy.register(1, _seg(3, "3"))
+    await _fetched(proxy, 1, 3)
+    assert list(state.entries) == [2, 3]
+    out = await proxy.get(1, 2)
+    assert out is not None and audio_sample_rate(out) == 48000
+    # nothing outside the cache takes a converted output
+    assert all(e.converted is None and e.converter is None for e in evicted)
+    await proxy.aclose()
 
-    async def fetch(uri: str) -> bytes:
-        raise AssertionError("not fetched")
 
-    proxy = SegmentProxy(fetch, None, tmp_path / "relay")
-    assert not (tmp_path / "relay").exists()
+@pytest.mark.asyncio
+async def test_waiting_client_wakes_as_soon_as_output_completes(ffmpeg, ts_run):
+    segs = ts_run(44100, 2)
+    fetch, gates = _gated(segs)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _seg(0, "0"))
+    proxy.register(1, _seg(1, "1"))
+    gates["0"].set()
+    await _fetched(proxy, 1, 0)
+    request = asyncio.create_task(proxy.get(1, 0))
+    ready = asyncio.create_task(proxy.wait_ready(1, 0, 5.0))
+    await asyncio.sleep(0.2)
+    assert not request.done() and not ready.done()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    gates["1"].set()
+    out = await request
+    assert await ready
+    # the next segment's keyframe completes the output as soon as ffmpeg reads it
+    assert loop.time() - start < 1.0
+    assert out is not None and audio_sample_rate(out) == 48000
     await proxy.aclose()
