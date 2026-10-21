@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from quadlink.relay.segments import SegmentProxy
-from quadlink.relay.server import FRESH_WAIT, SlotRelay
+from quadlink.relay.server import FRESH_WAIT, STALL_AFTER, SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.webui import WebUI
 
@@ -314,12 +314,16 @@ class FakeProxy:
         self.wait_gate: asyncio.Event | None = None
         self.missing = False
         self.error: Exception | None = None
+        self.flushes: list[int] = []
 
     def register(self, slot, seg):
         self.registered.append((slot, seg.seq))
 
     def ready(self, slot, seq):
         return seq not in self.unready
+
+    def flush(self, slot):
+        self.flushes.append(slot)
 
     async def wait_ready(self, slot, seq, timeout):
         self.waits.append((slot, seq, timeout))
@@ -474,6 +478,71 @@ async def test_steady_state_polls_do_not_wait():
         uris.append(f"{len(uris)}.ts")
         await _call(relay, "1")
     assert len(proxy.waits) == 1
+
+
+@pytest.mark.asyncio
+async def test_filler_flushes_the_converter():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    uris = ["a.ts", "b.ts"]
+
+    async def fetch(url):
+        return _src(100, uris)
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    await _call(relay, "1")
+    for _ in range(2):
+        now[0] += 2
+        uris.append(f"{len(uris)}.ts")
+        await _call(relay, "1")
+    assert proxy.flushes == []
+    # source stalls: filler starts after STALL_AFTER
+    now[0] += STALL_AFTER + 0.5
+    resp = await _call(relay, "1")
+    assert "/streams/filler/" in resp.text
+    assert proxy.flushes == [1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_failure_filler_flushes_the_converter():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    fail = [False]
+
+    async def fetch(url):
+        if fail[0]:
+            raise OSError("down")
+        return _src(100, ["a.ts", "b.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    await _call(relay, "1")
+    fail[0] = True
+    now[0] += STALL_AFTER + 0.5
+    resp = await _call(relay, "1")
+    assert "/streams/filler/" in resp.text
+    assert proxy.flushes == [1]
+
+
+@pytest.mark.asyncio
+async def test_fresh_window_after_idle_flushes_the_converter():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+
+    async def fetch(url):
+        return _src(int(now[0]), ["a.ts", "b.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    await _call(relay, "1")
+    # nobody polled: no filler, but the window restarts at live
+    now[0] += 60
+    await _call(relay, "1")
+    assert 1 in proxy.flushes
 
 
 @pytest.mark.asyncio

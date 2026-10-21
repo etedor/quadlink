@@ -178,7 +178,7 @@ class SlotRelay:
             if self._fresh_waits.get(slot) is wait:
                 del self._fresh_waits[slot]
 
-        self._fill_gap(state)
+        self._fill_gap(slot, state)
         if not state.segments:
             return web.Response(status=503, text="no segments")
         return self._playlist_response(self._render(state, slot))
@@ -219,6 +219,7 @@ class SlotRelay:
 
     def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
         now = self._time()
+        resumed = state.edge is not None
         if state.edge is None or now - state.edge > IDLE_RESET:
             budget = None
             state.edge = now
@@ -232,6 +233,10 @@ class SlotRelay:
         self._source_urls[slot] = entry.url
         if self._proxying():
             assert self._segments is not None
+            if budget is None and resumed:
+                # a fresh window jumps to live without a discontinuity, so the
+                # converting run must not span the gap
+                self._segments.flush(slot)
             for seg in state.segments:
                 if seg.seq >= before:
                     self._segments.register(slot, seg)
@@ -258,7 +263,7 @@ class SlotRelay:
             self._segments.wait_ready(slot, target, FRESH_WAIT)
         )
 
-    def _fill_gap(self, state: SlotState) -> None:
+    def _fill_gap(self, slot: int, state: SlotState) -> None:
         """Add one filler segment once a slot's video has stalled or fallen behind.
 
         A stall is STALL_AFTER without new video; falling behind is the content
@@ -272,6 +277,11 @@ class SlotRelay:
         if now - state.served_until < STALL_AFTER and now - state.edge < SLOW_AFTER:
             return
         add_filler(state)
+        if self._proxying():
+            assert self._segments is not None
+            # filler lists the run's tail, which ffmpeg holds until EOF; the filler
+            # is a discontinuity already, so the new run adds no seam
+            self._segments.flush(slot)
         # after a long unpolled spell, pace from now instead of bursting filler
         state.served_until = max(
             state.served_until + FILLER_DURATION, now - STALL_AFTER + FILLER_DURATION

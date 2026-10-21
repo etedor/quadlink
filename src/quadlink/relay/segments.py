@@ -22,11 +22,6 @@ logger = structlog.get_logger()
 CONVERT_WAIT = 6.0
 # seconds ffmpeg may take to accept one segment; the segment's clients wait on it
 FEED_WAIT = 3.0
-# seconds without a new segment before a converting run is flushed. ffmpeg holds a
-# run's last 1-2 outputs until more input or EOF, and the server lists filler (and
-# with it those held-back segments) from STALL_AFTER (3.0) after the last arrival;
-# a flush takes well under the 0.5s left, so the tail is converted by then
-IDLE_FLUSH = 2.5
 # seconds between ready() checks in wait_ready; small against a 2s segment
 READY_POLL = 0.05
 
@@ -45,13 +40,13 @@ class _Entry:
 @dataclass
 class _Slot:
     entries: "OrderedDict[int, _Entry]" = field(default_factory=OrderedDict)
-    queue: "asyncio.Queue[_Entry]" = field(default_factory=asyncio.Queue)
+    # None marks a flush, taken in order after the segments queued before it
+    queue: "asyncio.Queue[_Entry | None]" = field(default_factory=asyncio.Queue)
     worker: asyncio.Task[None] | None = None
     converter: AudioConverter | None = None
     run: int = 0
     # false until the next fetched segment decides whether its run converts
     decided: bool = False
-    registered: float = 0.0
     # entries with a client in get(); harvested even once evicted from the cache
     waiting: "list[_Entry]" = field(default_factory=list)
 
@@ -85,33 +80,37 @@ class SegmentProxy:
         entry = _Entry(seg, asyncio.get_running_loop().create_future())
         entry.raw.add_done_callback(_mark_retrieved)
         state.entries[seg.seq] = entry
-        state.registered = entry.raw.get_loop().time()
         while len(state.entries) > self._keep:
             state.entries.popitem(last=False)
         state.queue.put_nowait(entry)
         if state.worker is None or state.worker.done():
             state.worker = asyncio.create_task(self._work(slot, state))
 
+    def flush(self, slot: int) -> None:
+        """End the slot's converting run once its queued segments are in.
+
+        ffmpeg holds a run's last 1-2 outputs until more input or EOF; the server
+        calls this when it lists filler after them. The next segment starts a new run.
+        """
+        state = self._slots.get(slot)
+        if state is None or state.worker is None or state.worker.done():
+            return
+        if state.converter is None and state.queue.empty():
+            return
+        state.queue.put_nowait(None)
+
     async def _work(self, slot: int, state: _Slot) -> None:
-        loop = asyncio.get_running_loop()
         while True:
-            if state.queue.empty():
-                if state.converter is None:
-                    return
-                idle = state.registered + IDLE_FLUSH - loop.time()
-                try:
-                    entry = await asyncio.wait_for(state.queue.get(), max(0.0, idle))
-                except TimeoutError:
-                    # register() saw this worker alive, so it must drain what came in
-                    if not state.queue.empty():
-                        continue
-                    # a source stall or ad gap: flush the tail before filler lists it
+            # a worker with an open converter stays up so a later flush reaches it
+            if state.queue.empty() and state.converter is None:
+                return
+            entry = await state.queue.get()
+            if entry is None:
+                if state.converter is not None:
                     self._retire(state, state.converter)
                     state.converter = None
                     state.decided = False
-                    return
-            else:
-                entry = state.queue.get_nowait()
+                continue
             try:
                 data = await self._fetch(entry.seg.uri)
             except Exception as e:
@@ -274,7 +273,8 @@ class SegmentProxy:
             # queued entries can already be out of the cache; their clients still wait
             pending = list(state.entries.values())
             while not state.queue.empty():
-                pending.append(state.queue.get_nowait())
+                if (queued := state.queue.get_nowait()) is not None:
+                    pending.append(queued)
             for entry in pending:
                 if not entry.raw.done():
                     entry.raw.set_exception(RuntimeError("relay segment proxy closed"))
