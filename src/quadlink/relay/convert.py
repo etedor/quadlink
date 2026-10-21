@@ -361,10 +361,11 @@ def _ignore(key: int, data: bytes | None) -> None:
     pass
 
 
-async def remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes | None:
-    """One fMP4 media segment as MPEG-TS with its streams copied; None on failure.
+async def remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes:
+    """One fMP4 media segment as MPEG-TS with its streams copied.
 
     Timestamps stay the source's, so the output fits between converted neighbours.
+    Raises RuntimeError, with ffmpeg's stderr, if it exits non-zero or writes nothing.
     """
     proc = await asyncio.create_subprocess_exec(
         ffmpeg,
@@ -403,10 +404,7 @@ async def remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes 
         await proc.wait()
         raise
     if proc.returncode != 0 or not out:
-        logger.warning(
-            "relay remux failed", returncode=proc.returncode, error=err.decode(errors="replace")
-        )
-        return None
+        raise RuntimeError(f"ffmpeg exited {proc.returncode}: {err.decode(errors='replace')}")
     return out
 
 
@@ -418,6 +416,10 @@ class Remuxer:
     single remux of all segments fed so far, so they feed a converter like TS segments:
     each video PTS gets the lift one demuxer would have reached (see lift_offsets),
     and continuity counters run on.
+
+    `broke_run` is set by remux() whenever the segment it just returned could not be
+    lifted to continue the stream so far: the caller must start a new converter run
+    at it instead of feeding it on as a continuation.
     """
 
     def __init__(self, ffmpeg: str, init: bytes) -> None:
@@ -426,16 +428,17 @@ class Remuxer:
         self._video = video_track(init)
         self._lift = 0
         self._counters: dict[int, int] = {}
+        self.broke_run = False
 
-    async def remux(self, data: bytes, timeout: float) -> bytes | None:
-        """One media segment as MPEG-TS; None on failure. Call in stream order."""
+    async def remux(self, data: bytes, timeout: float) -> bytes:
+        """One media segment as MPEG-TS. Raises on failure. Call in stream order."""
         lift = self._lift
+        broke = False
         if self._video is not None:
-            data, lift = lift_offsets(data, self._video, lift)
+            data, lift, broke = lift_offsets(data, self._video, lift)
         # remux() bounds only its pipe; this also covers starting ffmpeg
         async with asyncio.timeout(timeout):
             out = await remux(self.ffmpeg, self.init, data, timeout)
-        if out is None:
-            return None
         self._lift = lift
+        self.broke_run = broke
         return continue_stream(out, self._counters)

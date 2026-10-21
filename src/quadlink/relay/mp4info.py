@@ -77,7 +77,6 @@ def video_track(init: bytes) -> Track | None:
 def _offsets(data: bytes, lo: int, hi: int) -> Iterator[tuple[int | None, int]]:
     """(field position or None, composition offset) of each sample in one traf's truns."""
     for t_lo, t_hi in _find(data, lo, hi, [b"trun"]):
-        version = data[t_lo]
         flags = int.from_bytes(data[t_lo + 1 : t_lo + 4], "big")
         count = struct.unpack_from(">I", data, t_lo + 4)[0]
         pos = t_lo + 8 + (4 if flags & 0x1 else 0) + (4 if flags & 0x4 else 0)
@@ -88,7 +87,9 @@ def _offsets(data: bytes, lo: int, hi: int) -> Iterator[tuple[int | None, int]]:
             found: tuple[int | None, int] = (None, 0)
             for f in fields:
                 if f == 0x800:
-                    found = (pos, struct.unpack_from(">i" if version else ">I", data, pos)[0])
+                    # ffmpeg's mov demuxer reads this field as signed in both trun
+                    # versions, though ISO/IEC 14496-12 calls it unsigned in v0
+                    found = (pos, struct.unpack_from(">i", data, pos)[0])
                 pos += 4
             yield found
 
@@ -107,7 +108,7 @@ def _video_moofs(data: bytes, video: Track) -> Iterator[list[tuple[int | None, i
             yield samples
 
 
-def lift_offsets(data: bytes, video: Track, lift: int) -> tuple[bytes, int]:
+def lift_offsets(data: bytes, video: Track, lift: int) -> tuple[bytes, int, bool]:
     """An fMP4 media segment that remuxes alone as it would after earlier segments.
 
     ffmpeg's mov demuxer raises each video PTS by the deepest negated composition
@@ -116,11 +117,16 @@ def lift_offsets(data: bytes, video: Track, lift: int) -> tuple[bytes, int]:
     the earlier segments, in media ticks. Offsets are rewritten to include it, so none
     is negative and ffmpeg adds nothing. Returns the segment and the lift after it;
     a segment it cannot rewrite in place comes back unchanged.
+
+    The third value is True when this segment needed a deeper lift than it can carry
+    (no composition-offset field to raise, or a value a rewrite can't fit): its own
+    video PTS would then sit behind the depth already reached, so the caller must
+    break its run here rather than feed it on as a continuation.
     """
     try:
         moofs = list(_video_moofs(data, video))
     except (struct.error, IndexError):
-        return data, lift
+        return data, lift, False
     own = 0
     targets: list[tuple[list[tuple[int | None, int]], int]] = []
     rewrite = False
@@ -131,12 +137,15 @@ def lift_offsets(data: bytes, video: Track, lift: int) -> tuple[bytes, int]:
         targets.append((samples, target))
     after = max(lift, own)
     if not rewrite:
-        return data, after
+        return data, after, False
     if any(pos is None for samples, _ in targets for pos, _ in samples):
-        return data, after
+        return data, own, True
     buf = bytearray(data)
-    for samples, target in targets:
-        for pos, offset in samples:
-            assert pos is not None
-            struct.pack_into(">I", buf, pos, offset + target)
-    return bytes(buf), after
+    try:
+        for samples, target in targets:
+            for pos, offset in samples:
+                assert pos is not None
+                struct.pack_into(">i", buf, pos, offset + target)
+    except struct.error:
+        return data, after, False
+    return bytes(buf), after, False

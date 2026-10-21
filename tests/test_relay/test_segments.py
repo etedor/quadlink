@@ -8,10 +8,11 @@ import pytest
 import structlog.testing
 
 from quadlink.relay import convert, segments
-from quadlink.relay.convert import AudioConverter, remux
+from quadlink.relay.convert import AudioConverter, Remuxer, remux
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.tsinfo import _VIDEO_TYPES, _pes_starts, _pid, audio_sample_rate
+from tests.test_relay import synth
 
 
 def _seg(seq: int, uri: str, disc: bool = False) -> Segment:
@@ -330,6 +331,24 @@ async def test_switch_between_ts_and_fmp4_starts_a_new_run(ffmpeg, ts_run, fmp4_
 
 
 @pytest.mark.asyncio
+async def test_discontinuity_gets_a_fresh_fmp4_remuxer(ffmpeg, fmp4_run):
+    """A new run starts at a discontinuity anyway, so its lift and counters must
+    not carry over from the old remuxer, even under the same init."""
+    init, segs = fmp4_run(44100, 1, negative_cts=True, bframes=1)
+    fetch, _ = _fmp4_source(init, segs)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
+    await _fetched(proxy, 1, 0)
+    state = proxy._slots[1]
+    assert state.remuxer is not None
+    old_remuxer = state.remuxer
+    proxy.register(1, _fmp4(1, "0", disc=True))
+    await _fetched(proxy, 1, 1)
+    assert state.remuxer is not old_remuxer
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
 async def test_failed_fmp4_conversion_serves_a_ts_remux(ffmpeg, fmp4_run, monkeypatch):
     init, segs = fmp4_run(44100, 2)
     fetch, _ = _fmp4_source(init, segs)
@@ -367,12 +386,12 @@ async def test_fmp4_remux_failure_asks_for_filler(ffmpeg, fmp4_run, monkeypatch,
     fetch, _ = _fmp4_source(init, segs)
     real_remux = convert.remux
 
-    async def bad_remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes | None:
+    async def bad_remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes:
         if data != segs[0]:
             return await real_remux(ffmpeg, init, data, timeout)
         if hang:
             await asyncio.sleep(60)
-        return None
+        raise RuntimeError("synthetic remux failure")
 
     monkeypatch.setattr(segments, "REMUX_WAIT", 0.3)
     monkeypatch.setattr(convert, "remux", bad_remux)
@@ -390,6 +409,30 @@ async def test_fmp4_remux_failure_asks_for_filler(ffmpeg, fmp4_run, monkeypatch,
     # the next segment starts a new run and is converted
     out = await proxy.get(1, 1)
     assert out is not None and audio_sample_rate(out) == 48000
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fmp4_aac_without_decoder_config_warns_once_per_run(ffmpeg, fmp4_run, monkeypatch):
+    """A PMT with AAC but no parseable ADTS header means the init had no
+    AudioSpecificConfig; the warning fires once at the run's first segment."""
+    init, segs = fmp4_run(44100, 2)
+    fetch, _ = _fmp4_source(init, segs)
+    # PES with no payload: audio_sample_rate finds the AAC PID but no ADTS sync word
+    broken_ts = synth.pat() + synth.pmt() + synth.pes(synth.AUDIO_PID, 0)
+
+    async def fake_remux(self: Remuxer, data: bytes, timeout: float) -> bytes:
+        return broken_ts
+
+    monkeypatch.setattr(Remuxer, "remux", fake_remux)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
+    proxy.register(1, _fmp4(1, "1"))
+    with structlog.testing.capture_logs() as logs:
+        await proxy.get(1, 0)
+        await proxy.get(1, 1)
+    warnings = [log for log in logs if log["event"] == "relay fMP4 audio has no decoder config"]
+    assert len(warnings) == 1
     await proxy.aclose()
 
 

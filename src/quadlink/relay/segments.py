@@ -17,7 +17,7 @@ import structlog
 
 from quadlink.relay.convert import AudioConverter, Remuxer
 from quadlink.relay.playlist import Segment
-from quadlink.relay.tsinfo import audio_sample_rate
+from quadlink.relay.tsinfo import _AAC_ADTS, _pid, audio_sample_rate
 
 logger = structlog.get_logger()
 
@@ -246,16 +246,23 @@ class SegmentProxy:
         assert self._ffmpeg is not None
         out: bytes | None = None
         if entry.init is not None:
-            if state.remuxer is None or state.remuxer.init != entry.init:
+            # a discontinuity starts a new run anyway, so the lift and continuity
+            # counters must restart with it, same as the old per-run mov demuxer did
+            if state.remuxer is None or state.remuxer.init != entry.init or entry.seg.discontinuity:
                 state.remuxer = Remuxer(self._ffmpeg, entry.init)
             try:
                 out = await state.remuxer.remux(data, REMUX_WAIT)
             except Exception as e:
-                logger.warning("relay remux failed", slot=slot, seq=entry.seg.seq, error=repr(e))
+                logger.warning(
+                    "relay remux failed, serving filler for this segment",
+                    slot=slot,
+                    seq=entry.seg.seq,
+                    error=repr(e),
+                )
+            else:
+                if state.remuxer.broke_run:
+                    state.decided = False
         if out is None:
-            logger.warning(
-                "relay serving filler in place of an fMP4 segment", slot=slot, seq=entry.seg.seq
-            )
             return b""
         return out
 
@@ -297,6 +304,10 @@ class SegmentProxy:
             state.decided = True
             state.run_init = entry.init
             rate = audio_sample_rate(data)
+            if entry.init is not None and rate is None and _pid(data, {_AAC_ADTS}) is not None:
+                # init had no AudioSpecificConfig: ffmpeg wrote AAC with no ADTS
+                # header a decoder can use
+                logger.warning("relay fMP4 audio has no decoder config", slot=slot)
             if self._ffmpeg and rate is not None:
                 new = AudioConverter(
                     self._ffmpeg, lambda key, out: self._deliver(state, new, key, out)

@@ -561,14 +561,14 @@ async def test_fmp4_run_across_the_pts_wrap(ffmpeg, fmp4_run):
 @pytest.mark.asyncio
 async def test_remux_fails_on_bad_input(ffmpeg, fmp4_run):
     init, segs = fmp4_run(44100, 2)
-    assert await remux(ffmpeg, init, b"not a fragment", 10) is None
+    with pytest.raises(RuntimeError):
+        await remux(ffmpeg, init, b"not a fragment", 10)
     remuxer = Remuxer(ffmpeg, init)
     first = await remuxer.remux(segs[0], 10)
-    assert first is not None
-    assert await remuxer.remux(b"not a fragment", 10) is None
+    with pytest.raises(RuntimeError):
+        await remuxer.remux(b"not a fragment", 10)
     # a failed segment leaves the stream as it was: counters run on from the first
     second = await remuxer.remux(segs[1], 10)
-    assert second is not None
     assert _counter_jumps(first + second) == 0
 
 
