@@ -207,13 +207,15 @@ class SegmentProxy:
             await asyncio.wait_for(conv.feed(data), FEED_WAIT)
         except Exception as e:
             logger.warning(
-                "relay conversion failed, serving the rest of the run at the source rate",
+                "relay conversion failed, serving this segment at the source rate",
                 slot=slot,
                 seq=entry.seg.seq,
                 error=repr(e),
             )
             entry.converter = None
             state.converter = None
+            # retry conversion on the next segment; a failure can be transient
+            state.decided = False
             self._retire(state, conv)
 
     @staticmethod

@@ -37,7 +37,7 @@ _SDT_PID = 0x11
 # seconds ffmpeg gets to drain after EOF before it is killed
 _FINISH_WAIT = 5.0
 # bytes of ffmpeg output that may wait for a cut: ~8 segments at Twitch's top
-# bitrate. More means no cut is coming, and the run must end before it exhausts memory
+# bitrate; more means no cut is coming, and the run must end before it exhausts memory
 MAX_PENDING = 16 << 20
 
 OnOutput = Callable[[int, bytes | None], None]
@@ -311,6 +311,7 @@ class AudioConverter:
             return
         if not self._finishing:
             # ffmpeg died: what it wrote of the head output ends mid-segment
+            logger.warning("relay ffmpeg exited mid-run", returncode=proc.returncode)
             self.failed = True
             self._emit((key, None) for key in self._splitter.abandon())
 
