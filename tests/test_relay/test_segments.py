@@ -4,6 +4,7 @@ import asyncio
 import gc
 
 import pytest
+import structlog.testing
 
 from quadlink.relay.convert import AudioConverter
 from quadlink.relay.playlist import Segment
@@ -321,6 +322,78 @@ async def test_unrequested_fetch_failure_is_quiet(tmp_path):
     async with asyncio.timeout(1):
         while not proxy._slots[1].entries[0].raw.done():
             await asyncio.sleep(0.01)
+    await proxy.aclose()
+    gc.collect()
+    assert reported == []
+
+
+@pytest.mark.asyncio
+async def test_stalled_run_flushes_its_tail(ffmpeg, ts_run, tmp_path, monkeypatch):
+    """A source stall must not leave the run's last outputs inside ffmpeg."""
+    monkeypatch.setattr("quadlink.relay.segments.IDLE_FLUSH", 0.3)
+    segs = ts_run(44100, 3)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    for i in range(2):
+        proxy.register(1, _seg(i, str(i)))
+    await _fetched(proxy, 1, 1)
+    # two segments in: ffmpeg holds both outputs until more input or EOF
+    assert not proxy.ready(1, 1)
+    async with asyncio.timeout(3):
+        while not (proxy.ready(1, 0) and proxy.ready(1, 1)):
+            await asyncio.sleep(0.05)
+    loop = asyncio.get_running_loop()
+    for i in range(2):
+        start = loop.time()
+        out = await proxy.get(1, i)
+        assert loop.time() - start < 0.5
+        assert out is not None and out != segs[i]
+        assert audio_sample_rate(out) == 48000
+    # the same run resumes: a fresh converter, undecided until its segment is fetched
+    proxy.register(1, _seg(2, "2"))
+    assert not proxy.ready(1, 2)
+    await _fetched(proxy, 1, 2)
+    assert proxy._slots[1].converter is not None
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_evicted_entry_still_gets_harvested_output(ffmpeg, ts_run, tmp_path, monkeypatch):
+    monkeypatch.setattr("quadlink.relay.segments.IDLE_FLUSH", 0.3)
+    segs = ts_run(44100, 2)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path, keep=2)
+    proxy.register(1, _seg(0, "0"))
+    proxy.register(1, _seg(1, "1"))
+    await _fetched(proxy, 1, 1)
+    waiting = asyncio.create_task(proxy.get(1, 0))
+    await asyncio.sleep(0.05)
+    # evicted while its client waits on the converter
+    proxy._slots[1].entries.popitem(last=False)
+    async with asyncio.timeout(3):
+        out = await waiting
+    assert out is not None and audio_sample_rate(out) == 48000
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_harvest_failure_is_logged(ffmpeg, ts_run, tmp_path, monkeypatch):
+    reported: list[dict] = []
+    asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: reported.append(ctx))
+    monkeypatch.setattr("quadlink.relay.segments.IDLE_FLUSH", 0.1)
+
+    async def boom(self: AudioConverter) -> None:
+        raise RuntimeError("wedged")
+
+    monkeypatch.setattr(AudioConverter, "finish", boom)
+    segs = ts_run(44100, 1)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy.register(1, _seg(0, "0"))
+    with structlog.testing.capture_logs() as logs:
+        async with asyncio.timeout(3):
+            while not any(e["event"] == "relay conversion failed" for e in logs):
+                await asyncio.sleep(0.05)
     await proxy.aclose()
     gc.collect()
     assert reported == []
