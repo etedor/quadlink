@@ -1,5 +1,6 @@
 """Tests for the SlotRelay aiohttp server."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -7,7 +8,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
-from quadlink.relay.server import SlotRelay
+from quadlink.relay.segments import SegmentProxy
+from quadlink.relay.server import FRESH_WAIT, SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.webui import WebUI
 
@@ -308,6 +310,10 @@ class FakeProxy:
     def __init__(self, unready: set[int] | None = None) -> None:
         self.registered: list[tuple[int, int]] = []
         self.unready = unready or set()
+        self.waits: list[tuple[int, int, float]] = []
+        self.wait_gate: asyncio.Event | None = None
+        self.missing = False
+        self.error: Exception | None = None
 
     def register(self, slot, seg):
         self.registered.append((slot, seg.seq))
@@ -315,8 +321,16 @@ class FakeProxy:
     def ready(self, slot, seq):
         return seq not in self.unready
 
+    async def wait_ready(self, slot, seq, timeout):
+        self.waits.append((slot, seq, timeout))
+        if self.wait_gate is not None:
+            await self.wait_gate.wait()
+        return self.ready(slot, seq)
+
     async def get(self, slot, seq):
-        return b"seg-%d" % seq
+        if self.error is not None:
+            raise self.error
+        return None if self.missing else b"seg-%d" % seq
 
     async def aclose(self):
         pass
@@ -416,3 +430,127 @@ async def test_segment_route_rejects_bad_names():
         "GET", "/streams/2/seg/x.ts", match_info={"slot": "2", "name": "x.ts"}
     )
     assert (await relay.handle_segment(request)).status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", [48000, 44100])
+async def test_fresh_window_lists_up_to_two_before_newest(rate, ffmpeg, ts_run, tmp_path):
+    segs = ts_run(rate, 6)
+
+    async def fetch_segment(uri):
+        return segs[int(uri)]
+
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, [str(i) for i in range(6)])
+
+    relay = SlotRelay(store, fetch=fetch, segments=SegmentProxy(fetch_segment, ffmpeg, tmp_path))
+    try:
+        resp = await _call(relay, "1")
+        for seq in range(4):
+            assert f"/streams/1/seg/{seq}.ts" in resp.text
+    finally:
+        await relay.aclose()
+
+
+@pytest.mark.asyncio
+async def test_steady_state_polls_do_not_wait():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    uris = ["a.ts", "b.ts"]
+
+    async def fetch(url):
+        return _src(100, uris)
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
+    await _call(relay, "1")
+    assert proxy.waits == [(1, 0, FRESH_WAIT)]
+    for _ in range(3):
+        now[0] += 2
+        uris.append(f"{len(uris)}.ts")
+        await _call(relay, "1")
+    assert len(proxy.waits) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_fresh_polls_share_one_wait():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _src(100, ["a.ts", "b.ts", "c.ts"])
+
+    proxy = FakeProxy()
+    proxy.wait_gate = asyncio.Event()
+    relay = SlotRelay(store, fetch=fetch, segments=proxy)
+    calls = [asyncio.create_task(_call(relay, "1")) for _ in range(3)]
+    await asyncio.sleep(0.01)
+    assert not any(c.done() for c in calls)
+    proxy.wait_gate.set()
+    resps = await asyncio.gather(*calls)
+    assert all(r.status == 200 for r in resps)
+    assert proxy.waits == [(1, 0, FRESH_WAIT)]
+
+
+def _seg_request(name: str) -> web.Request:
+    return make_mocked_request(
+        "GET", f"/streams/2/seg/{name}", match_info={"slot": "2", "name": name}
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["+7.ts", " 7.ts", "7_0.ts", "-1.ts", "7.mp4"])
+async def test_segment_route_rejects_loose_seq(name):
+    relay = SlotRelay(SlotStore(), segments=FakeProxy())
+    assert (await relay.handle_segment(_seg_request(name))).status == 404
+
+
+@pytest.mark.asyncio
+async def test_segment_route_is_not_cached():
+    relay = SlotRelay(SlotStore(), segments=FakeProxy())
+    resp = await relay.handle_segment(_seg_request("7.ts"))
+    assert resp.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_segment_route_502_when_get_raises():
+    proxy = FakeProxy()
+    proxy.error = RuntimeError("boom")
+    relay = SlotRelay(SlotStore(), segments=proxy)
+    assert (await relay.handle_segment(_seg_request("7.ts"))).status == 502
+
+
+@pytest.mark.asyncio
+async def test_segment_route_404_when_segment_unknown():
+    proxy = FakeProxy()
+    proxy.missing = True
+    relay = SlotRelay(SlotStore(), segments=proxy)
+    assert (await relay.handle_segment(_seg_request("7.ts"))).status == 404
+
+
+@pytest.mark.asyncio
+async def test_fmp4_segments_use_m4s_uri_and_type():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return (
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n"
+            '#EXT-X-MAP:URI="https://cdn.example/init.mp4"\n'
+            "#EXTINF:2.000,live\nhttps://cdn.example/a.mp4\n"
+        )
+
+    relay = SlotRelay(store, fetch=fetch, segments=FakeProxy())
+    resp = await _call(relay, "1")
+    assert "/streams/1/seg/0.m4s" in resp.text
+    seg = await relay.handle_segment(
+        make_mocked_request(
+            "GET", "/streams/1/seg/0.m4s", match_info={"slot": "1", "name": "0.m4s"}
+        )
+    )
+    assert seg.status == 200
+    assert seg.content_type == "video/iso.segment"

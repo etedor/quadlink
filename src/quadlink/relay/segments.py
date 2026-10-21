@@ -27,6 +27,8 @@ FEED_WAIT = 3.0
 # with it those held-back segments) from STALL_AFTER (3.0) after the last arrival;
 # a flush takes well under the 0.5s left, so the tail is converted by then
 IDLE_FLUSH = 2.5
+# seconds between ready() checks in wait_ready; small against a 2s segment
+READY_POLL = 0.05
 
 
 # identity equality: entries go in sets and are compared by object
@@ -218,6 +220,17 @@ class SegmentProxy:
             return True
         assert entry.pts is not None
         return entry.converter.has_output(entry.pts)
+
+    async def wait_ready(self, slot: int, seq: int, timeout: float) -> bool:
+        """Wait until ready(slot, seq) holds or `timeout` seconds pass; return ready()."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        # no event exists to await: ffmpeg signals a converted output only by writing a file
+        while not self.ready(slot, seq):
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(READY_POLL)
+        return True
 
     async def get(self, slot: int, seq: int) -> bytes | None:
         state = self._slots.get(slot)

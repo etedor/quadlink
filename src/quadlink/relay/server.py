@@ -2,9 +2,12 @@
 
 Fetches the slot's current Twitch media playlist on demand (short cache),
 folds it into a rolling window via the pure core in playlist.py, and serves
-our own continuously-live playlist. Segments stay absolute Twitch CDN URLs.
+our own continuously-live playlist. With a SegmentProxy, segments point at
+relay URLs that fetch each Twitch segment once (converting its audio to 48 kHz
+when needed); without one, segments stay absolute Twitch CDN URLs.
 """
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -55,6 +58,10 @@ MAX_LEAD = 4.0
 # a slot whose content edge is this far behind real time has had no client
 # keeping it moving, so the next client starts fresh at the live edge
 IDLE_RESET = 10.0
+# seconds a fresh window's first playlist waits for the proxy. AVPlayer starts at
+# the newest listed segment and never skips, so a window listed before its
+# segments are ready keeps the tile that far behind live for good
+FRESH_WAIT = 4.0
 
 _FILLER_DIR = Path(__file__).parent / "filler"
 _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
@@ -92,6 +99,8 @@ class SlotRelay:
         # slot -> lowest seq registered with the proxy since it was last turned on;
         # segments below it were never registered and must keep their CDN URI
         self._proxy_first_seq: dict[int, int] = {}
+        # slot -> wait on a fresh window's proxy readiness, shared by concurrent polls
+        self._fresh_waits: dict[int, asyncio.Task[bool]] = {}
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -162,6 +171,12 @@ class SlotRelay:
                 return web.Response(status=503, text="source unavailable")
         else:
             await self._ingest_slot(slot, state, entry, text)
+        wait = self._fresh_waits.get(slot)
+        if wait is not None:
+            # shielded: one client disconnecting must not end the wait for the others
+            await asyncio.shield(wait)
+            if self._fresh_waits.get(slot) is wait:
+                del self._fresh_waits[slot]
 
         self._fill_gap(state)
         if not state.segments:
@@ -221,11 +236,27 @@ class SlotRelay:
                 if seg.seq >= before:
                     self._segments.register(slot, seg)
                     self._proxy_first_seq.setdefault(slot, seg.seq)
+            if budget is None:
+                self._wait_fresh(slot, state)
         else:
             self._proxy_first_seq.pop(slot, None)
         if state.next_seq > before:
             self._arrivals[slot] = (entry.identity, now)
             state.served_until = now
+
+    def _wait_fresh(self, slot: int, state: SlotState) -> None:
+        """Start the wait for a fresh window to list up to two before its newest segment.
+
+        ffmpeg finalizes a converted output after about two more input segments.
+        """
+        assert self._segments is not None
+        live = [seg for seg in state.segments if not seg.filler]
+        if not live or slot in self._fresh_waits:
+            return
+        target = live[max(0, len(live) - 3)].seq
+        self._fresh_waits[slot] = asyncio.create_task(
+            self._segments.wait_ready(slot, target, FRESH_WAIT)
+        )
 
     def _fill_gap(self, state: SlotState) -> None:
         """Add one filler segment once a slot's video has stalled or fallen behind.
@@ -296,6 +327,9 @@ class SlotRelay:
         """Route handler for GET /streams/{slot}/seg/{seq}.{ts|m4s}."""
         name = request.match_info.get("name", "")
         stem, _, ext = name.partition(".")
+        # int() alone accepts "+7", " 7" and "7_0"
+        if not stem.isdigit():
+            return web.Response(status=404, text="bad segment")
         try:
             slot, seq = int(request.match_info.get("slot", "")), int(stem)
         except ValueError:
@@ -310,8 +344,10 @@ class SlotRelay:
             return web.Response(status=502, text="segment fetch failed")
         if body is None:
             return web.Response(status=404, text="no such segment")
+        # after CONVERT_WAIT the body can be the raw 44.1 kHz original, so a cache
+        # must not hand it to a rebuilt player
         return web.Response(
-            body=body, content_type=types[ext], headers={"Cache-Control": "max-age=60"}
+            body=body, content_type=types[ext], headers={"Cache-Control": "no-store"}
         )
 
     def _playlist_response(self, body: str) -> web.Response:
@@ -330,6 +366,10 @@ class SlotRelay:
 
     async def aclose(self) -> None:
         """Close the segment proxy and the internal httpx client, if created."""
+        for wait in self._fresh_waits.values():
+            wait.cancel()
+        await asyncio.gather(*self._fresh_waits.values(), return_exceptions=True)
+        self._fresh_waits.clear()
         if self._segments is not None:
             await self._segments.aclose()
         if self._client is not None:

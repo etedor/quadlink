@@ -66,6 +66,23 @@ async def test_without_ffmpeg_441k_passes_through(ts_run, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_wait_ready_returns_once_ready_or_at_timeout(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(48000, 1)
+    gate = asyncio.Event()
+
+    async def fetch(uri: str) -> bytes:
+        await gate.wait()
+        return segs[int(uri)]
+
+    proxy = SegmentProxy(fetch, ffmpeg, tmp_path)
+    proxy.register(1, _seg(0, "0"))
+    assert not await proxy.wait_ready(1, 0, 0.1)
+    gate.set()
+    assert await proxy.wait_ready(1, 0, 2.0)
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
 async def test_unknown_segment_is_none(tmp_path):
     async def fetch(uri: str) -> bytes:
         raise AssertionError("not fetched")
