@@ -30,6 +30,8 @@ async def test_converts_a_run_gaplessly_one_output_per_input(ffmpeg, ts_run, tmp
     # of 90 kHz ticks, so its rounded PES timestamps carry a few ticks of noise
     # into the resampled output; tolerate that instead of requiring an exact multiple
     assert all(abs(d - round(d / 1920) * 1920) <= 8 for d in diffs)
+    # per-step jitter is rounding noise from the 44.1 kHz source; across the run it must cancel
+    assert (pts[-1] - pts[0]) % 1920 == 0
 
 
 @pytest.mark.asyncio
