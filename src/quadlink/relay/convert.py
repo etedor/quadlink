@@ -221,6 +221,10 @@ class AudioConverter:
             "1",
             "-f",
             "mpegts",
+            # a run starting under 60s before the 33-bit PTS wrap reads as negative
+            # timestamps; shifting them would move every output off its input's PTS
+            "-avoid_negative_ts",
+            "disabled",
             # each packet reaches the pipe as soon as it is muxed, so a segment's
             # output completes as soon as the next segment's keyframe is fed
             "-muxdelay",

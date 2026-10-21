@@ -146,6 +146,27 @@ async def test_each_output_decodes_alone(ffmpeg, ts_run):
 
 
 @pytest.mark.asyncio
+# the 33-bit PTS wraps at 2**33 / 90000 = 95443.7s. ffmpeg reads a stream that starts
+# under 60s before the wrap as negative timestamps, one that starts earlier as growing
+# past 2**33; both must come out as the input's PTS
+@pytest.mark.parametrize("offset,count", [(95439, 4), (95375, 36)])
+async def test_a_run_across_the_pts_wrap(ffmpeg, ts_run, offset, count):
+    segs = ts_run(44100, count, offset=offset)
+    starts = [first_video_pts(s) for s in segs]
+    assert any(
+        a is not None and b is not None and a > b for a, b in zip(starts, starts[1:], strict=False)
+    )
+    conv, outputs, keys = await _run(ffmpeg, segs)
+    await conv.finish()
+    assert outputs.calls == keys
+    for seg, key in zip(segs, keys, strict=True):
+        out = outputs.got[key]
+        assert out is not None
+        assert sorted(_video_pts(out)) == sorted(_video_pts(seg))
+        assert audio_sample_rate(out) == 48000
+
+
+@pytest.mark.asyncio
 async def test_audio_runs_on_across_outputs(ffmpeg, ts_run):
     segs = ts_run(44100, 4)
     conv, outputs, keys = await _run(ffmpeg, segs)
