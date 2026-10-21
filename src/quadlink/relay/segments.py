@@ -223,7 +223,8 @@ class SegmentProxy:
         """Hand a finished output to the entry still taking it; None means serve raw."""
         for entry in {*state.entries.values(), *state.waiting}:
             if entry.converter is conv and entry.pts == key:
-                if out is not None:
+                # empty: ffmpeg's output skipped this segment, so serve it raw
+                if out:
                     entry.set_converted(out)
                 entry.converter = None
                 state.notify()

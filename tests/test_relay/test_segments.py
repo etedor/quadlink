@@ -624,3 +624,20 @@ async def test_waiting_client_wakes_as_soon_as_output_completes(ffmpeg, ts_run):
     assert loop.time() - start < 1.0
     assert out is not None and audio_sample_rate(out) == 48000
     await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_output_serves_raw():
+    async def fetch(uri: str) -> bytes:
+        return b"raw"
+
+    proxy = SegmentProxy(fetch, None)
+    proxy.register(1, _seg(0, "0"))
+    await _fetched(proxy, 1, 0)
+    state = proxy._slots[1]
+    entry = state.entries[0]
+    conv = object()
+    entry.converter, entry.pts = conv, 5  # type: ignore[assignment]
+    SegmentProxy._deliver(state, conv, 5, b"")  # type: ignore[arg-type]
+    assert await proxy.get(1, 0) == b"raw"
+    await proxy.aclose()
