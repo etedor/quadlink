@@ -11,6 +11,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any
 
 import httpx
 import structlog
@@ -67,6 +68,10 @@ FRESH_WAIT = 4.0
 # wait the listed end moves only on the next poll, and AVPlayer fails a playlist
 # unchanged for 1.5 x target duration (3s)
 STEP_WAIT = 1.0
+# seconds a segment request waits before the relay polls the source itself. A
+# run's first converted output completes only once the next segment is listed,
+# and a player waiting on that segment may not poll the playlist meanwhile
+POLL_WHILE_WAITING = 1.0
 
 _FILLER_DIR = Path(__file__).parent / "filler"
 _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
@@ -107,6 +112,8 @@ class SlotRelay:
         # slot -> wait on the proxy readiness of newly listed segments, shared by
         # concurrent polls
         self._waits: dict[int, asyncio.Task[bool]] = {}
+        # slot -> source poll on behalf of waiting segment requests, shared by them
+        self._polls: dict[int, asyncio.Task[None]] = {}
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -169,14 +176,8 @@ class SlotRelay:
             return web.Response(status=503, text="slot empty")
 
         state = self._states.setdefault(slot, SlotState(window=self.window))
-        try:
-            text = await self._fetch_source(slot, entry.url)
-        except Exception as e:
-            logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
-            if not state.segments:
-                return web.Response(status=503, text="source unavailable")
-        else:
-            await self._ingest_slot(slot, state, entry, text)
+        if not await self._update(slot, state, entry) and not state.segments:
+            return web.Response(status=503, text="source unavailable")
         wait = self._waits.get(slot)
         if wait is not None:
             # shielded: one client disconnecting must not end the wait for the others
@@ -188,6 +189,46 @@ class SlotRelay:
         if not state.segments:
             return web.Response(status=503, text="no segments")
         return self._playlist_response(self._render(state, slot))
+
+    async def _update(self, slot: int, state: SlotState, entry: SlotEntry) -> bool:
+        """Fold the source's current playlist into the slot; False if the fetch failed."""
+        try:
+            text = await self._fetch_source(slot, entry.url)
+        except Exception as e:
+            logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
+            return False
+        await self._ingest_slot(slot, state, entry, text)
+        return True
+
+    async def _poll(self, slot: int) -> None:
+        """Do what a playlist poll does to the slot, without serving a playlist."""
+        entry = self.store.get(slot)
+        state = self._states.get(slot)
+        if entry is None or state is None:
+            return
+        try:
+            await self._update(slot, state, entry)
+            self._fill_gap(slot, state)
+        except Exception as e:
+            # nobody awaits this task's result
+            logger.warning("relay source poll failed", slot=slot, error=repr(e))
+
+    async def _get_segment(self, slot: int, seq: int) -> bytes | None:
+        """The proxy's bytes for a segment, polling the source while they take long."""
+        assert self._segments is not None
+        get = asyncio.ensure_future(self._segments.get(slot, seq))
+        try:
+            while not (await asyncio.wait({get}, timeout=POLL_WHILE_WAITING))[0]:
+                poll = self._polls.get(slot)
+                if poll is None or poll.done():
+                    poll = self._polls[slot] = asyncio.create_task(self._poll(slot))
+                # wait() never cancels what it waits on, so a disconnect leaves the
+                # poll running for the other clients
+                pending: set[asyncio.Future[Any]] = {poll, get}
+                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            return get.result()
+        finally:
+            get.cancel()
 
     def _proxying(self) -> bool:
         return self._segments is not None and self.proxy_segments
@@ -360,7 +401,7 @@ class SlotRelay:
         if slot not in (1, 2, 3, 4) or ext not in types or self._segments is None:
             return web.Response(status=404, text="bad segment")
         try:
-            body = await self._segments.get(slot, seq)
+            body = await self._get_segment(slot, seq)
         except Exception as e:
             logger.warning("relay segment fetch failed", slot=slot, seq=seq, error=str(e))
             return web.Response(status=502, text="segment fetch failed")
@@ -388,10 +429,12 @@ class SlotRelay:
 
     async def aclose(self) -> None:
         """Close the segment proxy and the internal httpx client, if created."""
-        for wait in self._waits.values():
-            wait.cancel()
-        await asyncio.gather(*self._waits.values(), return_exceptions=True)
+        tasks = [*self._waits.values(), *self._polls.values()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._waits.clear()
+        self._polls.clear()
         if self._segments is not None:
             await self._segments.aclose()
         if self._client is not None:

@@ -11,6 +11,7 @@ from aiohttp.test_utils import make_mocked_request
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import FRESH_WAIT, STALL_AFTER, STEP_WAIT, SlotRelay
 from quadlink.relay.store import SlotStore
+from quadlink.relay.tsinfo import audio_sample_rate
 from quadlink.webui import WebUI
 
 
@@ -702,3 +703,66 @@ async def test_fmp4_segments_use_m4s_uri_and_type():
     )
     assert seg.status == 200
     assert seg.content_type == "video/iso.segment"
+
+
+def _seg_get(slot: int, seq: int) -> web.Request:
+    name = f"{seq}.ts"
+    return make_mocked_request(
+        "GET", f"/streams/{slot}/seg/{name}", match_info={"slot": str(slot), "name": name}
+    )
+
+
+@pytest.mark.asyncio
+async def test_slow_segment_request_polls_the_source(monkeypatch):
+    """A player waiting on a segment may not poll; the relay lists newer ones itself."""
+    monkeypatch.setattr("quadlink.relay.server.POLL_WHILE_WAITING", 0.05)
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    uris = ["a.ts", "b.ts"]
+
+    async def fetch(url):
+        return _src(100, uris)
+
+    class NeedsNext(FakeProxy):
+        async def get(self, slot, seq):
+            # a run's newest output completes only once the next segment is in
+            while (slot, seq + 1) not in self.registered:
+                await asyncio.sleep(0.01)
+            return b"seg-%d" % seq
+
+    proxy = NeedsNext()
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=0, segments=proxy)
+    await _call(relay, "1")
+    request = asyncio.create_task(relay.handle_segment(_seg_get(1, 1)))
+    await asyncio.sleep(0.2)
+    assert not request.done()
+    uris.append("c.ts")
+    async with asyncio.timeout(2):
+        resp = await request
+    assert resp.status == 200 and resp.body == b"seg-1"
+    assert (1, 2) in proxy.registered
+    await relay.aclose()
+
+
+@pytest.mark.asyncio
+async def test_run_start_is_served_converted_without_a_playlist_poll(ffmpeg, ts_run, monkeypatch):
+    monkeypatch.setattr("quadlink.relay.server.POLL_WHILE_WAITING", 0.2)
+    segs = ts_run(44100, 5)
+    now = [0.0]
+    relay, count = _growing_relay(segs, 1, ffmpeg, now)
+    loop = asyncio.get_running_loop()
+    try:
+        resp = await _call(relay, "1")
+        assert "/streams/1/seg/0.ts" in resp.text
+        start = loop.time()
+        request = asyncio.create_task(relay.handle_segment(_seg_get(1, 0)))
+        await asyncio.sleep(0.5)
+        # the next segment appears at the source; no client polls the playlist
+        count[0] += 1
+        now[0] += 2
+        seg = await request
+        assert loop.time() - start < 2.0
+        assert seg.status == 200 and seg.body != segs[0]
+        assert audio_sample_rate(seg.body) == 48000
+    finally:
+        await relay.aclose()
