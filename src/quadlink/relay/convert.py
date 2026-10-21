@@ -20,8 +20,7 @@ TARGET_RATE = 48000
 # the native AAC encoder emits its first frame 1024 samples early; shifting input
 # timestamps by the same amount keeps audio aligned with the copied video
 _ENCODER_DELAY = 1024
-# outputs listed in out.m3u8; the scan reads only the newest name, so this need only
-# cover outputs written between two scans
+# bounds out.m3u8 over a long run; the scan reads only the newest name, so any size works
 _LIST_SIZE = 40
 
 
