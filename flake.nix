@@ -88,6 +88,7 @@
             pkgs.git
             pkgs.just
             pkgs.streamlink
+            pkgs.ffmpeg-headless
           ];
 
           shellHook = ''

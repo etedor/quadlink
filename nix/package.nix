@@ -34,6 +34,13 @@ python3Packages.buildPythonApplication {
     wheel
   ];
 
+  makeWrapperArgs = [
+    "--prefix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [ pkgs.ffmpeg-headless ])
+  ];
+
   postInstall = ''
     mkdir -p $out/${python3Packages.python.sitePackages}/quadlink/plugins
     cp ${ttvlolPlugin} $out/${python3Packages.python.sitePackages}/quadlink/plugins/twitch.py
