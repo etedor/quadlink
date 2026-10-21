@@ -71,3 +71,19 @@ async def test_has_output_reports_without_blocking(ffmpeg, ts_run, tmp_path):
     assert out is not None
     assert conv.has_output(pts0)
     await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_finish_flushes_last_output_and_close_removes_it(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 2)
+    conv = AudioConverter(ffmpeg, tmp_path / "w")
+    await conv.start()
+    for seg in segs:
+        await conv.feed(seg)
+    await conv.finish()
+    last = first_video_pts(segs[-1])
+    assert last is not None and conv.has_output(last)
+    await conv.close()
+    # a stale lookup after the workdir is gone reports no output instead of raising
+    assert await conv.output_for(last, timeout=0) is None
+    assert not conv.has_output(last + 1)

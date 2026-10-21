@@ -79,16 +79,21 @@ class AudioConverter:
         await self._proc.stdin.drain()
 
     def _scan(self) -> None:
-        playlist = self.workdir / "out.m3u8"
-        if not playlist.exists():
+        # the workdir can vanish under a reader once close() runs; treat that as no output
+        try:
+            names = [
+                ln
+                for ln in (self.workdir / "out.m3u8").read_text().splitlines()
+                if ln.endswith(".ts")
+            ]
+            for name in names[self._listed :]:
+                path = self.workdir / name
+                pts = first_video_pts(path.read_bytes())
+                if pts is not None:
+                    self._by_pts[pts] = path
+                self._listed += 1
+        except OSError:
             return
-        names = [ln for ln in playlist.read_text().splitlines() if ln.endswith(".ts")]
-        for name in names[self._listed :]:
-            path = self.workdir / name
-            pts = first_video_pts(path.read_bytes())
-            if pts is not None:
-                self._by_pts[pts] = path
-        self._listed = len(names)
 
     def has_output(self, video_pts: int) -> bool:
         """Whether a finished output segment already exists for this input's video PTS."""
@@ -102,12 +107,16 @@ class AudioConverter:
             self._scan()
             path = self._by_pts.get(video_pts)
             if path is not None:
-                return path.read_bytes()
+                try:
+                    return path.read_bytes()
+                except OSError:
+                    del self._by_pts[video_pts]
             if asyncio.get_running_loop().time() >= deadline:
                 return None
             await asyncio.sleep(0.1)
 
-    async def close(self) -> None:
+    async def finish(self) -> None:
+        """End the input so ffmpeg writes its last segment; outputs stay until close()."""
         proc, self._proc = self._proc, None
         if proc is not None:
             if proc.stdin is not None:
@@ -117,4 +126,7 @@ class AudioConverter:
             except TimeoutError:
                 proc.kill()
                 await proc.wait()
+
+    async def close(self) -> None:
+        await self.finish()
         shutil.rmtree(self.workdir, ignore_errors=True)

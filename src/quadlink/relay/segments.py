@@ -20,13 +20,17 @@ logger = structlog.get_logger()
 
 # seconds a client request waits for a converted segment before getting the original
 CONVERT_WAIT = 6.0
+# seconds ffmpeg may take to accept one segment; the segment's clients wait on it
+FEED_WAIT = 3.0
 
 
 @dataclass
 class _Entry:
     seg: Segment
     raw: "asyncio.Future[bytes]"
+    # set only when the segment went into a live converter and has a video PTS
     converter: AudioConverter | None = None
+    pts: int | None = None
     converted: bytes | None = None
 
 
@@ -37,6 +41,12 @@ class _Slot:
     worker: asyncio.Task[None] | None = None
     converter: AudioConverter | None = None
     run: int = 0
+
+
+def _mark_retrieved(fut: "asyncio.Future[bytes]") -> None:
+    # a failed fetch nobody requested must not log "exception was never retrieved"
+    if not fut.cancelled():
+        fut.exception()
 
 
 class SegmentProxy:
@@ -52,6 +62,7 @@ class SegmentProxy:
         self._workroot = workroot
         self._keep = keep
         self._slots: dict[int, _Slot] = {}
+        self._retiring: set[asyncio.Task[None]] = set()
 
     def register(self, slot: int, seg: Segment) -> None:
         """Queue a newly listed segment for fetching (and converting) in order."""
@@ -59,6 +70,7 @@ class SegmentProxy:
         if seg.filler or seg.seq in state.entries:
             return
         entry = _Entry(seg, asyncio.get_running_loop().create_future())
+        entry.raw.add_done_callback(_mark_retrieved)
         state.entries[seg.seq] = entry
         while len(state.entries) > self._keep:
             state.entries.popitem(last=False)
@@ -80,84 +92,141 @@ class SegmentProxy:
                 continue
             # route decides entry.converter before raw is visible to get(), so a
             # waiting client never observes an entry mid-decision as unconverted
-            await self._route(slot, state, entry, data)
-            entry.raw.set_result(data)
+            try:
+                await self._route(slot, state, entry, data)
+            except Exception as e:
+                logger.warning(
+                    "relay conversion failed", slot=slot, seq=entry.seg.seq, error=str(e)
+                )
+            if not entry.raw.done():
+                entry.raw.set_result(data)
 
     async def _route(self, slot: int, state: _Slot, entry: _Entry, data: bytes) -> None:
         ts = entry.seg.map_gen is None
         # each run decides conversion once, from its first segment's audio rate
         if entry.seg.discontinuity or state.run == 0:
             if state.converter is not None:
-                await state.converter.close()
+                self._retire(state, state.converter)
                 state.converter = None
             state.run += 1
             rate = audio_sample_rate(data) if ts else None
             if self._ffmpeg and rate is not None and rate != TARGET_RATE:
-                conv = AudioConverter(self._ffmpeg, self._workroot / f"slot{slot}-run{state.run}")
+                new = AudioConverter(self._ffmpeg, self._workroot / f"slot{slot}-run{state.run}")
+                # held before start so aclose() reaches it if cancelled mid-start
+                state.converter = new
                 try:
-                    await conv.start()
+                    await new.start()
                 except Exception as e:
                     logger.warning("relay conversion failed", slot=slot, error=str(e))
-                    await conv.close()
+                    state.converter = None
+                    await new.close()
                 else:
-                    state.converter = conv
                     logger.info("relay converting audio", slot=slot, rate=rate)
-        if state.converter is not None and ts:
-            try:
-                await state.converter.feed(data)
-            except Exception as e:
-                # ffmpeg can die mid-run (crash, broken pipe); never let that wedge
-                # the slot's worker, so later segments of the run pass through raw
-                logger.warning(
-                    "relay conversion failed", slot=slot, seq=entry.seg.seq, error=str(e)
-                )
-                await state.converter.close()
-                state.converter = None
-            else:
-                entry.converter = state.converter
+        conv = state.converter
+        if conv is None or not ts:
+            return
+        try:
+            # a hung ffmpeg must not hold this segment's clients past their buffer
+            await asyncio.wait_for(conv.feed(data), FEED_WAIT)
+        except Exception as e:
+            # the rest of the run passes through raw
+            logger.warning("relay conversion failed", slot=slot, seq=entry.seg.seq, error=repr(e))
+            state.converter = None
+            self._retire(state, conv)
+            return
+        # ffmpeg still gets every segment, so a segment without video only skips
+        # conversion itself, keeping the encoder continuous
+        entry.pts = first_video_pts(data)
+        if entry.pts is not None:
+            entry.converter = conv
+
+    def _retire(self, state: _Slot, conv: AudioConverter) -> None:
+        """Finish a run's converter in the background, keeping its outputs for cached entries."""
+        task = asyncio.create_task(self._harvest(state, conv))
+        self._retiring.add(task)
+        task.add_done_callback(self._retiring.discard)
+
+    async def _harvest(self, state: _Slot, conv: AudioConverter) -> None:
+        try:
+            # EOF makes ffmpeg write the run's last segment, which no next keyframe closes
+            await conv.finish()
+        finally:
+            for entry in list(state.entries.values()):
+                if entry.converter is not conv:
+                    continue
+                if entry.converted is None and entry.pts is not None:
+                    entry.converted = await conv.output_for(entry.pts, 0)
+                entry.converter = None
+            await conv.close()
 
     def ready(self, slot: int, seq: int) -> bool:
         """Whether a client asking for this segment now would be served at once.
 
-        An unfetched segment counts as ready unless its slot is converting: a raw
-        fetch takes well under a buffer, but a conversion waits for the next keyframe.
+        Converted segments count only once their output exists; others are never held
+        back. An unfetched segment whose run has not decided yet counts as not ready.
         """
         state = self._slots.get(slot)
         entry = state.entries.get(seq) if state is not None else None
-        if entry is None:
+        if state is None or entry is None:
             return True
         if not entry.raw.done():
-            return state is None or state.converter is None
-        return entry.converter is None or entry.converted is not None or self._has_output(entry)
-
-    def _has_output(self, entry: _Entry) -> bool:
-        assert entry.converter is not None
-        pts = first_video_pts(entry.raw.result())
-        return pts is not None and entry.converter.has_output(pts)
+            if self._ffmpeg is None or entry.seg.map_gen is not None:
+                return True
+            if state.run == 0 or state.converter is not None:
+                return False
+            # a pending discontinuity at or before this segment starts a run not yet decided
+            return not any(
+                e.seg.discontinuity and not e.raw.done() and e.seg.seq <= seq
+                for e in state.entries.values()
+            )
+        if entry.converted is not None or entry.converter is None:
+            return True
+        assert entry.pts is not None
+        return entry.converter.has_output(entry.pts)
 
     async def get(self, slot: int, seq: int) -> bytes | None:
-        entry = self._slots.get(slot, _Slot()).entries.get(seq)
+        state = self._slots.get(slot)
+        entry = state.entries.get(seq) if state is not None else None
         if entry is None:
             return None
         try:
-            data = await entry.raw
+            # shielded: one client disconnecting must not cancel the fetch for all
+            data = await asyncio.shield(entry.raw)
         except Exception:
             return None
-        if entry.converter is None:
-            return data
-        if entry.converted is None:
-            pts = first_video_pts(data)
-            out = await entry.converter.output_for(pts, CONVERT_WAIT) if pts is not None else None
-            if out is None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CONVERT_WAIT
+        # re-read entry each pass: a retiring run moves its outputs into entry.converted
+        while entry.converted is None:
+            conv = entry.converter
+            if conv is None:
+                return data
+            assert entry.pts is not None
+            out = await conv.output_for(entry.pts, 0)
+            if out is not None:
+                entry.converted = out
+                break
+            if loop.time() >= deadline:
                 logger.warning("relay conversion late, serving original", slot=slot, seq=seq)
                 return data
-            entry.converted = out
+            await asyncio.sleep(0.1)
         return entry.converted
 
     async def aclose(self) -> None:
+        workers = [s.worker for s in self._slots.values() if s.worker is not None]
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
         for state in self._slots.values():
-            if state.worker is not None:
-                state.worker.cancel()
+            # queued entries can already be out of the cache; their clients still wait
+            pending = list(state.entries.values())
+            while not state.queue.empty():
+                pending.append(state.queue.get_nowait())
+            for entry in pending:
+                if not entry.raw.done():
+                    entry.raw.set_exception(RuntimeError("relay segment proxy closed"))
             if state.converter is not None:
                 await state.converter.close()
+                state.converter = None
+        await asyncio.gather(*self._retiring, return_exceptions=True)
         self._slots.clear()
