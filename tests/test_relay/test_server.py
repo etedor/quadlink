@@ -308,7 +308,9 @@ async def test_dead_newest_url_without_window_returns_503():
 
 
 class FakeProxy:
-    def __init__(self, unready: set[int] | None = None) -> None:
+    def __init__(self, unready: set[int] | None = None, converts_fmp4: bool = False) -> None:
+        self.converts_fmp4 = converts_fmp4
+        self.body: bytes | None = None
         self.registered: list[tuple[int, int]] = []
         self.unready = unready or set()
         self.waits: list[tuple[int, int, float]] = []
@@ -335,6 +337,8 @@ class FakeProxy:
     async def get(self, slot, seq):
         if self.error is not None:
             raise self.error
+        if self.body is not None:
+            return self.body
         return None if self.missing else b"seg-%d" % seq
 
     async def aclose(self):
@@ -833,3 +837,165 @@ async def test_no_filler_while_a_fresh_wait_is_pending():
     resp = await call
     assert "/streams/filler/" not in resp.text
     assert proxy.flushes == []
+
+
+def _fmp4_src(media_seq: int, uris: list[str], init: str = "https://cdn/init.mp4") -> str:
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-TARGETDURATION:2",
+        f"#EXT-X-MEDIA-SEQUENCE:{media_seq}",
+        f'#EXT-X-MAP:URI="{init}"',
+    ]
+    for uri in uris:
+        lines.append("#EXTINF:2.000,live")
+        lines.append(uri)
+    return "\n".join(lines) + "\n"
+
+
+def _listed(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line and not line.startswith("#")]
+
+
+@pytest.mark.asyncio
+async def test_converted_fmp4_is_listed_as_ts_without_map():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _fmp4_src(0, ["https://cdn/a.mp4", "https://cdn/b.mp4"])
+
+    proxy = FakeProxy(converts_fmp4=True)
+    relay = SlotRelay(store, fetch=fetch, segments=proxy)
+    resp = await _call(relay, "1")
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == ["/streams/1/seg/0.ts", "/streams/1/seg/1.ts"]
+    seg = await relay.handle_segment(
+        make_mocked_request("GET", "/streams/1/seg/0.ts", match_info={"slot": "1", "name": "0.ts"})
+    )
+    assert seg.status == 200
+    assert seg.content_type == "video/mp2t"
+
+
+@pytest.mark.asyncio
+async def test_converted_fmp4_segment_without_ts_gets_filler():
+    relay = SlotRelay(SlotStore(), segments=FakeProxy(converts_fmp4=True))
+    relay._segments.body = b""  # type: ignore[union-attr]
+    resp = await relay.handle_segment(_seg_request("7.ts"))
+    assert resp.status == 200
+    assert resp.content_type == "video/mp2t"
+    assert resp.body == relay._filler["2s.ts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmp4_first", [True, False], ids=["fmp4-to-ts", "ts-to-fmp4"])
+async def test_container_switch_while_converting_keeps_window(fmp4_first):
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    fmp4 = [_fmp4_src(0, ["https://cdn/a.mp4", "https://cdn/b.mp4"]), _fmp4_src(2, ["c.mp4"])]
+    ts = [_src(0, ["https://cdn/a.ts", "https://cdn/b.ts"]), _src(2, ["https://cdn/c.ts"])]
+    source = [fmp4[0] if fmp4_first else ts[0]]
+
+    async def fetch(url):
+        return source[0]
+
+    relay = SlotRelay(
+        store,
+        fetch=fetch,
+        cache_ttl=0,
+        time_fn=lambda: now[0],
+        segments=FakeProxy(converts_fmp4=True),
+    )
+    await _call(relay, "1")
+    source[0] = ts[1] if fmp4_first else fmp4[1]
+    now[0] += 2
+    resp = await _call(relay, "1")
+    lines = resp.text.splitlines()
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == [f"/streams/1/seg/{i}.ts" for i in range(3)]
+    # the first segment of the new container starts a discontinuity
+    assert lines[lines.index("/streams/1/seg/2.ts") - 2] == "#EXT-X-DISCONTINUITY"
+    assert resp.text.count("#EXT-X-DISCONTINUITY\n") == 1
+
+
+@pytest.mark.asyncio
+async def test_filler_in_a_converted_fmp4_window_is_ts():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+
+    async def fetch(url):
+        return _fmp4_src(0, ["https://cdn/a.mp4"])
+
+    relay = SlotRelay(
+        store,
+        fetch=fetch,
+        cache_ttl=0,
+        time_fn=lambda: now[0],
+        segments=FakeProxy(converts_fmp4=True),
+    )
+    await _call(relay, "1")
+    now[0] += STALL_AFTER + 1
+    resp = await _call(relay, "1")
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == ["/streams/1/seg/0.ts", "/streams/filler/2s.ts"]
+
+
+@pytest.mark.asyncio
+async def test_fmp4_keeps_map_when_proxy_is_off_or_not_converting():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+
+    async def fetch(url):
+        return _fmp4_src(0, ["https://cdn/a.mp4"])
+
+    off = SlotRelay(store, fetch=fetch, segments=FakeProxy(converts_fmp4=True))
+    off.proxy_segments = False
+    resp = await _call(off, "1")
+    assert '#EXT-X-MAP:URI="/streams/1/init/1"' in resp.text
+    assert _listed(resp.text) == ["https://cdn/a.mp4"]
+    no_ffmpeg = SlotRelay(store, fetch=fetch, segments=FakeProxy())
+    resp = await _call(no_ffmpeg, "1")
+    assert '#EXT-X-MAP:URI="/streams/1/init/1"' in resp.text
+    assert _listed(resp.text) == ["/streams/1/seg/0.m4s"]
+
+
+@pytest.mark.asyncio
+async def test_turning_conversion_on_restarts_an_fmp4_window():
+    """Listed fMP4 segments cannot turn into TS in place: EXT-X-MAP has no unset."""
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    now = [0.0]
+    uris = ["https://cdn/a.mp4"]
+
+    async def fetch(url):
+        return _fmp4_src(0, uris)
+
+    relay = SlotRelay(
+        store,
+        fetch=fetch,
+        cache_ttl=0,
+        time_fn=lambda: now[0],
+        segments=FakeProxy(converts_fmp4=True),
+    )
+    relay.proxy_segments = False
+    first = await _call(relay, "1")
+    assert "#EXT-X-MAP" in first.text
+    relay.proxy_segments = True
+    now[0] += 2
+    resp = await _call(relay, "1")
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == ["/streams/filler/2s.ts"]
+    assert "#EXT-X-MEDIA-SEQUENCE:1" in resp.text
+    uris.append("https://cdn/b.mp4")
+    now[0] += 2
+    resp = await _call(relay, "1")
+    assert "#EXT-X-MAP" not in resp.text
+    assert _listed(resp.text) == ["/streams/filler/2s.ts", "/streams/1/seg/2.ts"]
+    # turning it off again restarts the window the other way
+    relay.proxy_segments = False
+    uris.append("https://cdn/c.mp4")
+    now[0] += 2
+    resp = await _call(relay, "1")
+    assert _listed(resp.text) == ["https://cdn/c.mp4"]
+    assert '#EXT-X-MAP:URI="/streams/1/init/' in resp.text

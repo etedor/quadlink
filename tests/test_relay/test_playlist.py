@@ -5,6 +5,7 @@ from quadlink.relay.playlist import (
     ingest,
     parse_media_playlist,
     render,
+    set_fmp4_as_ts,
 )
 
 SAMPLE = """#EXTM3U
@@ -391,3 +392,24 @@ def test_render_holds_back_past_run_start_but_keeps_it():
     ingest(state, _src(0, ["x.ts", "y.ts"]), "chan-B")
     out = render(state, 3, ready=_unready("x.ts", "y.ts"))
     assert out.rstrip().endswith("x.ts")
+
+
+def test_ingest_keeps_the_init_uri_of_each_fmp4_segment():
+    state = SlotState()
+    ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/init.mp4?dna=z"), "chan-A")
+    ingest(state, _src(1, ["b.ts"]), "chan-A")
+    assert [s.map_uri for s in state.segments] == [None]
+    state = SlotState(fmp4_as_ts=True)
+    ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/init.mp4?dna=z"), "chan-A")
+    ingest(state, _src(1, ["b.ts"]), "chan-A")
+    assert [s.map_uri for s in state.segments] == ["https://cdn.example/init.mp4?dna=z", None]
+    assert [s.discontinuity for s in state.segments] == [False, True]
+    assert "#EXT-X-MAP" not in render(state, 3)
+
+
+def test_serving_mode_switch_leaves_a_ts_window_alone():
+    state = SlotState()
+    ingest(state, _src(0, ["a.ts", "b.ts"]), "chan-A")
+    assert not set_fmp4_as_ts(state, True)
+    assert [s.uri for s in state.segments] == ["a.ts", "b.ts"]
+    assert state.fmp4_as_ts

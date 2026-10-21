@@ -2,11 +2,13 @@
 
 import asyncio
 import gc
+import subprocess
 
 import pytest
 import structlog.testing
 
-from quadlink.relay.convert import AudioConverter
+from quadlink.relay import segments
+from quadlink.relay.convert import AudioConverter, remux
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.tsinfo import _VIDEO_TYPES, _pes_starts, _pid, audio_sample_rate
@@ -121,10 +123,32 @@ async def test_converter_crash_falls_back_to_raw(ffmpeg, ts_run, monkeypatch):
     await proxy.aclose()
 
 
-def _fmp4(seq: int, uri: str) -> Segment:
+def _fmp4(seq: int, uri: str, disc: bool = False, map_gen: int = 1) -> Segment:
     return Segment(
-        seq=seq, uri=uri, duration=2.0, program_date_time=None, discontinuity=False, map_gen=0
+        seq=seq,
+        uri=uri,
+        duration=2.0,
+        program_date_time=None,
+        discontinuity=disc,
+        map_gen=map_gen,
+        map_uri=f"init{map_gen}",
     )
+
+
+def _fmp4_source(init: bytes, segs: list[bytes], ts: list[bytes] | None = None):
+    """A fetch serving fMP4 segments at "0".., TS ones at "ts0".., the init at "init*"."""
+    calls: list[str] = []
+
+    async def fetch(uri: str) -> bytes:
+        calls.append(uri)
+        if uri.startswith("init"):
+            return init
+        if uri.startswith("ts"):
+            assert ts is not None
+            return ts[int(uri[2:])]
+        return segs[int(uri)]
+
+    return fetch, calls
 
 
 def _gated(segs: list[bytes]):
@@ -248,23 +272,133 @@ async def test_pts_step_back_without_discontinuity_starts_a_new_run(ffmpeg, ts_r
 
 
 @pytest.mark.asyncio
-async def test_fmp4_is_never_fed(ffmpeg, ts_run, monkeypatch):
-    segs = [*ts_run(44100, 1), b"fmp4 bytes"]
-    fetch, _ = _source(segs)
-    fed: list[bytes] = []
-    real_feed = AudioConverter.feed
+async def test_without_ffmpeg_fmp4_passes_through():
+    fetch, calls = _fmp4_source(b"init", [b"fmp4 bytes"])
+    proxy = SegmentProxy(fetch, None)
+    assert not proxy.converts_fmp4
+    proxy.register(1, _fmp4(0, "0"))
+    assert await proxy.get(1, 0) == b"fmp4 bytes"
+    assert calls == ["0"]
+    await proxy.aclose()
 
-    async def record(self: AudioConverter, data: bytes) -> None:
-        fed.append(data)
-        await real_feed(self, data)
 
-    monkeypatch.setattr(AudioConverter, "feed", record)
+def _ts_frames(data: bytes) -> list[int]:
+    pid = _pid(data, _VIDEO_TYPES)
+    assert pid is not None
+    return sorted(pts for pts, _ in _pes_starts(data, pid) if pts is not None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", [44100, 48000])
+async def test_fmp4_run_is_served_converted_ts(ffmpeg, fmp4_run, rate):
+    init, segs = fmp4_run(rate, 3, chunked=True)
+    fetch, calls = _fmp4_source(init, segs)
     proxy = SegmentProxy(fetch, ffmpeg)
-    proxy.register(1, _seg(0, "0"))
+    assert proxy.converts_fmp4
+    for i in range(3):
+        proxy.register(1, _fmp4(i, str(i)))
+    # the run's last output needs EOF
+    proxy.flush(1)
+    outs = await asyncio.gather(*(proxy.get(1, i) for i in range(3)))
+    for seg, out in zip(segs, outs, strict=True):
+        assert out is not None and out[0] == 0x47
+        assert audio_sample_rate(out) == 48000
+        alone = await remux(ffmpeg, init, seg, 10)
+        assert alone is not None and _ts_frames(out) == _ts_frames(alone)
+    # the init is fetched once for its generation
+    assert calls.count("init1") == 1
+    assert proxy._slots[1].run == 1
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_switch_between_ts_and_fmp4_starts_a_new_run(ffmpeg, ts_run, fmp4_run):
+    ts = ts_run(44100, 2)
+    init, segs = fmp4_run(44100, 2, offset=100)
+    fetch, _ = _fmp4_source(init, segs, ts)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _seg(0, "ts0"))
+    proxy.register(1, _seg(1, "ts1"))
+    proxy.register(1, _fmp4(2, "0", disc=True))
+    proxy.register(1, _fmp4(3, "1"))
+    proxy.register(1, _seg(4, "ts0", disc=True))
+    proxy.flush(1)
+    outs = await asyncio.gather(*(proxy.get(1, i) for i in range(5)))
+    assert all(out is not None and audio_sample_rate(out) == 48000 for out in outs)
+    assert proxy._slots[1].run == 3
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_fmp4_conversion_serves_a_ts_remux(ffmpeg, fmp4_run, monkeypatch):
+    init, segs = fmp4_run(44100, 2)
+    fetch, _ = _fmp4_source(init, segs)
+
+    async def boom(self: AudioConverter, data: bytes) -> None:
+        raise RuntimeError("ffmpeg died")
+
+    monkeypatch.setattr(AudioConverter, "feed", boom)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
     proxy.register(1, _fmp4(1, "1"))
-    assert await proxy.get(1, 1) == segs[1]
-    assert proxy.ready(1, 1)
-    assert fed == [segs[0]]
+    with structlog.testing.capture_logs() as logs:
+        outs = await asyncio.gather(proxy.get(1, 0), proxy.get(1, 0), proxy.get(1, 1))
+    for seg, out in zip([segs[0], segs[0], segs[1]], outs, strict=True):
+        assert out is not None and out[0] == 0x47
+        # streams copied: still the source rate, but decodable TS
+        assert audio_sample_rate(out) == 44100
+        alone = await remux(ffmpeg, init, seg, 10)
+        assert alone is not None and _ts_frames(out) == _ts_frames(alone)
+        decode = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", "pipe:0", "-f", "null", "-"],
+            input=out,
+            capture_output=True,
+            check=True,
+        )
+        assert decode.stderr == b""
+    assert not any("filler" in log["event"] for log in logs)
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fmp4_remux_failure_asks_for_filler(ffmpeg, fmp4_run, monkeypatch):
+    init, segs = fmp4_run(44100, 1)
+    fetch, _ = _fmp4_source(init, segs)
+
+    async def boom(self: AudioConverter, data: bytes) -> None:
+        raise RuntimeError("ffmpeg died")
+
+    async def no_remux(*args: object) -> None:
+        return None
+
+    monkeypatch.setattr(AudioConverter, "feed", boom)
+    monkeypatch.setattr(segments, "remux", no_remux)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
+    with structlog.testing.capture_logs() as logs:
+        assert await proxy.get(1, 0) == b""
+    assert any("filler" in log["event"] for log in logs)
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_fmp4_without_its_init_asks_for_filler(ffmpeg, fmp4_run):
+    init, segs = fmp4_run(44100, 2)
+    fetch, calls = _fmp4_source(init, segs)
+
+    async def no_init(uri: str) -> bytes:
+        if uri.startswith("init"):
+            calls.append(uri)
+            raise RuntimeError("403")
+        return await fetch(uri)
+
+    proxy = SegmentProxy(no_init, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
+    proxy.register(1, _fmp4(1, "1"))
+    assert await proxy.get(1, 0) == b""
+    assert await proxy.get(1, 1) == b""
+    # a failed init fetch is tried again by the next segment
+    assert calls.count("init1") == 2
     await proxy.aclose()
 
 
@@ -282,14 +416,28 @@ async def test_ready_without_ffmpeg_never_holds_back(ts_run):
 
 
 @pytest.mark.asyncio
-async def test_ready_fmp4_first_of_run_is_not_held_back(ffmpeg):
+async def test_ready_fmp4_without_ffmpeg_is_not_held_back():
     fetch, gates = _gated([b"fmp4 bytes"])
-    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy = SegmentProxy(fetch, None)
     proxy.register(1, _fmp4(0, "0"))
     assert proxy.ready(1, 0)
     gates["0"].set()
     await _fetched(proxy, 1, 0)
     assert proxy.ready(1, 0)
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_ready_converting_fmp4_run(ffmpeg, fmp4_run):
+    init, segs = fmp4_run(44100, 3)
+    fetch, _ = _fmp4_source(init, segs)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    proxy.register(1, _fmp4(0, "0"))
+    # undecided: it may convert
+    assert not proxy.ready(1, 0)
+    proxy.register(1, _fmp4(1, "1"))
+    assert await proxy.wait_ready(1, 0, 5)
+    assert not proxy.ready(1, 1)
     await proxy.aclose()
 
 

@@ -8,7 +8,8 @@ import subprocess
 import pytest
 
 from quadlink.relay import convert
-from quadlink.relay.convert import AudioConverter, Splitter
+from quadlink.relay.convert import AudioConverter, Splitter, remux
+from quadlink.relay.mp4info import fragment_video_pts, init_info
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
     PACKET,
@@ -53,9 +54,11 @@ class _Outputs:
         return self.got[key]
 
 
-async def _run(ffmpeg: str, segs: list[bytes]) -> tuple[AudioConverter, _Outputs, list[int]]:
+async def _run(
+    ffmpeg: str, segs: list[bytes], init: bytes | None = None
+) -> tuple[AudioConverter, _Outputs, list[int]]:
     outputs = _Outputs()
-    conv = AudioConverter(ffmpeg, outputs)
+    conv = AudioConverter(ffmpeg, outputs, init)
     await conv.start()
     keys = []
     for seg in segs:
@@ -361,3 +364,75 @@ def test_splitter_keeps_headers_for_the_first_key_after_dropped_output():
     assert [k for k, _ in done] == [4000, 7000]
     assert done[0][1][: 2 * PACKET] == data[: 2 * PACKET]
     assert sorted(_video_pts(done[0][1])) == [4000]
+
+
+def _decode_errors(ffmpeg: str, data: bytes) -> bytes:
+    return subprocess.run(
+        [ffmpeg, "-v", "error", "-i", "pipe:0", "-f", "null", "-"],
+        input=data,
+        capture_output=True,
+        check=True,
+    ).stderr
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", [44100, 48000])
+@pytest.mark.parametrize("chunked", [False, True], ids=["one-fragment", "chunked"])
+async def test_fmp4_run_converts_to_ts_frame_for_frame(ffmpeg, fmp4_run, rate, chunked):
+    init, segs = fmp4_run(rate, 4, chunked=chunked)
+    video = init_info(init).video
+    assert video is not None
+    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    assert keys == [fragment_video_pts(seg, video) for seg in segs]
+    # a run's first output completes once the next segment's keyframe is fed
+    assert await outputs.get(keys[0], timeout=3) is not None
+    await conv.finish()
+    assert outputs.calls == keys
+    for seg, key in zip(segs, keys, strict=True):
+        out = outputs.got[key]
+        assert out is not None and len(out) % PACKET == 0
+        # the same frames a plain remux of the segment holds, each exactly once
+        alone = await remux(ffmpeg, init, seg, 10)
+        assert alone is not None
+        assert sorted(_video_pts(out)) == sorted(_video_pts(alone))
+        assert len(set(_video_pts(out))) == len(_video_pts(out)) == 60
+        assert audio_sample_rate(out) == 48000
+        assert _decode_errors(ffmpeg, out) == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunked", [False, True], ids=["one-fragment", "chunked"])
+async def test_fmp4_audio_runs_on_across_outputs(ffmpeg, fmp4_run, chunked):
+    init, segs = fmp4_run(44100, 5, chunked=chunked)
+    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    await conv.finish()
+    # the chunked source's first AAC frame holds the encoder priming as a longer
+    # duration, a gap in the source itself; the last output holds the EOF flush
+    outs = [outputs.got[k] for k in keys][1:]
+    keys = keys[1:]
+    head = [p for out in outs[:-1] if out is not None for p in audio_pts(out)]
+    diffs = [b - a for a, b in zip(head, head[1:], strict=False)]
+    # a PES can carry several AAC frames
+    assert all(d > 0 and abs(d - round(d / 1920) * 1920) <= 8 for d in diffs)
+    assert (head[-1] - head[0]) % 1920 == 0
+    for i, out in enumerate(outs[:-1]):
+        assert out is not None
+        audio = audio_pts(out)
+        assert -13500 <= audio[0] - keys[i] <= 0
+        assert 0 < keys[i + 1] - audio[-1] <= 13500
+
+
+@pytest.mark.asyncio
+async def test_fmp4_run_across_the_pts_wrap(ffmpeg, fmp4_run):
+    init, segs = fmp4_run(44100, 4, offset=95440)
+    conv, outputs, keys = await _run(ffmpeg, segs, init)
+    assert any(a > b for a, b in zip(keys, keys[1:], strict=False))
+    await conv.finish()
+    assert outputs.calls == keys
+    assert all(outputs.got[k] for k in keys)
+
+
+@pytest.mark.asyncio
+async def test_remux_fails_on_bad_input(ffmpeg, fmp4_run):
+    init, _ = fmp4_run(44100, 1)
+    assert await remux(ffmpeg, init, b"not a fragment", 10) is None

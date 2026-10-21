@@ -26,6 +26,7 @@ from quadlink.relay.playlist import (
     has_live_segment,
     ingest,
     render,
+    set_fmp4_as_ts,
 )
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.store import SlotEntry, SlotStore
@@ -243,7 +244,7 @@ class SlotRelay:
         def uri_for(seg: Segment) -> str:
             if first is None or seg.seq < first:
                 return seg.uri
-            ext = "m4s" if seg.map_gen is not None else "ts"
+            ext = "m4s" if seg.map_gen is not None and not state.fmp4_as_ts else "ts"
             return f"/streams/{slot}/seg/{seg.seq}.{ext}"
 
         return render(state, slot, uri_for, lambda seg: proxy.ready(slot, seg.seq))
@@ -266,6 +267,9 @@ class SlotRelay:
 
     def _fold(self, slot: int, state: SlotState, entry: SlotEntry, text: str) -> None:
         now = self._time()
+        as_ts = self._proxying() and self._segments is not None and self._segments.converts_fmp4
+        if set_fmp4_as_ts(state, as_ts) and state.edge is not None:
+            state.edge += FILLER_DURATION
         resumed = state.edge is not None
         if state.edge is None or now - state.edge > IDLE_RESET:
             budget = None
@@ -428,6 +432,10 @@ class SlotRelay:
             return web.Response(status=502, text="segment fetch failed")
         if body is None:
             return web.Response(status=404, text="no such segment")
+        if not body:
+            # an fMP4 segment listed as .ts that could not be made TS; a segment
+            # request answered with an error stalls the tile
+            body = self._filler["2s.ts"]
         # after CONVERT_WAIT the body can be the raw 44.1 kHz original, so a cache
         # must not hand it to a rebuilt player
         return web.Response(

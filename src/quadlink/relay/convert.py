@@ -1,4 +1,4 @@
-"""One ffmpeg process per continuous run of MPEG-TS segments, converting audio to 48 kHz.
+"""One ffmpeg process per continuous run of segments, converting audio to 48 kHz.
 
 macOS AVPlayer resamples non-48 kHz audio with a small rate error, so a 44.1 kHz
 channel drifts out of lip sync on machina; delivering 48 kHz removes the resampling.
@@ -7,6 +7,8 @@ audible seams, because independent AAC encoder states never agree at a boundary.
 
 ffmpeg reads the run's segments on stdin and writes one MPEG-TS stream to stdout,
 which Splitter cuts back into one output per input segment. Nothing touches disk.
+A run of fMP4 segments is fed as one fragmented MP4 file: the init segment, then
+each media segment, so its output is MPEG-TS like every other.
 """
 
 import asyncio
@@ -15,6 +17,7 @@ from collections.abc import Callable, Iterable
 
 import structlog
 
+from quadlink.relay.mp4info import fragment_video_pts, init_info
 from quadlink.relay.tsinfo import (
     _VIDEO_TYPES,
     PACKET,
@@ -190,11 +193,18 @@ class AudioConverter:
 
     on_output(key, data) runs once per segment that register() gave a key: with the
     converted bytes once complete, or with None when the run failed before that.
+    With `init`, the run's segments are fMP4 media segments of that init segment.
     """
 
-    def __init__(self, ffmpeg: str, on_output: OnOutput) -> None:
+    def __init__(self, ffmpeg: str, on_output: OnOutput, init: bytes | None = None) -> None:
         self.ffmpeg = ffmpeg
+        self.init = init
         self._on_output = on_output
+        if init is None:
+            self._key: Callable[[bytes], int | None] = first_video_pts
+        else:
+            video = init_info(init).video
+            self._key = lambda data: None if video is None else fragment_video_pts(data, video)
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self._splitter = Splitter()
@@ -215,7 +225,7 @@ class AudioConverter:
             "-analyzeduration",
             "500000",
             "-f",
-            "mpegts",
+            "mpegts" if self.init is None else "mp4",
             "-i",
             "pipe:0",
             "-map",
@@ -254,6 +264,10 @@ class AudioConverter:
             stdout=asyncio.subprocess.PIPE,
         )
         self._reader = asyncio.create_task(self._read())
+        if self.init is not None:
+            assert self._proc.stdin is not None
+            # a few KB: the pipe takes it without a drain
+            self._proc.stdin.write(self.init)
 
     def continues(self, data: bytes) -> bool:
         """Whether the segment can join this run.
@@ -264,7 +278,7 @@ class AudioConverter:
         """
         if self.failed:
             return False
-        pts = first_video_pts(data)
+        pts = self._key(data)
         return pts is None or self._last is None or before(self._last, pts)
 
     def register(self, data: bytes) -> int | None:
@@ -273,7 +287,7 @@ class AudioConverter:
         None means the segment gets no output of its own: without a video PTS (or
         with one not after the previous segment's) its content joins the one before.
         """
-        pts = first_video_pts(data)
+        pts = self._key(data)
         if pts is None or (self._last is not None and not before(self._last, pts)):
             return None
         self._last = pts
@@ -356,3 +370,52 @@ class AudioConverter:
 
 def _ignore(key: int, data: bytes | None) -> None:
     pass
+
+
+async def remux(ffmpeg: str, init: bytes, data: bytes, timeout: float) -> bytes | None:
+    """One fMP4 media segment as MPEG-TS with its streams copied; None on failure.
+
+    Timestamps stay the source's, so the output fits between converted neighbours.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg,
+        "-v",
+        "error",
+        "-copyts",
+        "-f",
+        "mp4",
+        "-i",
+        "pipe:0",
+        "-map",
+        "0:v",
+        "-map",
+        "0:a?",
+        "-c",
+        "copy",
+        "-f",
+        "mpegts",
+        "-avoid_negative_ts",
+        "disabled",
+        "-muxdelay",
+        "0",
+        "-muxpreload",
+        "0",
+        "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(timeout):
+            out, err = await proc.communicate(init + data)
+    except BaseException:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        raise
+    if proc.returncode != 0 or not out:
+        logger.warning(
+            "relay remux failed", returncode=proc.returncode, error=err.decode(errors="replace")
+        )
+        return None
+    return out

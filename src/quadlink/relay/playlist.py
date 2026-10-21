@@ -145,6 +145,8 @@ class Segment:
     discontinuity: bool
     map_gen: int | None  # init-segment generation for fMP4, None for TS
     filler: bool = False
+    # source URI of the fMP4 init segment
+    map_uri: str | None = None
 
 
 @dataclass
@@ -167,6 +169,9 @@ class SlotState:
     # content; the relay keeps it within MAX_LEAD ahead of real time and adds
     # filler once it falls SLOW_AFTER behind
     edge: float | None = None
+    # fMP4 segments are served converted to MPEG-TS: no EXT-X-MAP, TS filler, and a
+    # container switch in the source needs only a discontinuity
+    fmp4_as_ts: bool = False
 
 
 def _advance_watermark(state: SlotState, source_seq: int, source_time: datetime | None) -> None:
@@ -253,12 +258,11 @@ def ingest(state: SlotState, source_text: str, identity: str, budget: float | No
         prev_is_fmp4 = bool(state.segments) and state.segments[-1].map_gen is not None
         new_is_fmp4 = source_map is not None
         if state.segments and prev_is_fmp4 != new_is_fmp4:
-            for old in state.segments:
-                if old.discontinuity:
-                    state.discontinuity_seq += 1
-            state.segments.clear()
+            if not state.fmp4_as_ts:
+                _clear(state)
+                prev_is_fmp4 = False
+            # served as TS either way, but timestamps and init change with the container
             state.pending_discontinuity = True
-            prev_is_fmp4 = False
 
         disc = state.pending_discontinuity or src_disc
         state.pending_discontinuity = False
@@ -275,6 +279,7 @@ def ingest(state: SlotState, source_text: str, identity: str, budget: float | No
         else:
             map_gen = None
 
+        map_uri = _MAP_URI_RE.search(source_map) if source_map is not None else None
         state.segments.append(
             Segment(
                 seq=state.next_seq,
@@ -283,6 +288,7 @@ def ingest(state: SlotState, source_text: str, identity: str, budget: float | No
                 program_date_time=pdt,
                 discontinuity=disc,
                 map_gen=map_gen,
+                map_uri=map_uri.group(1) if map_uri is not None else None,
             )
         )
         state.next_seq += 1
@@ -291,6 +297,31 @@ def ingest(state: SlotState, source_text: str, identity: str, budget: float | No
 
     _trim(state)
     return appended
+
+
+def _clear(state: SlotState) -> None:
+    """Empty the window, counting out its discontinuities."""
+    for old in state.segments:
+        if old.discontinuity:
+            state.discontinuity_seq += 1
+    state.segments.clear()
+
+
+def set_fmp4_as_ts(state: SlotState, on: bool) -> bool:
+    """Switch how fMP4 segments are served; True if the window restarted.
+
+    Listed fMP4 segments would change format in place, and EXT-X-MAP cannot be
+    unset, so the window restarts with one filler segment, which keeps it
+    non-empty until the next source segment.
+    """
+    if on == state.fmp4_as_ts:
+        return False
+    state.fmp4_as_ts = on
+    if not any(seg.map_gen is not None for seg in state.segments):
+        return False
+    _clear(state)
+    add_filler(state)
+    return True
 
 
 def _trim(state: SlotState) -> None:
@@ -308,7 +339,7 @@ def add_filler(state: SlotState) -> None:
     cannot follow fMP4. Each filler repeats the same timestamps, so every one
     starts a discontinuity.
     """
-    fmp4 = bool(state.segments) and state.segments[-1].map_gen is not None
+    fmp4 = not state.fmp4_as_ts and bool(state.segments) and state.segments[-1].map_gen is not None
     state.segments.append(
         Segment(
             seq=state.next_seq,
@@ -361,7 +392,7 @@ def render(
         # init URL that is stable within a run (keyed on the run generation) but
         # changes at real init boundaries; the relay resolves it to a fresh
         # Twitch init on each fetch, so the init token never goes stale
-        if seg.map_gen is not None:
+        if seg.map_gen is not None and not state.fmp4_as_ts:
             map_uri = FILLER_FMP4_INIT if seg.filler else f"/streams/{slot}/init/{seg.map_gen}"
             if map_uri != last_map:
                 lines.append(f'#EXT-X-MAP:URI="{map_uri}"')

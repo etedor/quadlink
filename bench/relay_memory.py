@@ -26,7 +26,8 @@ less per segment and start extra runs (a poll held by a 1 s wait looks like a 10
 gap to the relay clock). Use --realtime for per-segment CPU and run-start behaviour.
 
 Variants: --fetch stream reads segments without storing them on the httpx Response;
---kf-slots 3 gives slot 3 an extra keyframe 1.2 s into each segment; --keep sets the
+--kf-slots 3 gives slot 3 an extra keyframe 1.2 s into each segment; --fmp4-slots 2
+serves slot 2 as fMP4 (CMAF) segments with an EXT-X-MAP init; --keep sets the
 cache size; --no-convert passes audio through; --src DIR imports quadlink from another
 source tree (e.g. one unpacked with `git archive <commit> src`).
 
@@ -105,7 +106,23 @@ def media_dir(name: str) -> Path:
 
 
 def media_names() -> list[str]:
-    return [f"{rate}{kf}" for rate in RATES for kf in ("", "kf")]
+    return [f"{rate}{kind}" for rate in RATES for kind in ("", "kf", "mp4")]
+
+
+def _remux_fmp4(ffmpeg: str, src: Path, out: Path) -> None:
+    """The TS segments of src as fMP4 HLS in out: init.mp4 and s0000.m4s.."""
+    listing = out / "list.txt"
+    listing.write_text("".join(f"file '{p}'\n" for p in sorted(src.glob("s*.ts"))))
+    subprocess.run(
+        [
+            ffmpeg, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(listing),
+            "-c", "copy", "-bsf:a", "aac_adtstoasc", "-copyts",
+            "-f", "hls", "-hls_segment_type", "fmp4",
+            "-hls_time", "2", "-hls_list_size", "0", "-hls_fmp4_init_filename", "init.mp4",
+            "-hls_segment_filename", str(out / "s%04d.m4s"), str(out / "p.m3u8"),
+        ],
+        check=True,
+    )  # fmt: skip
 
 
 def gen(args: argparse.Namespace) -> None:
@@ -114,12 +131,18 @@ def gen(args: argparse.Namespace) -> None:
     for name in media_names():
         rate, kf = int(name[:5]), name.endswith("kf")
         out = media_dir(name)
-        if out.exists() and len(list(out.glob("s*.ts"))) >= args.count and not args.force:
+        ext = "m4s" if name.endswith("mp4") else "ts"
+        if out.exists() and len(list(out.glob(f"s*.{ext}"))) >= args.count and not args.force:
             print(f"{out}: present")
             continue
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         t0 = time.monotonic()
+        if ext == "m4s":
+            # the plain TS set, same frames and timestamps, as CMAF
+            _remux_fmp4(ffmpeg, media_dir(str(rate)), out)
+            print(f"{out}: {len(list(out.glob('s*.m4s')))} segments")
+            continue
         # CBR with filler NALs gives Twitch-sized segments from cheap synthetic video;
         # keyframes only at 2 s boundaries, as Twitch requires of broadcasters
         x264 = "bframes=2:nal-hrd=cbr:keyint=120:min-keyint=120:scenecut=0"
@@ -157,7 +180,7 @@ def gen(args: argparse.Namespace) -> None:
 
 
 def load_media(name: str) -> list[bytes]:
-    files = sorted(media_dir(name).glob("s*.ts"))
+    files = sorted(media_dir(name).glob("s*.ts")) or sorted(media_dir(name).glob("s*.m4s"))
     if not files:
         sys.exit(f"no media in {media_dir(name)}: run `python bench/relay_memory.py gen`")
     return [p.read_bytes() for p in files]
@@ -211,19 +234,69 @@ def _shifted(data: bytes, patches: list[tuple[int, str, int]], offset: int) -> b
     return bytes(buf)
 
 
+def _timescales(init: bytes) -> dict[int, int]:
+    """track_ID -> media timescale of each track in an fMP4 init segment."""
+    from quadlink.relay import mp4info
+
+    scales = {}
+    moov = mp4info._first(init, 0, len(init), [b"moov"])
+    assert moov is not None
+    for lo, hi in mp4info._find(init, *moov, [b"trak"]):
+        found = mp4info._track(init, lo, hi, 0)
+        if found is not None:
+            scales[found[1].track_id] = found[1].timescale
+    return scales
+
+
+def _shifted_fmp4(data: bytes, scales: dict[int, int], seconds: float) -> bytes:
+    """An fMP4 media segment with every tfdt moved on by `seconds`."""
+    from quadlink.relay import mp4info
+
+    if not seconds:
+        return data
+    buf = bytearray(data)
+    for lo, hi in mp4info._find(data, 0, len(data), [b"moof", b"traf"]):
+        tfhd = mp4info._first(data, lo, hi, [b"tfhd"])
+        tfdt = mp4info._first(data, lo, hi, [b"tfdt"])
+        assert tfhd is not None and tfdt is not None
+        scale = scales[int.from_bytes(data[tfhd[0] + 4 : tfhd[0] + 8], "big")]
+        width = 8 if data[tfdt[0]] == 1 else 4
+        pos = tfdt[0] + 4
+        value = int.from_bytes(data[pos : pos + width], "big") + round(seconds * scale)
+        buf[pos : pos + width] = (value % (1 << 8 * width)).to_bytes(width, "big")
+    return bytes(buf)
+
+
 async def cdn(args: argparse.Namespace) -> None:
-    media = {name: load_media(name) for name in media_names()}
-    patches = {name: [_ts_patches(d) for d in segs] for name, segs in media.items()}
+    # media made before fMP4 existed has none; only --fmp4-slots needs it
+    names = [n for n in media_names() if not n.endswith("mp4") or media_dir(n).exists()]
+    media = {name: load_media(name) for name in names}
+    patches = {
+        name: [_ts_patches(d) for d in segs]
+        for name, segs in media.items()
+        if not name.endswith("mp4")
+    }
+    inits = {
+        name: (media_dir(name) / "init.mp4").read_bytes() for name in names if name.endswith("mp4")
+    }
+    scales = {name: _timescales(init) for name, init in inits.items()}
 
     async def handle(request: web.Request) -> web.Response:
         name, index = request.match_info["name"], int(request.match_info["index"])
         segs = media[name]
         loop, i = divmod(index, len(segs))
+        if name in inits:
+            body = _shifted_fmp4(segs[i], scales[name], loop * len(segs) * SEG)
+            return web.Response(body=body, content_type="video/iso.segment")
         offset = loop * len(segs) * int(SEG * 90000)
         body = _shifted(segs[i], patches[name][i], offset)
         return web.Response(body=body, content_type="video/mp2t")
 
+    async def handle_init(request: web.Request) -> web.Response:
+        return web.Response(body=inits[request.match_info["name"]], content_type="video/mp4")
+
     app = web.Application()
+    app.router.add_get("/{name}/init.mp4", handle_init)
     app.router.add_get("/{name}/{index}.ts", handle)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
@@ -610,6 +683,7 @@ async def run(args: argparse.Namespace) -> None:
     def new_channel(slot: int, rate: int) -> None:
         generation[slot] += 1
         media = f"{rate}kf" if slot in args.kf_slots else str(rate)
+        media = f"{rate}mp4" if slot in args.fmp4_slots else media
         # a live channel joins with a full window already published
         channels[slot] = Channel(
             f"chan{slot}-{generation[slot]}", rate, clock() - WINDOW * SEG, media
@@ -621,6 +695,8 @@ async def run(args: argparse.Namespace) -> None:
         newest = ch.newest(clock())
         first = max(0, newest - WINDOW + 1)
         lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", f"#EXT-X-MEDIA-SEQUENCE:{first}"]
+        if ch.media.endswith("mp4"):
+            lines.append(f'#EXT-X-MAP:URI="http://127.0.0.1:{cdn_port}/{ch.media}/init.mp4"')
         for i in range(first, newest + 1):
             lines += [f"#EXTINF:{SEG:.3f},live", f"http://127.0.0.1:{cdn_port}/{ch.media}/{i}.ts"]
         return "\n".join(lines) + "\n"
@@ -993,6 +1069,12 @@ def main() -> None:
         type=lambda v: {int(x) for x in v.split(",") if x},
         default=set(),
         help="slots whose channels carry an extra keyframe mid-segment, e.g. 3",
+    )
+    r.add_argument(
+        "--fmp4-slots",
+        type=lambda v: {int(x) for x in v.split(",") if x},
+        default=set(),
+        help="slots whose channels are fMP4 with an EXT-X-MAP init, e.g. 2",
     )
     r.add_argument(
         "--fetch",
