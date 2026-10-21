@@ -55,3 +55,19 @@ async def test_unknown_pts_times_out(ffmpeg, ts_run, tmp_path):
     await conv.feed(ts_run(44100, 2)[0])
     assert await conv.output_for(123, timeout=0.5) is None
     await conv.close()
+
+
+@pytest.mark.asyncio
+async def test_has_output_reports_without_blocking(ffmpeg, ts_run, tmp_path):
+    segs = ts_run(44100, 3)
+    conv = AudioConverter(ffmpeg, tmp_path)
+    await conv.start()
+    pts0 = first_video_pts(segs[0])
+    assert pts0 is not None
+    assert not conv.has_output(pts0)
+    for seg in segs:
+        await conv.feed(seg)
+    out = await conv.output_for(pts0, timeout=10)
+    assert out is not None
+    assert conv.has_output(pts0)
+    await conv.close()

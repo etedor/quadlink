@@ -90,6 +90,11 @@ class AudioConverter:
                 self._by_pts[pts] = path
         self._listed = len(names)
 
+    def has_output(self, video_pts: int) -> bool:
+        """Whether a finished output segment already exists for this input's video PTS."""
+        self._scan()
+        return video_pts in self._by_pts
+
     async def output_for(self, video_pts: int, timeout: float) -> bytes | None:
         """Converted bytes of the input segment starting at this video PTS, once written."""
         deadline = asyncio.get_running_loop().time() + timeout
