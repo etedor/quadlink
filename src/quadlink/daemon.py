@@ -1,9 +1,13 @@
 """Main daemon loop for stream monitoring and quad selection."""
 
 import asyncio
+import shutil
 import signal
+import tempfile
 from collections.abc import Callable
+from pathlib import Path
 
+import httpx
 import structlog
 from aiohttp import web
 
@@ -11,6 +15,7 @@ from quadlink.config.loader import ConfigLoader
 from quadlink.health import HealthServer
 from quadlink.quad import QuadBuilder
 from quadlink.quadstream import QuadStreamClient
+from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.stream.processor import StreamProcessor
@@ -61,7 +66,18 @@ class Daemon:
         self.config_loader = ConfigLoader(explicit_path=config_path)
         self.health_server = HealthServer() if enable_health_server else None
         self.slot_store = SlotStore()
-        self.slot_relay = SlotRelay(self.slot_store)
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            logger.warning("relay ffmpeg not found, audio passes through")
+        self._segment_client = httpx.AsyncClient(timeout=10)
+        self.slot_relay = SlotRelay(
+            self.slot_store,
+            segments=SegmentProxy(
+                self._fetch_segment,
+                ffmpeg,
+                Path(tempfile.gettempdir()) / "quadlink-relay",
+            ),
+        )
         self.webui: WebUI | None = None
         self.webui_runner: web.AppRunner | None = None
         self.running = False
@@ -73,6 +89,12 @@ class Daemon:
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock when the slot store was last fed
         self._fed_at: float | None = None
+
+    async def _fetch_segment(self, uri: str) -> bytes:
+        """Fetch one relay segment from its origin URI."""
+        resp = await self._segment_client.get(uri)
+        resp.raise_for_status()
+        return resp.content
 
     async def start(self) -> None:
         """Start the daemon and optional health/webui servers."""
@@ -163,6 +185,7 @@ class Daemon:
 
                 push_remote = config.mode in ("both", "remote")
                 serve_local = config.mode in ("both", "local")
+                self.slot_relay.proxy_segments = config.relay_segments
 
                 # log in to quadstream only when we push to it (skipped in local)
                 if push_remote and not self.quadstream_client:
@@ -302,3 +325,4 @@ async def run_daemon(
         if daemon.webui_runner:
             await daemon.webui_runner.cleanup()
         await daemon.slot_relay.aclose()
+        await daemon._segment_client.aclose()

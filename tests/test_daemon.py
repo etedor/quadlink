@@ -538,6 +538,7 @@ class TestRunDaemon:
             mock_daemon.health_server = MagicMock()
             mock_daemon.webui_runner = None
             mock_daemon.slot_relay = AsyncMock()
+            mock_daemon._segment_client = AsyncMock()
             MockDaemon.return_value = mock_daemon
 
             with patch("asyncio.get_event_loop") as mock_get_loop:
@@ -574,6 +575,7 @@ class TestRunDaemon:
             mock_daemon.health_server = mock_health
             mock_daemon.webui_runner = None
             mock_daemon.slot_relay = AsyncMock()
+            mock_daemon._segment_client = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -591,6 +593,32 @@ class TestRunDaemon:
                 mock_health.stop.assert_called()
 
     @pytest.mark.asyncio
+    async def test_run_daemon_closes_relay_and_segment_client_on_exit(self):
+        """run_daemon should close the relay and its segment client on exit."""
+        with patch("quadlink.daemon.Daemon") as MockDaemon:
+            mock_daemon = MagicMock()
+            mock_daemon.health_server = None
+            mock_daemon.webui_runner = None
+            mock_daemon.slot_relay = AsyncMock()
+            mock_daemon._segment_client = AsyncMock()
+            mock_daemon.running = True
+            MockDaemon.return_value = mock_daemon
+
+            with patch("asyncio.get_event_loop") as mock_get_loop:
+                mock_loop = MagicMock()
+                mock_get_loop.return_value = mock_loop
+
+                async def mock_start():
+                    raise asyncio.CancelledError()
+
+                mock_daemon.start = mock_start
+
+                await run_daemon()
+
+                mock_daemon.slot_relay.aclose.assert_called_once()
+                mock_daemon._segment_client.aclose.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_run_daemon_sets_up_signal_handlers(self):
         """run_daemon should set up SIGINT and SIGTERM handlers."""
         import signal
@@ -600,6 +628,7 @@ class TestRunDaemon:
             mock_daemon.health_server = MagicMock()
             mock_daemon.webui_runner = None
             mock_daemon.slot_relay = AsyncMock()
+            mock_daemon._segment_client = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -632,6 +661,7 @@ class TestRunDaemon:
             mock_daemon.health_server = mock_health
             mock_daemon.webui_runner = None
             mock_daemon.slot_relay = AsyncMock()
+            mock_daemon._segment_client = AsyncMock()
             mock_daemon.running = True
             MockDaemon.return_value = mock_daemon
 
@@ -686,6 +716,12 @@ class TestDaemonRelayWiring:
                 daemon = Daemon()
         assert daemon.slot_store is not None
         assert daemon.slot_relay.store is daemon.slot_store
+
+    def test_init_gives_relay_a_segment_proxy(self):
+        with patch("quadlink.daemon.ConfigLoader"):
+            with patch("quadlink.daemon.HealthServer"):
+                daemon = Daemon()
+        assert daemon.slot_relay._segments is not None
 
     @pytest.mark.asyncio
     async def test_main_loop_writes_quad_to_slot_store(self, mock_config):

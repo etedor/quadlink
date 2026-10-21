@@ -175,6 +175,7 @@ class Config(BaseSettings):
         logging: Logging configuration.
         proxy_playlist: Twitch playlist proxy URL for ad-free streams.
         low_latency: Enable low-latency streaming mode.
+        relay_segments: Serve segments from the relay and convert audio to 48 kHz.
     """
 
     model_config = SettingsConfigDict(
@@ -198,6 +199,10 @@ class Config(BaseSettings):
 
     proxy_playlist: str = "https://eu.luminous.dev"
     low_latency: bool = True
+
+    # serve video segments from duke (fetched once for all clients) and convert
+    # non-48 kHz audio; false sends clients straight to Twitch's CDN
+    relay_segments: bool = True
 
     # where quadlink publishes the quad:
     #   both   - local relay + push to quadstream.tv (default, no regression)

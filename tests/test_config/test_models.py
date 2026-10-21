@@ -311,3 +311,8 @@ def test_config_non_local_requires_credentials():
     for m in ("both", "remote"):
         with pytest.raises(ValidationError):
             Config(priorities={999: [{"urls": ["streamer1"]}]}, mode=m)
+
+
+def test_relay_segments_defaults_on():
+    config = Config(priorities={}, mode="local")
+    assert config.relay_segments is True
