@@ -142,7 +142,7 @@ class Config(BaseSettings):
     low_latency: bool = True
     # real lookups take 0.5-1.7 s (bench/README.md); a channel that times out
     # gets 3x this on its next lookup
-    lookup_timeout: float = Field(default=10.0, gt=0)
+    lookup_timeout: float = Field(default=10.0, gt=0, le=120)
 
     # serve segments from duke (fetched once for all clients) with audio re-encoded
     # to 48 kHz; false sends clients straight to Twitch's CDN

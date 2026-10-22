@@ -128,8 +128,8 @@ def test_config_minimal():
     assert config.lookup_timeout == 10
 
 
-@pytest.mark.parametrize("value", [0, -1])
-def test_config_lookup_timeout_must_be_positive(value):
+@pytest.mark.parametrize("value", [0, -1, 121])
+def test_config_lookup_timeout_must_be_in_range(value):
     with pytest.raises(ValidationError, match="lookup_timeout"):
         Config(mode="local", priorities={1: [{"urls": ["a"]}]}, lookup_timeout=value)
 

@@ -125,7 +125,7 @@ class TestLogin:
 
             assert await client.login() is False
 
-        log.error.assert_called_once_with("quadstream login failed", status=401)
+        log.info.assert_called_once_with("quadstream login failed", status=401)
 
     @pytest.mark.asyncio
     async def test_login_missing_short_id(self):

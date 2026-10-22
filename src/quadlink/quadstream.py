@@ -100,7 +100,7 @@ class QuadStreamClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 bootstrap = await client.get(bootstrap_url)
                 if bootstrap.status_code != 200:
-                    logger.error(
+                    logger.info(
                         "quadstream bootstrap failed",
                         status=bootstrap.status_code,
                     )
@@ -108,7 +108,7 @@ class QuadStreamClient:
 
                 csrf_token = self._parse_csrf_token(bootstrap.text)
                 if not csrf_token:
-                    logger.error("quadstream bootstrap missing csrf token")
+                    logger.info("quadstream bootstrap missing csrf token")
                     return False
 
                 headers = {
@@ -121,7 +121,7 @@ class QuadStreamClient:
 
                 if response.status_code != 200:
                     # status only: the body can echo the submitted credentials
-                    logger.error("quadstream login failed", status=response.status_code)
+                    logger.info("quadstream login failed", status=response.status_code)
                     return False
 
                 # session typically rotates on auth; re-fetch the bootstrap to
@@ -145,20 +145,20 @@ class QuadStreamClient:
                 self.short_id = data.get("short_id")
 
                 if not self.short_id:
-                    logger.error("quadstream login response missing short_id")
+                    logger.info("quadstream login response missing short_id")
                     return False
 
                 logger.info("quadstream logged in", short_id=self.short_id)
                 return True
 
         except httpx.TimeoutException:
-            logger.error("quadstream login timeout")
+            logger.info("quadstream login timeout")
             return False
         except httpx.RequestError as e:
-            logger.error("quadstream login request error", error=str(e))
+            logger.info("quadstream login request error", error=str(e))
             return False
         except Exception as e:
-            logger.error("quadstream login unexpected error", error=str(e))
+            logger.info("quadstream login unexpected error", error=str(e))
             return False
 
     @staticmethod

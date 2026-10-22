@@ -127,7 +127,9 @@ class StreamlinkFetcher:
             logger.warning("stream lookup timed out", url=url, timeout=timeout)
             raise LookupFailed(f"timed out after {timeout:g}s") from None
         finally:
-            # skip cancelled lookups: a shutdown can cancel one early, before it proves fast
+            # skip cancelled lookups: a shutdown can cancel one early, before it proves fast.
+            # a timed-out lookup always measures > timeout (wait_for fires at or after the
+            # deadline), so the slow mark it just got is never cleared here
             if not lookup.cancelled() and loop.time() - start <= self.timeout:
                 self._slow.discard(url)
 
