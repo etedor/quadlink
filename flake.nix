@@ -69,6 +69,33 @@
           quadlink = quadlink;
         };
 
+        checks.package = quadlink;
+
+        checks.lint =
+          pkgs.runCommand "quadlink-lint"
+            {
+              nativeBuildInputs = [
+                (python.withPackages (
+                  ps:
+                  dependencies
+                  ++ (with ps; [
+                    black
+                    ruff
+                    mypy
+                  ])
+                ))
+              ];
+            }
+            ''
+              cp -r ${self} src
+              chmod -R u+w src
+              cd src
+              black --check src/ tests/ bench/
+              ruff check src/ tests/
+              mypy src/
+              touch $out
+            '';
+
         checks.module-log-level = pkgs.runCommand "quadlink-module-log-level-check" { } ''
           ${
             if nixpkgs.lib.hasInfix "--log-level" (moduleExecStart null) then
