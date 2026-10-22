@@ -11,7 +11,7 @@ from aiohttp import web
 
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.health import HealthServer
-from quadlink.quad import QuadBuilder
+from quadlink.quad import Overrides, QuadState, compose
 from quadlink.quadstream import QuadStreamClient
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
@@ -84,7 +84,12 @@ class Daemon:
         self.webui_runner: web.AppRunner | None = None
         self.running = False
         self.processor: StreamProcessor | None = None
-        self.quad_builder: QuadBuilder | None = None
+        # survives config reloads, so a save in the web UI does not reshuffle tiles
+        self.quad_state = QuadState()
+        self.overrides = Overrides()
+        # channels per slot of the last quad QuadStream accepted; None until the
+        # current login has accepted one
+        self._pushed: tuple[str, ...] | None = None
         self.quadstream_client: QuadStreamClient | None = None
         self._config_hash: int | None = None
         # (username, secret) the current QuadStream client logged in with
@@ -149,10 +154,9 @@ class Daemon:
         A channel that resolved but a filter rejected is not kept.
         """
         assert self.processor is not None
-        assert self.quad_builder is not None
         if self._fed_at is None:
             return []
-        positions = self.quad_builder.previous_positions
+        positions = self.quad_state.positions
         kept = []
         for channel in self._dropped_from_pool(positions, candidates):
             previous = self._on_screen.get(channel)
@@ -211,10 +215,8 @@ class Daemon:
                 self.processor.close()
             # a lookup slower than one cycle is useless: the next cycle is already due
             self.processor = StreamProcessor(config, lookup_timeout=self.interval)
-            self.quad_builder = QuadBuilder(config)
 
         assert self.processor is not None
-        assert self.quad_builder is not None
 
         push_remote = config.mode in ("both", "remote")
         serve_local = config.mode in ("both", "local")
@@ -228,7 +230,6 @@ class Daemon:
             self.quadstream_client = None
 
         # log in to QuadStream only when we push to it (skipped in local)
-        logged_in = False
         if push_remote and not self.quadstream_client:
             assert credentials is not None
             username, secret = credentials
@@ -240,7 +241,8 @@ class Daemon:
                 return 30
             self.quadstream_client = client
             self._credentials = credentials
-            logged_in = True
+            # a new login may be another account, which has not seen any quad
+            self._pushed = None
 
         candidates = await self.processor.process_stream_groups()
         if serve_local:
@@ -253,7 +255,7 @@ class Daemon:
 
         # surface quad channels that fell out of the live pool this
         # cycle (offline/unresolved), which otherwise looks like a re-rank
-        dropped = self._dropped_from_pool(self.quad_builder.previous_positions, candidates)
+        dropped = self._dropped_from_pool(self.quad_state.positions, candidates)
         if dropped:
             logger.info(
                 "quad channels dropped from live pool",
@@ -261,15 +263,16 @@ class Daemon:
                 candidates=len(candidates),
             )
 
-        quad = self.quad_builder.build_quad(candidates)
+        self.quad_state = state = compose(candidates, self.quad_state, self.overrides, config)
+        quad = state.quad
         self._on_screen = {}
         for c in candidates:
-            if c.stream.channel in self.quad_builder.previous_positions:
+            if c.stream.channel in state.positions:
                 self._on_screen.setdefault(c.stream.channel, c)
 
         # feed the local relay every cycle (both/local modes)
         if serve_local:
-            self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
+            self.slot_store.update(quad.to_list(), list(state.channels))
             self._fed_at = self.slot_relay.clock()
 
         if quad.is_empty():
@@ -277,16 +280,16 @@ class Daemon:
             self._mark_cycle()
             return self.interval
 
-        # push to QuadStream when the quad changed or a new login (other
-        # account) has not seen it yet (both/remote modes)
-        if push_remote and (self.quad_builder.quad_changed or logged_in):
+        # push until QuadStream holds this lineup (both/remote modes); compared by
+        # channel, since every refresh re-mints the playlist URLs
+        if push_remote and state.channels != self._pushed:
             assert self.quadstream_client is not None
-            update_success = await self.quadstream_client.update_quad(quad)
-
-            if not update_success:
+            if not await self.quadstream_client.update_quad(quad):
                 logger.error("quadstream update failed")
-            elif config.webhook.enabled and config.webhook.url:
-                await self.quadstream_client.send_webhook(config.webhook.url, quad)
+            else:
+                self._pushed = state.channels
+                if config.webhook.enabled and config.webhook.url:
+                    await self.quadstream_client.send_webhook(config.webhook.url, quad)
 
         self._mark_cycle()
         return self.interval

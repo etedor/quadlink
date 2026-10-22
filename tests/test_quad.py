@@ -1,10 +1,10 @@
-"""Tests for quad builder."""
+"""Tests for quad composition."""
 
 import pytest
 
 from quadlink.config.models import Config, Credentials
-from quadlink.quad import QuadBuilder
-from quadlink.types import Metadata, PrioritizedStream, Stream
+from quadlink.quad import Overrides, QuadState, compose
+from quadlink.types import Metadata, PrioritizedStream, Quad, Stream
 
 
 @pytest.fixture
@@ -19,10 +19,22 @@ def minimal_config():
     )
 
 
+class Rounds:
+    """Compose successive pools, carrying state from round to round as the daemon does."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.state = QuadState()
+
+    def __call__(self, pool: list[PrioritizedStream]) -> Quad:
+        self.state = compose(pool, self.state, Overrides(), self.config)
+        return self.state.quad
+
+
 @pytest.fixture
 def builder(minimal_config):
-    """QuadBuilder instance."""
-    return QuadBuilder(minimal_config)
+    """Round-by-round composer."""
+    return Rounds(minimal_config)
 
 
 def make_stream(author: str, category: str, priority: int) -> PrioritizedStream:
@@ -42,13 +54,13 @@ class TestQuadBuilderBasic:
 
     def test_empty_candidates(self, builder):
         """Should return empty quad when no candidates."""
-        quad = builder.build_quad([])
+        quad = builder([])
         assert quad.is_empty()
 
     def test_single_candidate(self, builder):
         """Should return quad with single stream."""
         candidates = [make_stream("streamer1", "Games", 100)]
-        quad = builder.build_quad(candidates)
+        quad = builder(candidates)
 
         assert quad.slots[0] == "https://twitch.tv/streamer1"
         assert quad.slots[1] == ""
@@ -63,7 +75,7 @@ class TestQuadBuilderBasic:
             make_stream("streamer3", "Games", 80),
             make_stream("streamer4", "Games", 70),
         ]
-        quad = builder.build_quad(candidates)
+        quad = builder(candidates)
 
         assert quad.slots[0] == "https://twitch.tv/streamer1"
         assert quad.slots[1] == "https://twitch.tv/streamer2"
@@ -76,14 +88,14 @@ class TestQuadBuilderBasic:
             make_stream("zed", "Zelda", 200),
             make_stream("amy", "Apex", 100),
         ]
-        quad = builder.build_quad(candidates)
+        quad = builder(candidates)
 
         assert quad.slots[0] == "https://twitch.tv/zed"
         assert quad.slots[1] == "https://twitch.tv/amy"
 
     def test_freed_slots_filled_best_first(self, builder):
         """Should give the best newcomer the lowest freed slot when two slots open at once."""
-        builder.build_quad(
+        builder(
             [
                 make_stream("streamer1", "Games", 100),
                 make_stream("streamer2", "Games", 90),
@@ -93,7 +105,7 @@ class TestQuadBuilderBasic:
         )
 
         # streamer1 (slot 1) and streamer3 (slot 3) go offline
-        quad = builder.build_quad(
+        quad = builder(
             [
                 make_stream("aaa", "Games", 50),
                 make_stream("zzz", "Games", 150),
@@ -116,9 +128,9 @@ class TestQuadBuilderBasic:
             make_stream("streamer4", "Games", 70),
             make_stream("streamer5", "Games", 60),  # should be excluded
         ]
-        builder.build_quad(candidates)
+        builder(candidates)
 
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert len(authors) == 4
         assert "streamer5" not in authors
 
@@ -129,9 +141,9 @@ class TestQuadBuilderBasic:
             make_stream("streamer1", "Games", 90),  # duplicate
             make_stream("streamer2", "Games", 80),
         ]
-        builder.build_quad(candidates)
+        builder(candidates)
 
-        authors = list(builder.previous_positions.keys())
+        authors = list(builder.state.positions.keys())
         assert authors.count("streamer1") == 1
 
 
@@ -145,7 +157,7 @@ class TestStabilityBonus:
             make_stream("streamer1", "Games", 100),
             make_stream("streamer2", "Games", 90),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # second iteration: streamer1 still available but with lower base priority
         # should still win due to stability bonus (90 + 30 = 120 > 110)
@@ -153,10 +165,10 @@ class TestStabilityBonus:
             make_stream("streamer3", "Games", 110),  # new, higher priority
             make_stream("streamer1", "Games", 90),  # existing, lower base priority
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # streamer1 should be preserved (90 + 30 stability = 120 > 110)
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer1" in authors
 
     def test_position_preservation(self, builder):
@@ -166,14 +178,14 @@ class TestStabilityBonus:
             make_stream("streamer1", "Games", 100),
             make_stream("streamer2", "Games", 90),
         ]
-        quad1 = builder.build_quad(candidates1)
+        quad1 = builder(candidates1)
 
         # second iteration: same streams, different order
         candidates2 = [
             make_stream("streamer2", "Games", 100),  # higher priority now
             make_stream("streamer1", "Games", 90),
         ]
-        quad2 = builder.build_quad(candidates2)
+        quad2 = builder(candidates2)
 
         # positions should be preserved despite priority change
         assert quad1.slots[0] == quad2.slots[0]
@@ -192,7 +204,7 @@ class TestDiversityBonus:
             make_stream("streamer4", "Art", 60),  # new category, gets bonus
             make_stream("streamer5", "Talk", 50),  # new category, lower base
         ]
-        builder.build_quad(candidates)
+        builder(candidates)
 
         # diversity bonus applied only once per category:
         # streamer1: 100 + 25 = 125 (first Games)
@@ -201,7 +213,7 @@ class TestDiversityBonus:
         # streamer4: 60 + 25 = 85 (first Art)
         # streamer5: 50 + 25 = 75 (first Talk)
         # top 4: streamer1, streamer2, streamer3/streamer4 (tied at 85)
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer1" in authors
         assert "streamer2" in authors
         # streamer3 or streamer4 will be selected (tied at 85)
@@ -217,7 +229,7 @@ class TestDiversityBonus:
             make_stream("streamer4", "Art", 80),  # first Art stream (gets bonus)
             make_stream("streamer5", "Talk", 75),  # first Talk stream (gets bonus)
         ]
-        builder.build_quad(candidates)
+        builder(candidates)
 
         # streamer1: 100 + 25 = 125
         # streamer2: 90 + 25 = 115
@@ -225,7 +237,7 @@ class TestDiversityBonus:
         # streamer4: 80 + 25 = 105
         # streamer5: 75 + 25 = 100
         # streamer4 and streamer5 should beat streamer3 due to diversity bonus
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer4" in authors
         assert "streamer5" in authors
         assert "streamer3" not in authors
@@ -241,7 +253,7 @@ class TestSaturationPenalty:
             make_stream("streamer1", "Games", 100),
             make_stream("streamer2", "Music", 90),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # second iteration: new Games stream should get penalty
         candidates2 = [
@@ -250,12 +262,12 @@ class TestSaturationPenalty:
             make_stream("streamer3", "Games", 95),  # new Games (gets penalty)
             make_stream("streamer4", "Art", 85),  # new Art (gets diversity bonus)
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # streamer4 should beat streamer3 due to:
         # streamer3: 95 - 25/3 ≈ 95 - 8 = 87
         # streamer4: 85 + 25 = 110
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer4" in authors
 
     def test_saturation_penalty_third_stream(self, builder):
@@ -266,7 +278,7 @@ class TestSaturationPenalty:
             make_stream("streamer2", "Games", 90),
             make_stream("streamer3", "Music", 80),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # third Games stream should get larger penalty
         candidates2 = [
@@ -276,12 +288,12 @@ class TestSaturationPenalty:
             make_stream("streamer4", "Games", 85),  # third Games
             make_stream("streamer5", "Art", 70),  # new Art
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # streamer5 should beat streamer4 due to:
         # streamer4: 85 - 2*25/3 ≈ 85 - 16 = 69
         # streamer5: 70 + 25 = 95
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer5" in authors
 
     def test_saturation_penalty_fourth_stream(self, builder):
@@ -293,7 +305,7 @@ class TestSaturationPenalty:
             make_stream("streamer3", "Games", 80),
             make_stream("streamer4", "Music", 70),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # fourth Games stream should get full diversity bonus as penalty
         # but existing streams should NOT be penalized for their own category
@@ -305,7 +317,7 @@ class TestSaturationPenalty:
             make_stream("streamer5", "Games", 85),  # fourth Games, higher priority
             make_stream("streamer6", "Art", 75),  # new Art
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # existing streams get +30 stability, NO saturation penalty for existing streams
         # streamer1: 100 + 30 = 130
@@ -316,7 +328,7 @@ class TestSaturationPenalty:
         # streamer6: 75 + 25 = 100 (new Art, gets diversity bonus)
         # top 4: streamer1 (130), streamer2 (120), streamer3 (110), streamer4 (100)
         # existing quad is preserved, new streams don't make it
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert "streamer1" in authors
         assert "streamer2" in authors
         assert "streamer3" in authors
@@ -334,7 +346,7 @@ class TestCategoryContinuityBonus:
             make_stream("streamer1", "Games", 100),
             make_stream("streamer2", "Music", 90),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # second iteration: streamer2 (Music) goes offline
         # new streamer3 (Music) should get category continuity bonus
@@ -343,14 +355,14 @@ class TestCategoryContinuityBonus:
             make_stream("streamer3", "Music", 70),  # new, matches departed category
             make_stream("streamer4", "Art", 80),  # new, different category
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # streamer3 should be selected despite lower base priority
         # because it matches the departed Music category
         # streamer3: 70 + continuity_bonus (default 15) = 85
         # streamer4: 80 + diversity_bonus (25) = 105
         # Actually streamer4 still wins, but streamer3 gets the bonus
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         # Both should be in the quad (only 3 streams total)
         assert "streamer3" in authors
 
@@ -367,20 +379,20 @@ class TestComplexScenario:
         candidates1 = [
             make_stream("streamer1", "Games", 100),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # second iteration: new category but lower priority
         candidates2 = [
             make_stream("streamer1", "Games", 80),  # existing
             make_stream("streamer2", "Music", 100),  # new category, higher base
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # streamer1 should still be first due to stability bonus
         # streamer1: 80 + 30 = 110
         # streamer2: 100 + 25 = 125 (actually wins)
         # This test shows diversity can beat stability if base priority gap is large enough
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert len(authors) == 2
 
     def test_all_bonuses_combined(self, builder):
@@ -391,7 +403,7 @@ class TestComplexScenario:
             make_stream("streamer2", "Games", 90),
             make_stream("streamer3", "Music", 80),
         ]
-        builder.build_quad(candidates1)
+        builder(candidates1)
 
         # second iteration: complex scenario
         candidates2 = [
@@ -401,10 +413,10 @@ class TestComplexScenario:
             make_stream("streamer4", "Games", 95),  # new, but saturation penalty (3rd Games)
             make_stream("streamer5", "Art", 70),  # new category, diversity bonus
         ]
-        builder.build_quad(candidates2)
+        builder(candidates2)
 
         # verify we have 4 streams
-        authors = set(builder.previous_positions.keys())
+        authors = set(builder.state.positions.keys())
         assert len(authors) == 4
 
         # existing streams should be preserved
@@ -415,8 +427,11 @@ class TestComplexScenario:
 
 def test_duplicate_author_keeps_the_first_candidate(builder):
     """The best-ranked duplicate of an on-screen author decides its category."""
-    builder.previous_positions = {"a": 0}
-    builder.previous_categories = {"a": "Chess"}
+    builder.state = QuadState(
+        quad=Quad(["https://twitch.tv/a"]),
+        channels=("a", "", "", ""),
+        categories={"a": "Chess"},
+    )
     candidates = [
         make_stream("a", "Chess", 100),
         make_stream("b", "Chess", 100),
@@ -425,7 +440,7 @@ def test_duplicate_author_keeps_the_first_candidate(builder):
         make_stream("e", "Speed", 100),
         make_stream("a", "Art", 10),
     ]
-    quad = builder.build_quad(candidates)
+    quad = builder(candidates)
     # a counts as Chess, so b (a second Chess) is penalized out of the quad
     assert "https://twitch.tv/b" not in quad.to_list()
     assert quad.to_list()[0] == "https://twitch.tv/a"
@@ -435,13 +450,43 @@ def test_channels_are_keyed_by_login_not_display_name(builder):
     """A display-name change keeps the channel's slot and does not count as a change."""
     first = make_stream("streamer1", "Games", 100)
     first.stream.metadata.author = "Streamer One"
-    builder.build_quad([first, make_stream("streamer2", "Art", 90)])
-    assert builder.previous_positions == {"streamer1": 0, "streamer2": 1}
-    assert builder.slot_identities == ["streamer1", "streamer2", "", ""]
+    builder([first, make_stream("streamer2", "Art", 90)])
+    assert builder.state.positions == {"streamer1": 0, "streamer2": 1}
+    assert builder.state.channels == ("streamer1", "streamer2", "", "")
 
     renamed = make_stream("streamer1", "Games", 100)
     renamed.stream.metadata.author = "STREAMER_ONE"
-    quad = builder.build_quad([make_stream("streamer2", "Art", 90), renamed])
+    quad = builder([make_stream("streamer2", "Art", 90), renamed])
 
     assert quad.to_list()[0] == "https://twitch.tv/streamer1"
-    assert not builder.quad_changed
+    assert builder.state.channels == ("streamer1", "streamer2", "", "")
+
+
+def test_compose_leaves_the_previous_state_unchanged(minimal_config):
+    """Compose returns a new state and does not modify its input."""
+    first = compose([make_stream("a", "Games", 100)], QuadState(), Overrides(), minimal_config)
+    second = compose(
+        [make_stream("b", "Games", 200), make_stream("a", "Games", 100)],
+        first,
+        Overrides(),
+        minimal_config,
+    )
+    assert first.channels == ("a", "", "", "")
+    assert first.categories == {"a": "Games"}
+    assert second.channels == ("a", "b", "", "")
+
+
+def test_state_carries_slot_identities_with_playlist_urls(minimal_config):
+    """Each slot holds the playlist URL and the channel that identifies it."""
+    stream = make_stream("a", "Games", 100)
+    stream.stream.master_url = "https://edge/a.m3u8?token=1"
+    state = compose([stream], QuadState(), Overrides(), minimal_config)
+    assert state.quad.to_list() == ["https://edge/a.m3u8?token=1", "", "", ""]
+    assert state.channels == ("a", "", "", "")
+
+
+def test_empty_pool_composes_an_empty_quad(minimal_config):
+    previous = compose([make_stream("a", "Games", 100)], QuadState(), Overrides(), minimal_config)
+    state = compose([], previous, Overrides(), minimal_config)
+    assert state.quad.is_empty()
+    assert state.positions == {}

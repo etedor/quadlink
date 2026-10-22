@@ -7,7 +7,8 @@ import pytest
 
 from quadlink.config.loader import ConfigNotFoundError
 from quadlink.daemon import Daemon, run_daemon
-from quadlink.types import Metadata, PrioritizedStream, Quad, Stream
+from quadlink.quad import QuadState
+from quadlink.types import Metadata, PrioritizedStream, Quad, Stream, channel_login
 
 
 def make_stream(author: str) -> PrioritizedStream:
@@ -20,6 +21,14 @@ def make_stream(author: str) -> PrioritizedStream:
         priority=100,
         tiebreaker=0.5,
     )
+
+
+def composed(urls: list[str], channels: list[str] | None = None) -> QuadState:
+    """A composition holding urls, identified by channels (default: each URL's login)."""
+    quad = Quad(urls)
+    if channels is None:
+        channels = [channel_login(u) if u else "" for u in quad.slots]
+    return QuadState(quad=quad, channels=tuple(channels))
 
 
 class TestDaemonInit:
@@ -35,7 +44,7 @@ class TestDaemonInit:
         assert daemon.one_shot is False
         assert daemon.running is False
         assert daemon.processor is None
-        assert daemon.quad_builder is None
+        assert daemon.quad_state == QuadState()
         assert daemon.quadstream_client is None
         assert daemon.enable_webui is False
         assert daemon.webui_host == "0.0.0.0"
@@ -158,7 +167,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor"):
-            with patch("quadlink.daemon.QuadBuilder"):
+            with patch("quadlink.daemon.compose"):
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=False)
@@ -183,14 +192,14 @@ class TestDaemonMainLoop:
 
     @pytest.mark.asyncio
     async def test_main_loop_initializes_components(self, daemon_with_mocks, mock_config):
-        """Should initialize processor and builder on first run."""
+        """Should initialize the processor on first run."""
         daemon, mock_loader, mock_health = daemon_with_mocks
         daemon.running = True
         daemon.one_shot = False
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=False)
@@ -213,7 +222,8 @@ class TestDaemonMainLoop:
                     MockProcessor.assert_called_once_with(
                         mock_config, lookup_timeout=daemon.interval
                     )
-                    MockBuilder.assert_called_once_with(mock_config)
+                    # login failed, so nothing was composed
+                    MockCompose.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_main_loop_login_failure(self, daemon_with_mocks, mock_config):
@@ -224,7 +234,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor"):
-            with patch("quadlink.daemon.QuadBuilder"):
+            with patch("quadlink.daemon.compose"):
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=False)
@@ -255,7 +265,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder"):
+            with patch("quadlink.daemon.compose"):
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(return_value=[])
@@ -290,7 +300,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -299,9 +309,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     empty_quad = Quad()
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = empty_quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(empty_quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -332,7 +340,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -341,9 +349,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     quad = Quad(["https://twitch.tv/streamer1"])
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -363,7 +369,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -372,9 +378,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     quad = Quad(["https://twitch.tv/streamer1"])
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -401,7 +405,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -410,9 +414,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     quad = Quad(["https://twitch.tv/streamer1"])
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -435,7 +437,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -444,9 +446,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     quad = Quad(["https://twitch.tv/streamer1"])
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -477,7 +477,7 @@ class TestDaemonMainLoop:
         mock_loader.load_or_cache = mock_load
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+            with patch("quadlink.daemon.compose") as MockCompose:
                 with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                     mock_processor = MagicMock()
                     mock_processor.process_stream_groups = AsyncMock(
@@ -486,9 +486,7 @@ class TestDaemonMainLoop:
                     MockProcessor.return_value = mock_processor
 
                     quad = Quad(["https://twitch.tv/streamer1"])
-                    mock_builder = MagicMock()
-                    mock_builder.build_quad.return_value = quad
-                    MockBuilder.return_value = mock_builder
+                    MockCompose.return_value = composed(quad.slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
@@ -795,17 +793,15 @@ class TestDaemonRelayWiring:
                 quad = Quad(["u1", "u2", "u3", "u4"])
 
                 with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                    with patch("quadlink.daemon.compose") as MockCompose:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
                             proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
-                            builder = MagicMock()
-                            builder.build_quad = MagicMock(return_value=quad)
-                            builder.quad_changed = True
-                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
-                            MockBuilder.return_value = builder
+                            MockCompose.return_value = composed(
+                                quad.slots, ["c1", "c2", "c3", "c4"]
+                            )
 
                             client = AsyncMock()
                             client.login = AsyncMock(return_value=True)
@@ -822,7 +818,6 @@ class TestDaemonRelayWiring:
 
     @pytest.mark.asyncio
     async def test_local_mode_feeds_store_and_skips_quadstream(self, mock_config):
-        from quadlink.types import Quad
 
         mock_config.mode = "local"
 
@@ -836,19 +831,15 @@ class TestDaemonRelayWiring:
                 daemon.running = True
 
                 with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                    with patch("quadlink.daemon.compose") as MockCompose:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
                             proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
-                            builder = MagicMock()
-                            builder.build_quad = MagicMock(
-                                return_value=Quad(["u1", "u2", "u3", "u4"])
+                            MockCompose.return_value = composed(
+                                ["u1", "u2", "u3", "u4"], ["c1", "c2", "c3", "c4"]
                             )
-                            builder.quad_changed = True
-                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
-                            MockBuilder.return_value = builder
 
                             with patch("asyncio.sleep", new_callable=AsyncMock):
                                 await daemon._main_loop()
@@ -862,7 +853,6 @@ class TestDaemonRelayWiring:
 
     @pytest.mark.asyncio
     async def test_remote_mode_pushes_quadstream_and_skips_store(self, mock_config):
-        from quadlink.types import Quad
 
         mock_config.mode = "remote"
 
@@ -876,19 +866,15 @@ class TestDaemonRelayWiring:
                 daemon.running = True
 
                 with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
+                    with patch("quadlink.daemon.compose") as MockCompose:
                         with patch("quadlink.daemon.QuadStreamClient") as MockClient:
                             proc = MagicMock()
                             proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
                             MockProc.return_value = proc
 
-                            builder = MagicMock()
-                            builder.build_quad = MagicMock(
-                                return_value=Quad(["u1", "u2", "u3", "u4"])
+                            MockCompose.return_value = composed(
+                                ["u1", "u2", "u3", "u4"], ["c1", "c2", "c3", "c4"]
                             )
-                            builder.quad_changed = True
-                            builder.slot_identities = ["c1", "c2", "c3", "c4"]
-                            MockBuilder.return_value = builder
 
                             client = AsyncMock()
                             client.login = AsyncMock(return_value=True)
@@ -932,8 +918,7 @@ class TestStillPlaying:
                 d = Daemon()
         d.processor = MagicMock()
         d.processor.lookup_failed = MagicMock(return_value=True)
-        d.quad_builder = MagicMock()
-        d.quad_builder.previous_positions = {"alice": 2, "bob": 0}
+        d.quad_state = composed(["bob", "", "alice"])
         d._on_screen = {"alice": make_stream("alice"), "bob": make_stream("bob")}
         d._fed_at = 10.0
         d.slot_relay.video_arrived_since = MagicMock(return_value=True)
@@ -1001,12 +986,9 @@ class TestDaemonCycleFixes:
         processor.process_stream_groups = AsyncMock(
             return_value=[] if outcome == "no_candidates" else [make_stream("a")]
         )
-        builder = MagicMock()
-        builder.build_quad.return_value = Quad()
-        builder.previous_positions = {}
         with (
             patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.QuadBuilder", return_value=builder),
+            patch("quadlink.daemon.compose", return_value=QuadState()),
             patch(
                 "quadlink.daemon.QuadStreamClient",
                 return_value=self.client(login=outcome != "login_failure"),
@@ -1023,7 +1005,7 @@ class TestDaemonCycleFixes:
         processor.process_stream_groups = AsyncMock(return_value=[])
         with (
             patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.QuadBuilder"),
+            patch("quadlink.daemon.compose"),
             patch("quadlink.daemon.QuadStreamClient", return_value=self.client()),
         ):
             await daemon._main_loop()
@@ -1038,15 +1020,10 @@ class TestDaemonCycleFixes:
     async def test_credential_change_logs_in_again(self, daemon, config):
         processor = MagicMock()
         processor.process_stream_groups = AsyncMock(return_value=[make_stream("a")])
-        builder = MagicMock()
-        builder.build_quad.return_value = Quad(["https://twitch.tv/a"])
-        builder.previous_positions = {}
-        builder.slot_identities = ["", "", "", ""]
-        builder.quad_changed = False
         first, second = self.client(), self.client()
         with (
             patch("quadlink.daemon.StreamProcessor", return_value=processor) as MP,
-            patch("quadlink.daemon.QuadBuilder", return_value=builder),
+            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/a"])),
             patch("quadlink.daemon.QuadStreamClient", side_effect=[first, second]) as MC,
         ):
             await daemon._cycle()
@@ -1070,7 +1047,7 @@ class TestDaemonCycleFixes:
         config.mode = "local"
         with (
             patch("quadlink.daemon.StreamProcessor", side_effect=[old, new]),
-            patch("quadlink.daemon.QuadBuilder"),
+            patch("quadlink.daemon.compose"),
         ):
             await daemon._cycle()
             config.model_dump.return_value = {"same": False}
@@ -1118,13 +1095,10 @@ class TestDaemonCycleFixes:
         config.mode = "local"
         processor = MagicMock()
         processor.process_stream_groups = AsyncMock(return_value=[make_stream("b")])
-        builder = MagicMock()
-        builder.previous_positions = {"a": 0}
-        builder.build_quad.return_value = Quad(["https://twitch.tv/b"])
-        builder.slot_identities = ["", "", "", ""]
+        daemon.quad_state = composed(["https://twitch.tv/a"])
         with (
             patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.QuadBuilder", return_value=builder),
+            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/b"])),
             patch("quadlink.daemon.logger") as log,
         ):
             await daemon._cycle()
@@ -1132,3 +1106,50 @@ class TestDaemonCycleFixes:
             "quad channels dropped from live pool", dropped=["a"], candidates=1
         )
         log.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_failed_push_is_retried_next_cycle(self, daemon):
+        """A push QuadStream did not accept is sent again although the lineup is unchanged."""
+        processor = MagicMock()
+        processor.process_stream_groups = AsyncMock(return_value=[make_stream("a")])
+        client = self.client()
+        client.update_quad = AsyncMock(side_effect=[False, True])
+        with (
+            patch("quadlink.daemon.StreamProcessor", return_value=processor),
+            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/a"])),
+            patch("quadlink.daemon.QuadStreamClient", return_value=client),
+        ):
+            await daemon._cycle()
+            await daemon._cycle()
+            await daemon._cycle()
+        # failed, retried and accepted, then nothing new to send
+        assert client.update_quad.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_config_reload_keeps_slots():
+    """The same 4 channels keep their slots across a config change."""
+    from quadlink.config.models import Config
+
+    before = Config(mode="local", rulesets=[], priorities={})
+    after = Config(mode="local", rulesets=[], priorities={}, diversity_bonus=10)
+    channels = ["a", "b", "c", "d"]
+    processor = MagicMock()
+    processor.lookup_failed = MagicMock(return_value=False)
+    processor.process_stream_groups = AsyncMock(
+        side_effect=[
+            [make_stream(c) for c in channels],
+            [make_stream(c) for c in reversed(channels)],
+        ]
+    )
+    with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+        MockLoader.return_value.load_or_cache = AsyncMock(side_effect=[before, after])
+        daemon = Daemon()
+    with patch("quadlink.daemon.StreamProcessor", return_value=processor) as MP:
+        await daemon._cycle()
+        await daemon._cycle()
+    assert MP.call_count == 2
+    assert daemon.quad_state.channels == ("a", "b", "c", "d")
+    assert [daemon.slot_store.get(i).identity for i in range(4)] == channels
+    await daemon.slot_relay.aclose()
+    await daemon._segment_client.aclose()
