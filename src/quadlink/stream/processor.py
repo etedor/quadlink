@@ -5,7 +5,7 @@ import random
 
 import structlog
 
-from quadlink.config.models import Config, StreamGroup
+from quadlink.config.models import Config
 from quadlink.stream.fetcher import LookupFailed, StreamlinkFetcher
 from quadlink.stream.filters import StreamFilter
 from quadlink.types import (
@@ -99,7 +99,16 @@ class StreamProcessor:
         rows = []
         for channel, entries in priorities.items():
             stream = self._streams.get(channel)
-            if channel in self._failures:
+            # accepted first: one entry may hit a filter error while another passes
+            if stream is not None and channel in self._accepted:
+                row = ChannelStatus(
+                    channel,
+                    ChannelState.LIVE,
+                    entries,
+                    stream=stream,
+                    priority=self._accepted[channel],
+                )
+            elif channel in self._failures:
                 row = ChannelStatus(
                     channel,
                     ChannelState.LOOKUP_FAILED,
@@ -108,14 +117,6 @@ class StreamProcessor:
                 )
             elif stream is None:
                 row = ChannelStatus(channel, ChannelState.OFFLINE, entries)
-            elif channel in self._accepted:
-                row = ChannelStatus(
-                    channel,
-                    ChannelState.LIVE,
-                    entries,
-                    stream=stream,
-                    priority=self._accepted[channel],
-                )
             elif not stream.has_video:
                 row = ChannelStatus(channel, ChannelState.NO_VIDEO, entries, stream=stream)
             else:
@@ -130,13 +131,16 @@ class StreamProcessor:
         return rows
 
     async def process_stream_groups(self) -> list[PrioritizedStream]:
-        """
-        Process all stream groups from config, sorted by priority.
+        """Look up every configured channel and return the live candidates.
+
+        Lookups for all priority levels run at once, bounded by the semaphore and
+        started highest priority first. Entries are evaluated only after every
+        lookup ends, in priority then config order, so which entry of a channel
+        wins never depends on which lookup finished first.
 
         Returns:
             List of PrioritizedStream objects, sorted by priority (descending)
         """
-        all_streams = []
         self._lookups.clear()
         self._seen.clear()
         self._rejections.clear()
@@ -145,61 +149,32 @@ class StreamProcessor:
         self._failures.clear()
         self._accepted.clear()
 
-        sorted_priorities = sorted(self.config.priorities.keys(), reverse=True)
+        entries = [
+            (priority, url, group.rulesets)
+            for priority in sorted(self.config.priorities, reverse=True)
+            for group in self.config.priorities[priority]
+            for url in group.urls
+        ]
+        for _, url, _ in entries:
+            self._start_lookup(url)
+        await asyncio.gather(*self._lookups.values(), return_exceptions=True)
 
-        for priority in sorted_priorities:
-            stream_groups = self.config.priorities[priority]
-
-            logger.debug(
-                "processing priority level",
-                priority=priority,
-                groups=len(stream_groups),
-            )
-
-            streams = await self._process_priority_level(priority, stream_groups)
-            all_streams.extend(streams)
+        all_streams = []
+        for priority, url, rulesets in entries:
+            # the lookup is done, so this does not wait
+            stream = await self._process_single_stream(url, priority, rulesets)
+            if stream is not None:
+                all_streams.append(stream)
 
         all_streams.sort(key=lambda s: (s.priority, s.tiebreaker), reverse=True)
 
         logger.debug(
             "stream processing complete",
             total_candidates=len(all_streams),
-            priorities=len(sorted_priorities),
+            priorities=len(self.config.priorities),
         )
 
         return all_streams
-
-    async def _process_priority_level(
-        self, priority: int, stream_groups: list[StreamGroup]
-    ) -> list[PrioritizedStream]:
-        """
-        Process all stream groups at a given priority level.
-
-        Args:
-            priority: Priority level
-            stream_groups: List of StreamGroup objects
-
-        Returns:
-            List of PrioritizedStream objects from this priority level
-        """
-        tasks = []
-
-        for group in stream_groups:
-            for url in group.urls:
-                task = self._process_single_stream(url, priority, group.rulesets)
-                tasks.append(task)
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        streams = [r for r in results if isinstance(r, PrioritizedStream)]
-
-        logger.debug(
-            "priority level complete",
-            priority=priority,
-            successful=len(streams),
-            total=len(tasks),
-        )
-
-        return streams
 
     async def _process_single_stream(
         self,
@@ -285,17 +260,16 @@ class StreamProcessor:
             self._failures.setdefault(channel, str(e))
             return None
 
-    async def _lookup(self, url: str) -> Stream | None:
-        """Look a channel up once per run, whichever of its entries asks first.
-
-        Entries waiting on the shared lookup resume in the order they asked, which
-        is config order within a priority level.
-        """
+    def _start_lookup(self, url: str) -> asyncio.Future[Stream | None]:
+        """Start this run's one lookup of the channel, unless an entry already did."""
         channel = channel_login(url)
         lookup = self._lookups.get(channel)
         if lookup is None:
             lookup = self._lookups[channel] = asyncio.ensure_future(self._fetch(url))
-        return await asyncio.shield(lookup)
+        return lookup
+
+    async def _lookup(self, url: str) -> Stream | None:
+        return await asyncio.shield(self._start_lookup(url))
 
     async def _fetch(self, url: str) -> Stream | None:
         async with self.semaphore:

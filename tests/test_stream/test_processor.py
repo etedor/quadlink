@@ -1,5 +1,6 @@
 """Tests for stream processor."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -215,15 +216,14 @@ class TestProcessPriorityLevel:
             return streams.get(username)
 
         mock_fetcher.fetch_stream_info.side_effect = mock_fetch
-        config = make_config()
-        processor = StreamProcessor(config)
-        processor.fetcher = mock_fetcher
-
         groups = [
             StreamGroup(urls=["streamer1", "streamer2", "streamer3"], rulesets=[]),
         ]
 
-        results = await processor._process_priority_level(100, groups)
+        processor = StreamProcessor(make_config(priorities={100: groups}))
+        processor.fetcher = mock_fetcher
+
+        results = await processor.process_stream_groups()
 
         assert len(results) == 2  # streamer3 is offline
         authors = {r.stream.metadata.author for r in results}
@@ -243,16 +243,15 @@ class TestProcessPriorityLevel:
             return streams.get(username)
 
         mock_fetcher.fetch_stream_info.side_effect = mock_fetch
-        config = make_config()
-        processor = StreamProcessor(config)
-        processor.fetcher = mock_fetcher
-
         groups = [
             StreamGroup(urls=["streamer1"], rulesets=[]),
             StreamGroup(urls=["streamer2"], rulesets=[]),
         ]
 
-        results = await processor._process_priority_level(100, groups)
+        processor = StreamProcessor(make_config(priorities={100: groups}))
+        processor.fetcher = mock_fetcher
+
+        results = await processor.process_stream_groups()
         assert len(results) == 2
 
 
@@ -560,3 +559,111 @@ class TestStatuses:
         assert row.reason == processor.filter.apply_filters(make_stream("Foo", "Y"), ["only-x"])[1]
         assert row.reason != processor.filter.apply_filters(make_stream("Foo", "Y"), ["no-y"])[1]
         assert row.thumbnail_url is None
+
+    @pytest.mark.asyncio
+    async def test_filter_error_on_one_entry_keeps_the_channel_live(self, mock_fetcher):
+        """A channel another entry accepted is live, whatever its other entries hit."""
+        processor = StreamProcessor(self.config())
+        apply = processor.filter.apply_filters
+
+        def flaky(stream, rulesets):
+            if rulesets == ["only-x"]:
+                raise ValueError("bad pattern")
+            return apply(stream, rulesets)
+
+        processor.filter.apply_filters = flaky
+        mock_fetcher.fetch_stream_info.side_effect = lambda url: make_stream("Foo", "Z")
+        processor.fetcher = mock_fetcher
+        await processor.process_stream_groups()
+
+        (row,) = [r for r in processor.statuses() if r.channel == "foo"]
+
+        assert row.state is ChannelState.LIVE
+        assert row.priority == 50
+
+
+class TestConcurrentLevels:
+    """Lookups for every priority level run at once; results keep priority order."""
+
+    @pytest.fixture
+    def mock_fetcher(self):
+        with patch("quadlink.stream.processor.StreamlinkFetcher") as MockFetcher:
+            mock_instance = MagicMock()
+            MockFetcher.return_value = mock_instance
+            yield mock_instance
+
+    @pytest.mark.asyncio
+    async def test_levels_overlap_within_the_concurrency_limit(self, mock_fetcher):
+        in_flight = peak = 0
+
+        async def fetch(url):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+            return None
+
+        mock_fetcher.fetch_stream_info = fetch
+        config = make_config(
+            priorities={p: [StreamGroup(urls=[f"ch{p}"])] for p in range(100, 40, -10)}
+        )
+        processor = StreamProcessor(config, max_concurrent=4)
+        processor.fetcher = mock_fetcher
+
+        await processor.process_stream_groups()
+
+        # six levels of one channel each: one level at a time would peak at 1
+        assert peak == 4
+
+    @pytest.mark.asyncio
+    async def test_higher_priority_wins_although_its_lookup_ends_last(self, mock_fetcher):
+        """Two entries resolving to one channel: the higher-priority one wins."""
+
+        async def fetch(url):
+            login = channel_login(url)
+            # the high-priority lookup is the slow one
+            await asyncio.sleep(0.05 if login == "alias" else 0)
+            return Stream(
+                url=url,
+                metadata=Metadata(author=login, category="Games", title="t"),
+                channel="same",
+            )
+
+        mock_fetcher.fetch_stream_info = fetch
+        config = make_config(
+            priorities={
+                100: [StreamGroup(urls=["alias"])],
+                50: [StreamGroup(urls=["same"])],
+            }
+        )
+        processor = StreamProcessor(config)
+        processor.fetcher = mock_fetcher
+
+        results = await processor.process_stream_groups()
+
+        assert [(r.stream.metadata.author, r.priority) for r in results] == [("alias", 100)]
+        assert processor.rejection("same") == "duplicate of another configured channel"
+
+    @pytest.mark.asyncio
+    async def test_lookups_start_highest_priority_first(self, mock_fetcher):
+        started = []
+
+        async def fetch(url):
+            started.append(channel_login(url))
+            return None
+
+        mock_fetcher.fetch_stream_info = fetch
+        config = make_config(
+            priorities={
+                10: [StreamGroup(urls=["low"])],
+                90: [StreamGroup(urls=["high1", "high2"])],
+                50: [StreamGroup(urls=["mid"])],
+            }
+        )
+        processor = StreamProcessor(config, max_concurrent=1)
+        processor.fetcher = mock_fetcher
+
+        await processor.process_stream_groups()
+
+        assert started == ["high1", "high2", "mid", "low"]
