@@ -41,9 +41,9 @@ in {
     };
 
     logLevel = mkOption {
-      type = types.enum [ "debug" "info" "warn" "error" ];
-      default = "info";
-      description = "Log level for the daemon";
+      type = types.nullOr (types.enum [ "debug" "info" "warn" "error" ]);
+      default = null;
+      description = "Log level for the daemon; null defers to the config file's log_level (or info)";
     };
 
     enableWebui = mkOption {
@@ -121,7 +121,7 @@ in {
           ${cfg.package}/bin/quadlink \
             ${optionalString (cfg.configFile != null) "--config ${cfg.configFile}"} \
             --interval ${toString cfg.interval} \
-            --log-level ${cfg.logLevel} \
+            ${optionalString (cfg.logLevel != null) "--log-level ${cfg.logLevel}"} \
             ${optionalString cfg.enableWebui "--webui --webui-host ${cfg.webuiHost} --webui-port ${toString cfg.webuiPort}"} \
             ${optionalString cfg.enableWebui (concatMapStringsSep " " (h: "--webui-allowed-host ${escapeShellArg h}") cfg.webuiAllowedHosts)}
         '';

@@ -4,76 +4,11 @@ import argparse
 import asyncio
 import os
 import sys
-from collections.abc import Mapping, MutableMapping
-from typing import Any
 
 import structlog
 
 from quadlink.daemon import run_daemon
-
-EventDict = MutableMapping[str, Any]
-ProcessorReturn = Mapping[str, Any] | str | bytes | bytearray | tuple[Any, ...]
-
-LOG_LEVELS = {
-    "debug": 10,
-    "info": 20,
-    "warn": 30,
-    "warning": 30,
-    "error": 40,
-    "critical": 50,
-}
-
-
-def make_level_filter(min_level: str) -> structlog.types.Processor:
-    """Filter log messages below min_level.
-
-    Args:
-        min_level: Minimum log level to pass through (debug, info, warn, error).
-
-    Returns:
-        Processor function for structlog pipeline.
-    """
-    min_level_num = LOG_LEVELS.get(min_level.lower(), 20)
-
-    def level_filter(
-        logger: structlog.types.WrappedLogger,
-        method_name: str,
-        event_dict: EventDict,
-    ) -> ProcessorReturn:
-        level_num = LOG_LEVELS.get(method_name, 20)
-        if level_num < min_level_num:
-            raise structlog.DropEvent
-        return event_dict
-
-    return level_filter
-
-
-def setup_logging(level: str = "info") -> None:
-    """Configure structlog for the application.
-
-    Uses console output for TTY, JSON for non-TTY (e.g., container logs).
-
-    Args:
-        level: Minimum log level to output.
-    """
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            make_level_filter(level),
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            (
-                structlog.dev.ConsoleRenderer()
-                if sys.stderr.isatty()
-                else structlog.processors.JSONRenderer()
-            ),
-        ],
-        wrapper_class=structlog.BoundLogger,
-        context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=False,
-    )
+from quadlink.logconfig import setup_logging
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,8 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--log-level",
         choices=["debug", "info", "warn", "error"],
-        default=os.environ.get("QL_LOG_LEVEL", "info").lower(),
-        help="Log level (default: info, or QL_LOG_LEVEL env var)",
+        default=None,
+        help="Log level; overrides the config's log_level (default: the config value, or info)",
     )
     parser.add_argument(
         "--webui",

@@ -24,6 +24,9 @@ low_latency: true
 # gets 3 times this value on its next lookup); real lookups take 0.5-2 s
 lookup_timeout: 10
 
+# minimum log level: debug, info, warning or error (default: info)
+# log_level: info
+
 # stream priorities (higher numbers = higher priority)
 # streams are processed from highest to lowest priority
 priorities:

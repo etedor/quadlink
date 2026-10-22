@@ -44,12 +44,46 @@
           python3Packages = pythonPackages;
         };
 
+        # boot/filesystem options are irrelevant but required for nixosSystem to evaluate
+        moduleExecStart =
+          logLevel:
+          (nixpkgs.lib.nixosSystem {
+            system = "x86_64-linux";
+            modules = [
+              ./nix/module.nix
+              {
+                services.quadlink.enable = true;
+                services.quadlink.logLevel = logLevel;
+                boot.loader.grub.enable = false;
+                boot.isContainer = true;
+                fileSystems."/".device = "none";
+                system.stateVersion = "24.05";
+              }
+            ];
+          }).config.systemd.services.quadlink.serviceConfig.ExecStart;
+
       in
       {
         packages = {
           default = quadlink;
           quadlink = quadlink;
         };
+
+        checks.module-log-level = pkgs.runCommand "quadlink-module-log-level-check" { } ''
+          ${
+            if nixpkgs.lib.hasInfix "--log-level" (moduleExecStart null) then
+              ''echo "logLevel null must not pass --log-level"; exit 1''
+            else
+              ""
+          }
+          ${
+            if nixpkgs.lib.hasInfix "--log-level debug" (moduleExecStart "debug") then
+              ""
+            else
+              ''echo "logLevel debug must pass --log-level debug"; exit 1''
+          }
+          touch $out
+        '';
 
         devShells.default = pkgs.mkShell {
           buildInputs = [

@@ -97,6 +97,8 @@ See `config.yaml.example` for complete reference.
 
 `lookup_timeout` (default 10 seconds) sets the time limit for one channel lookup. A lookup that takes longer counts as failed for that refresh. On the next refresh, the channel gets 3 times the limit. Real lookups take 0.5 to 2 seconds. Refer to [bench/README.md](bench/README.md) for the measurements.
 
+`log_level` sets the minimum level the daemon logs (`debug`, `info`, `warning` or `error`; default `info`). A change to it takes effect on the next config reload, without a restart. The `--log-level` CLI flag (and NixOS module's `logLevel` option) takes priority over it when set.
+
 ### Environment Variables
 
 Override any config value with `QL_` prefix:

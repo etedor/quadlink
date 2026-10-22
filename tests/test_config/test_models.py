@@ -293,3 +293,24 @@ def test_config_non_local_requires_credentials():
 def test_relay_segments_defaults_on():
     config = Config(priorities={}, mode="local")
     assert config.relay_segments is True
+
+
+def test_log_level_defaults_to_none():
+    config = Config(priorities={}, mode="local")
+    assert config.log_level is None
+
+
+def test_log_level_accepts_each_value():
+    for level in ("debug", "info", "warning", "error"):
+        config = Config(priorities={}, mode="local", log_level=level)
+        assert config.log_level == level
+
+
+def test_log_level_normalizes_case():
+    config = Config(priorities={}, mode="local", log_level="WARNING")
+    assert config.log_level == "warning"
+
+
+def test_log_level_rejects_invalid():
+    with pytest.raises(ValidationError, match="log_level"):
+        Config(priorities={}, mode="local", log_level="verbose")

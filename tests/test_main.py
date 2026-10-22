@@ -25,7 +25,7 @@ class TestSetupLogging:
         """setup_logging should configure structlog."""
         from quadlink.__main__ import setup_logging
 
-        with patch("quadlink.__main__.structlog") as mock_structlog:
+        with patch("quadlink.logconfig.structlog") as mock_structlog:
             setup_logging()
 
             mock_structlog.configure.assert_called_once()
@@ -38,8 +38,8 @@ class TestSetupLogging:
         """Should use ConsoleRenderer when stderr is a tty."""
         from quadlink.__main__ import setup_logging
 
-        with patch("quadlink.__main__.structlog") as mock_structlog:
-            with patch("quadlink.__main__.sys") as mock_sys:
+        with patch("quadlink.logconfig.structlog") as mock_structlog:
+            with patch("quadlink.logconfig.sys") as mock_sys:
                 mock_sys.stderr.isatty.return_value = True
                 setup_logging()
 
@@ -53,8 +53,8 @@ class TestSetupLogging:
         """Should use JSONRenderer when stderr is not a tty."""
         from quadlink.__main__ import setup_logging
 
-        with patch("quadlink.__main__.structlog") as mock_structlog:
-            with patch("quadlink.__main__.sys") as mock_sys:
+        with patch("quadlink.logconfig.structlog") as mock_structlog:
+            with patch("quadlink.logconfig.sys") as mock_sys:
                 mock_sys.stderr.isatty.return_value = False
                 setup_logging()
 
@@ -102,6 +102,24 @@ class TestParseArgs:
 
         assert args.one_shot is True
         assert args.interval == 45
+
+    def test_parse_args_log_level_defaults_to_none(self):
+        """Not giving --log-level should be detectable, so the config can decide."""
+        from quadlink.__main__ import parse_args
+
+        with patch("sys.argv", ["quadlink"]):
+            args = parse_args()
+
+        assert args.log_level is None
+
+    def test_parse_args_log_level_explicit(self):
+        """Should parse --log-level argument."""
+        from quadlink.__main__ import parse_args
+
+        with patch("sys.argv", ["quadlink", "--log-level", "debug"]):
+            args = parse_args()
+
+        assert args.log_level == "debug"
 
 
 class TestMain:

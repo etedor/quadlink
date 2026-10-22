@@ -472,7 +472,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             rulesets: ['rulesets'],
             settings: ['diversity_bonus', 'stability_bonus', 'category_continuity_bonus',
                        'webhook', 'proxy_playlist', 'low_latency', 'lookup_timeout',
-                       'relay_segments']
+                       'relay_segments', 'log_level']
         };
 
         function showStatus(message, isError = false) {

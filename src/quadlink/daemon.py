@@ -13,6 +13,7 @@ from aiohttp import web
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.config.models import Config
 from quadlink.health import HealthServer
+from quadlink.logconfig import apply_config_level
 from quadlink.quad import Overrides, QuadState, compose
 from quadlink.quadstream import QuadStreamClient
 from quadlink.relay.segments import SegmentProxy
@@ -258,6 +259,8 @@ class Daemon:
                 raise
             logger.warning("waiting for a config file", error=str(e))
             return self.interval
+
+        apply_config_level(config.log_level)
 
         # detect config changes and recreate components
         config_hash = hash(str(config.model_dump(exclude={"credentials"})))

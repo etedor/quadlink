@@ -24,6 +24,7 @@ import pytest
 import structlog
 
 from quadlink import __main__ as cli
+from quadlink import logconfig
 from quadlink.daemon import Daemon, run_daemon
 from quadlink.health import HealthServer
 from quadlink.quad import compose
@@ -610,6 +611,31 @@ class TestConfigReload:
             write_config(config_path, lookup_timeout=4)
             await loops.refresh()
         assert [f.timeout for f in twitch.fetchers] == [10, 4]
+
+    async def test_log_level_changes_on_reload(
+        self, make_daemon, config_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(logconfig, "_level_num", logconfig.LOG_LEVELS["info"])
+        monkeypatch.setattr(logconfig, "_pinned", False)
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert logconfig._level_num == logconfig.LOG_LEVELS["info"]
+            write_config(config_path, log_level="debug")
+            await loops.refresh()
+        assert logconfig._level_num == logconfig.LOG_LEVELS["debug"]
+
+    async def test_pinned_log_level_is_not_overridden_by_config(
+        self, make_daemon, config_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(logconfig, "_level_num", logconfig.LOG_LEVELS["warning"])
+        monkeypatch.setattr(logconfig, "_pinned", True)
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            write_config(config_path, log_level="debug")
+            await loops.refresh()
+        assert logconfig._level_num == logconfig.LOG_LEVELS["warning"]
 
     async def test_credential_change_logs_in_again(
         self, make_daemon, config_path, quadstream, twitch

@@ -120,6 +120,7 @@ class Config(BaseSettings):
         low_latency: Enable low-latency streaming mode.
         lookup_timeout: Seconds before one channel lookup counts as failed.
         relay_segments: Serve segments from the relay and convert audio to 48 kHz.
+        log_level: Minimum log level, unless a CLI --log-level flag overrides it.
     """
 
     model_config = SettingsConfigDict(
@@ -154,10 +155,13 @@ class Config(BaseSettings):
     #   remote - push to quadstream.tv only; local relay not served
     mode: Literal["both", "local", "remote"] = "both"
 
-    @field_validator("mode", mode="before")
+    # None defers to a CLI --log-level flag, or "info" if that is also unset
+    log_level: Literal["debug", "info", "warning", "error"] | None = None
+
+    @field_validator("mode", "log_level", mode="before")
     @classmethod
-    def _normalize_mode(cls, v: object) -> object:
-        """Accept case-insensitive mode values."""
+    def _normalize_case(cls, v: object) -> object:
+        """Accept case-insensitive mode and log_level values."""
         return v.strip().lower() if isinstance(v, str) else v
 
     @model_validator(mode="after")
