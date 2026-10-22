@@ -125,6 +125,13 @@ def test_config_minimal():
     assert 999 in config.priorities
     assert config.diversity_bonus == 25  # default
     assert config.stability_bonus == 30  # default
+    assert config.lookup_timeout == 10
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_config_lookup_timeout_must_be_positive(value):
+    with pytest.raises(ValidationError, match="lookup_timeout"):
+        Config(mode="local", priorities={1: [{"urls": ["a"]}]}, lookup_timeout=value)
 
 
 def test_config_bonus_auto_adjustment():

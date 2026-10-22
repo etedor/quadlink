@@ -118,6 +118,7 @@ class Config(BaseSettings):
         webhook: Webhook notification settings.
         proxy_playlist: Twitch playlist proxy URL for ad-free streams.
         low_latency: Enable low-latency streaming mode.
+        lookup_timeout: Seconds before one channel lookup counts as failed.
         relay_segments: Serve segments from the relay and convert audio to 48 kHz.
     """
 
@@ -139,6 +140,9 @@ class Config(BaseSettings):
 
     proxy_playlist: str = "https://eu.luminous.dev"
     low_latency: bool = True
+    # real lookups take 0.5-1.7 s (bench/README.md); a channel that times out
+    # gets 3x this on its next lookup
+    lookup_timeout: float = Field(default=10.0, gt=0)
 
     # serve segments from duke (fetched once for all clients) with audio re-encoded
     # to 48 kHz; false sends clients straight to Twitch's CDN

@@ -28,6 +28,9 @@ class LookupFailed(Exception):
     """A lookup that ended without telling whether the channel is live."""
 
 
+# a channel whose last lookup timed out waits this many timeouts on the next
+SLOW_TIMEOUT_FACTOR = 3
+
 _VIDEO_CODECS = ("avc1", "avc3", "hvc1", "hev1", "av01", "vp09")
 
 
@@ -86,6 +89,10 @@ class StreamlinkFetcher:
         self.proxy_playlist = proxy_playlist
         self.low_latency = low_latency
         self.timeout = timeout
+        # channel URLs whose last lookup outlived the timeout; they get a longer one
+        # until a lookup ends within the normal timeout, so a channel that is always
+        # slow fails once and then resolves on every refresh
+        self._slow: set[str] = set()
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self._thread_local = threading.local()
 
@@ -108,14 +115,21 @@ class StreamlinkFetcher:
         lookup = loop.run_in_executor(self.executor, self._fetch_stream_info_sync, url)
         if self.timeout is None:
             return await lookup
+        timeout = self.timeout * SLOW_TIMEOUT_FACTOR if url in self._slow else self.timeout
+        start = loop.time()
         try:
-            return await asyncio.wait_for(lookup, self.timeout)
+            return await asyncio.wait_for(lookup, timeout)
         except TimeoutError:
             # the worker thread can't be cancelled; it runs to completion and its
             # result is discarded. the caller stops waiting, so one hung lookup
             # can't stall the whole cycle.
-            logger.warning("stream lookup timed out", url=url, timeout=self.timeout)
-            raise LookupFailed(f"timed out after {self.timeout:g}s") from None
+            self._slow.add(url)
+            logger.warning("stream lookup timed out", url=url, timeout=timeout)
+            raise LookupFailed(f"timed out after {timeout:g}s") from None
+        finally:
+            # skip cancelled lookups: a shutdown can cancel one early, before it proves fast
+            if not lookup.cancelled() and loop.time() - start <= self.timeout:
+                self._slow.discard(url)
 
     def _get_session(self) -> Streamlink:
         """

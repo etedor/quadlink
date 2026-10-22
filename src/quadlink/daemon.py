@@ -260,8 +260,7 @@ class Daemon:
             self._config_hash = config_hash
             if self.processor is not None:
                 self.processor.close()
-            # a lookup slower than one cycle is useless: the next cycle is already due
-            self.processor = StreamProcessor(config, lookup_timeout=self.interval)
+            self.processor = StreamProcessor(config, lookup_timeout=config.lookup_timeout)
 
         assert self.processor is not None
 

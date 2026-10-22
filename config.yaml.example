@@ -20,6 +20,9 @@ webhook:
 # streamlink configuration
 proxy_playlist: https://eu.luminous.dev
 low_latency: true
+# seconds before one channel lookup counts as failed (a channel that times out
+# gets 3 times this value on its next lookup); real lookups take 0.5-2 s
+lookup_timeout: 10
 
 # stream priorities (higher numbers = higher priority)
 # streams are processed from highest to lowest priority

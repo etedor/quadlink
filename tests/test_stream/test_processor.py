@@ -1,6 +1,7 @@
 """Tests for stream processor."""
 
 import asyncio
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -717,3 +718,30 @@ class TestConcurrentLevels:
         await processor.process_stream_groups()
 
         assert started == ["high1", "high2", "mid", "low"]
+
+
+async def test_hung_lookup_threads_leave_room_for_the_next_lookups():
+    """A timed-out lookup keeps its thread; the lookups after it still get one."""
+    release = threading.Event()
+
+    def lookup(url):
+        if channel_login(url).startswith("hung"):
+            release.wait(5)
+        return None
+
+    config = make_config(
+        priorities={100: [StreamGroup(urls=["hung1", "hung2", "a", "b", "c", "d"])]}
+    )
+    processor = StreamProcessor(config, max_concurrent=2, lookup_timeout=0.2)
+    try:
+        with patch.object(processor.fetcher, "_fetch_stream_info_sync", side_effect=lookup):
+            await processor.process_stream_groups()
+        states = {s.channel: s.state for s in processor.statuses()}
+    finally:
+        release.set()
+        processor.close()
+    assert states == {
+        "hung1": ChannelState.LOOKUP_FAILED,
+        "hung2": ChannelState.LOOKUP_FAILED,
+        **dict.fromkeys("abcd", ChannelState.OFFLINE),
+    }

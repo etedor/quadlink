@@ -474,7 +474,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             priorities: ['priorities'],
             rulesets: ['rulesets'],
             settings: ['diversity_bonus', 'stability_bonus', 'category_continuity_bonus',
-                       'webhook', 'proxy_playlist', 'low_latency', 'relay_segments']
+                       'webhook', 'proxy_playlist', 'low_latency', 'lookup_timeout',
+                       'relay_segments']
         };
 
         function showStatus(message, isError = false) {

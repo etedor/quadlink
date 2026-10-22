@@ -95,6 +95,8 @@ Configuration is loaded from these paths (in order):
 
 See `config.yaml.example` for complete reference.
 
+`lookup_timeout` (default 10 seconds) sets the time limit for one channel lookup. A lookup that takes longer counts as failed for that refresh. On the next refresh, the channel gets 3 times the limit. Real lookups take 0.5 to 2 seconds. Refer to [bench/README.md](bench/README.md) for the measurements.
+
 ### Environment Variables
 
 Override any config value with `QL_` prefix:

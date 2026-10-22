@@ -92,9 +92,10 @@ class FakeExecutor:
 class FakeFetcher:
     """Stands in for StreamlinkFetcher inside the real StreamProcessor."""
 
-    def __init__(self, twitch: Twitch) -> None:
+    def __init__(self, twitch: Twitch, timeout: float | None = None) -> None:
         self.fetch_stream_info = twitch.lookup
         self.executor = FakeExecutor()
+        self.timeout = timeout
 
 
 def slot_channels(quad: Quad) -> tuple[str, ...]:
@@ -213,8 +214,8 @@ def quadstream() -> QuadStream:
 def fakes(twitch: Twitch, quadstream: QuadStream) -> Any:
     """Replace Twitch and quadstream.tv for every test; nothing reaches the network."""
 
-    def fetcher(**_: Any) -> FakeFetcher:
-        made = FakeFetcher(twitch)
+    def fetcher(timeout: float | None = None, **_: Any) -> FakeFetcher:
+        made = FakeFetcher(twitch, timeout)
         twitch.fetchers.append(made)
         return made
 
@@ -593,6 +594,14 @@ class TestConfigReload:
         assert daemon._config.diversity_bonus == 10
         assert len(twitch.fetchers) == 2
         assert store_channels(daemon) == list(CHANNELS)
+
+    async def test_lookup_timeout_comes_from_the_config(self, make_daemon, config_path, twitch):
+        daemon = make_daemon(interval=60)
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            write_config(config_path, lookup_timeout=4)
+            await loops.refresh()
+        assert [f.timeout for f in twitch.fetchers] == [10, 4]
 
     async def test_credential_change_logs_in_again(
         self, make_daemon, config_path, quadstream, twitch

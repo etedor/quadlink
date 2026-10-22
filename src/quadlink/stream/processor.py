@@ -40,7 +40,9 @@ class StreamProcessor:
         self.fetcher = StreamlinkFetcher(
             proxy_playlist=config.proxy_playlist,
             low_latency=config.low_latency,
-            max_workers=max_concurrent,  # match thread pool size to concurrency limit
+            # a timed-out lookup keeps its thread until streamlink gives up; spare
+            # threads stop the next lookups from timing out while they queue for one
+            max_workers=2 * max_concurrent,
             timeout=lookup_timeout,
         )
         self.filter = StreamFilter(config)
