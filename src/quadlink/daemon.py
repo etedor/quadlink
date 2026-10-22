@@ -89,7 +89,7 @@ class Daemon:
         self._config_hash: int | None = None
         # (username, secret) the current QuadStream client logged in with
         self._credentials: tuple[str | None, str | None] | None = None
-        # last cycle's candidate (raw priority) for each channel on screen
+        # last cycle's candidate (raw priority) for each channel on screen, by channel
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock when the slot store was last fed
         self._fed_at: float | None = None
@@ -132,13 +132,13 @@ class Daemon:
         previous_positions: dict[str, int],
         candidates: list[PrioritizedStream],
     ) -> list[str]:
-        """Quad channels (by author) no longer in the live candidate pool.
+        """Quad channels no longer in the live candidate pool.
 
         Offline/unresolved streams drop out silently, so surfacing this makes a
         "channel disappeared" event visible instead of looking like a re-rank.
         """
-        live = {c.stream.metadata.author.lower() for c in candidates}
-        return sorted(a for a in previous_positions if a not in live)
+        live = {c.stream.channel for c in candidates}
+        return sorted(c for c in previous_positions if c not in live)
 
     def _still_playing(self, candidates: list[PrioritizedStream]) -> list[PrioritizedStream]:
         """On-screen channels whose lookup failed but whose video still arrives.
@@ -154,14 +154,16 @@ class Daemon:
             return []
         positions = self.quad_builder.previous_positions
         kept = []
-        for author in self._dropped_from_pool(positions, candidates):
-            previous = self._on_screen.get(author)
-            if previous is None or not self.processor.lookup_failed(previous.stream.url):
+        for channel in self._dropped_from_pool(positions, candidates):
+            previous = self._on_screen.get(channel)
+            if previous is None or not self.processor.lookup_failed(channel):
                 continue
-            slot = positions[author] + 1
-            if self.slot_relay.video_arrived_since(slot, previous.stream.url, self._fed_at):
+            slot = positions[channel] + 1
+            if self.slot_relay.video_arrived_since(slot, channel, self._fed_at):
                 logger.info(
-                    "kept channel: lookup failed but video still arriving", author=author, slot=slot
+                    "kept channel: lookup failed but video still arriving",
+                    channel=channel,
+                    slot=slot,
                 )
                 kept.append(previous)
         return kept
@@ -262,9 +264,8 @@ class Daemon:
         quad = self.quad_builder.build_quad(candidates)
         self._on_screen = {}
         for c in candidates:
-            author = c.stream.metadata.author.lower()
-            if author in self.quad_builder.previous_positions:
-                self._on_screen.setdefault(author, c)
+            if c.stream.channel in self.quad_builder.previous_positions:
+                self._on_screen.setdefault(c.stream.channel, c)
 
         # feed the local relay every cycle (both/local modes)
         if serve_local:

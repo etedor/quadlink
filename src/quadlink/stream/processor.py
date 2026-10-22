@@ -6,9 +6,9 @@ import random
 import structlog
 
 from quadlink.config.models import Config, StreamGroup
-from quadlink.stream.fetcher import StreamlinkFetcher, channel_url
+from quadlink.stream.fetcher import StreamlinkFetcher
 from quadlink.stream.filters import StreamFilter
-from quadlink.types import PrioritizedStream
+from quadlink.types import PrioritizedStream, channel_login
 
 logger = structlog.get_logger()
 
@@ -39,7 +39,11 @@ class StreamProcessor:
         )
         self.filter = StreamFilter(config)
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        self._seen_urls: set[str] = set()  # deduplicate by normalized URL
+        # channel keys already looked up this run; the first (highest-priority)
+        # configured entry for a channel wins
+        self._queued: set[str] = set()
+        # channel keys already accepted this run, by the login the lookup resolved
+        self._seen: set[str] = set()
         # channels whose lookup returned nothing this run; filter rejections are
         # absent, since those channels are known live and deliberately excluded
         self._unresolved: set[str] = set()
@@ -54,7 +58,7 @@ class StreamProcessor:
         Covers offline, timed-out and errored lookups alike. False for a channel
         that resolved but a filter rejected.
         """
-        return self._normalize_url(channel_url(url)) in self._unresolved
+        return channel_login(url) in self._unresolved
 
     async def process_stream_groups(self) -> list[PrioritizedStream]:
         """
@@ -64,7 +68,8 @@ class StreamProcessor:
             List of PrioritizedStream objects, sorted by priority (descending)
         """
         all_streams = []
-        self._seen_urls.clear()
+        self._queued.clear()
+        self._seen.clear()
         self._unresolved.clear()
 
         sorted_priorities = sorted(self.config.priorities.keys(), reverse=True)
@@ -108,6 +113,11 @@ class StreamProcessor:
 
         for group in stream_groups:
             for url in group.urls:
+                channel = channel_login(url)
+                if channel in self._queued:
+                    logger.debug("duplicate channel (already configured)", channel=channel)
+                    continue
+                self._queued.add(channel)
                 task = self._process_single_stream(url, priority, group.rulesets)
                 tasks.append(task)
 
@@ -145,7 +155,7 @@ class StreamProcessor:
                 stream = await self.fetcher.fetch_stream_info(url)
 
                 if not stream:
-                    self._unresolved.add(self._normalize_url(channel_url(url)))
+                    self._unresolved.add(channel_login(url))
                     return None
 
                 # kept out of _unresolved: a failed lookup keeps a channel whose
@@ -166,16 +176,11 @@ class StreamProcessor:
                     )
                     return None
 
-                normalized_url = self._normalize_url(stream.url)
-                if normalized_url in self._seen_urls:
-                    logger.debug(
-                        "duplicate stream (already seen)",
-                        author=stream.metadata.author,
-                        url=normalized_url,
-                    )
+                if stream.channel in self._seen:
+                    logger.debug("duplicate stream (already seen)", channel=stream.channel)
                     return None
 
-                self._seen_urls.add(normalized_url)
+                self._seen.add(stream.channel)
 
                 prioritized = PrioritizedStream(
                     stream=stream,
@@ -198,19 +203,5 @@ class StreamProcessor:
                     url=url,
                     error=str(e),
                 )
-                self._unresolved.add(self._normalize_url(channel_url(url)))
+                self._unresolved.add(channel_login(url))
                 return None
-
-    def _normalize_url(self, url: str) -> str:
-        """
-        Normalize URL for deduplication.
-
-        Extracts host + path, removes trailing slashes.
-
-        Args:
-            url: URL to normalize
-
-        Returns:
-            Normalized URL
-        """
-        return url.lower().rstrip("/")

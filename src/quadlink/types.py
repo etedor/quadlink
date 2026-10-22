@@ -1,6 +1,29 @@
 """Core data types for QuadLink."""
 
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlsplit
+
+
+def channel_url(url: str) -> str:
+    """Expand a bare channel name or host-relative URL to a full channel URL."""
+    if "://" in url:
+        return url
+    # "twitch.tv/foo" has a host already; only a bare name needs one
+    if "/" in url:
+        return f"https://{url}"
+    return f"https://twitch.tv/{url}"
+
+
+def channel_login(url: str) -> str:
+    """The lowercase Twitch login a channel URL or bare channel name refers to.
+
+    Scheme, host ("www." or not) and case do not change the result, so every
+    spelling of one channel maps to one key.
+    """
+    parts = urlsplit(channel_url(url.strip()))
+    # player.twitch.tv/?channel=<login> names the channel in its query
+    login = parse_qs(parts.query).get("channel", [""])[0] or parts.path.strip("/").split("/")[0]
+    return login.lower()
 
 
 @dataclass
@@ -27,12 +50,19 @@ class Stream:
         metadata: Stream metadata (author, category, title).
         master_url: Master m3u8 playlist URL, if available.
         has_video: False when the only rendition carries audio alone.
+        channel: Lowercase Twitch login, the channel's identity everywhere;
+            derived from url when not given.
     """
 
     url: str
     metadata: Metadata
     master_url: str | None = None
     has_video: bool = True
+    channel: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.channel:
+            self.channel = channel_login(self.url)
 
 
 @dataclass

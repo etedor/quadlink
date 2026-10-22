@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 
-from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache, channel_url
+from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache
+from quadlink.types import channel_login, channel_url
 
 
 class TestStreamlinkFetcherInit:
@@ -147,6 +148,28 @@ class TestFetchStreamInfoSync:
         assert result.metadata.category == "TestCategory"
         assert result.metadata.title == "TestTitle"
         assert result.master_url == "https://playlist.url/master.m3u8"
+        assert result.channel == "test"
+
+    def test_channel_comes_from_the_plugin_login(self):
+        """The plugin's resolved login, lowercased, is the stream's channel key."""
+        fetcher = StreamlinkFetcher()
+        mock_session = MagicMock()
+        mock_plugin = MagicMock()
+        mock_plugin.channel = "SomeLogin"
+        mock_plugin.get_author.return_value = "Some Login"
+        mock_plugin.streams.return_value = {"best": MagicMock()}
+        mock_session.resolve_url.return_value = (
+            "twitch",
+            MagicMock(return_value=mock_plugin),
+            "https://www.twitch.tv/SomeLogin",
+        )
+
+        with patch.object(fetcher, "_get_session", return_value=mock_session):
+            result = fetcher._fetch_stream_info_sync("https://www.twitch.tv/SomeLogin")
+
+        assert result is not None
+        assert result.channel == "somelogin"
+        assert result.metadata.author == "Some Login"
 
     def test_audio_only_stream_is_marked_without_video(self):
         """Should flag a stream whose only rendition is audio."""
@@ -590,3 +613,22 @@ async def test_fetch_stream_info_gives_up_after_timeout():
 )
 def test_channel_url(given, expected):
     assert channel_url(given) == expected
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        "foo",
+        "Foo",
+        "twitch.tv/foo",
+        "www.twitch.tv/FOO",
+        "https://twitch.tv/foo",
+        "http://twitch.tv/foo/",
+        "https://www.twitch.tv/Foo",
+        "HTTPS://WWW.TWITCH.TV/FOO/",
+        "https://player.twitch.tv/?channel=Foo",
+        " foo ",
+    ],
+)
+def test_channel_login_maps_every_spelling_to_one_key(given):
+    assert channel_login(given) == "foo"

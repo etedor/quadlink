@@ -13,7 +13,7 @@ from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 from streamlink.options import Options
 from streamlink.session.session import Streamlink
 
-from quadlink.types import Metadata, Stream
+from quadlink.types import Metadata, Stream, channel_login, channel_url
 
 # plugin directory (ttvlol twitch.py fetched by nix)
 PLUGINS_DIR = Path(__file__).parent.parent / "plugins"
@@ -22,20 +22,6 @@ logger = structlog.get_logger()
 
 # suppress Streamlink logging, we handle errors ourselves
 logging.getLogger("streamlink").setLevel(logging.CRITICAL)
-
-
-def channel_url(url: str) -> str:
-    """Expand a bare channel name to the URL a fetched Stream carries as its url.
-
-    Callers that track channels a lookup missed key them by this, so the keys
-    match Stream.url for the same channel.
-    """
-    if "://" in url:
-        return url
-    # "twitch.tv/foo" has a host already; only a bare name needs one
-    if "/" in url:
-        return f"https://{url}"
-    return f"https://twitch.tv/{url}"
 
 
 _VIDEO_CODECS = ("avc1", "avc3", "hvc1", "hev1", "av01", "vp09")
@@ -195,8 +181,17 @@ class StreamlinkFetcher:
 
                 master_url = stream.url if hasattr(stream, "url") else None
 
+                # the plugin's login comes from the URL it matched; lowercase it
+                # so every spelling of a channel gets one key
+                login = getattr(plugin, "channel", None)
                 return Stream(
-                    url=url, metadata=metadata, master_url=master_url, has_video=has_video
+                    url=url,
+                    metadata=metadata,
+                    master_url=master_url,
+                    has_video=has_video,
+                    channel=(
+                        login.lower() if isinstance(login, str) and login else channel_login(url)
+                    ),
                 )
             finally:
                 _release_plugin_cache(plugin)

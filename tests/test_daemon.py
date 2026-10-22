@@ -942,9 +942,14 @@ class TestStillPlaying:
     def test_keeps_failed_lookup_with_video_arriving(self, daemon):
         kept = daemon._still_playing([make_stream("bob")])
         assert [k.stream.metadata.author for k in kept] == ["alice"]
-        daemon.slot_relay.video_arrived_since.assert_called_once_with(
-            3, "https://twitch.tv/alice", 10.0
-        )
+        daemon.slot_relay.video_arrived_since.assert_called_once_with(3, "alice", 10.0)
+        daemon.processor.lookup_failed.assert_called_once_with("alice")
+
+    def test_pool_is_keyed_by_login_not_display_name(self, daemon):
+        """A renamed display name does not drop the channel from the pool."""
+        renamed = make_stream("bob")
+        renamed.stream.metadata.author = "Bob The Streamer"
+        assert Daemon._dropped_from_pool({"alice": 2, "bob": 0}, [renamed]) == ["alice"]
 
     def test_drops_channel_rejected_by_filter(self, daemon):
         daemon.processor.lookup_failed.return_value = False

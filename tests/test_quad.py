@@ -429,3 +429,19 @@ def test_duplicate_author_keeps_the_first_candidate(builder):
     # a counts as Chess, so b (a second Chess) is penalized out of the quad
     assert "https://twitch.tv/b" not in quad.to_list()
     assert quad.to_list()[0] == "https://twitch.tv/a"
+
+
+def test_channels_are_keyed_by_login_not_display_name(builder):
+    """A display-name change keeps the channel's slot and does not count as a change."""
+    first = make_stream("streamer1", "Games", 100)
+    first.stream.metadata.author = "Streamer One"
+    builder.build_quad([first, make_stream("streamer2", "Art", 90)])
+    assert builder.previous_positions == {"streamer1": 0, "streamer2": 1}
+    assert builder.slot_identities == ["streamer1", "streamer2", "", ""]
+
+    renamed = make_stream("streamer1", "Games", 100)
+    renamed.stream.metadata.author = "STREAMER_ONE"
+    quad = builder.build_quad([make_stream("streamer2", "Art", 90), renamed])
+
+    assert quad.to_list()[0] == "https://twitch.tv/streamer1"
+    assert not builder.quad_changed

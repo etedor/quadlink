@@ -19,8 +19,9 @@ class QuadBuilder:
             config: Application configuration with bonuses and penalties
         """
         self.config = config
-        self.previous_categories: dict[str, str] = {}  # author -> category
-        self.previous_positions: dict[str, int] = {}  # author -> position (0-3)
+        # keyed by channel (lowercase Twitch login)
+        self.previous_categories: dict[str, str] = {}  # channel -> category
+        self.previous_positions: dict[str, int] = {}  # channel -> position (0-3)
         self.quad_changed: bool = False
         # stable channel identity per slot (position-aligned with the quad),
         # so the relay can tell a token refresh from a real stream switch
@@ -35,7 +36,7 @@ class QuadBuilder:
         2. Apply stability bonus to existing streams
         3. Apply category saturation penalty
         4. Apply diversity bonus to new categories
-        5. Select top 4 unique authors
+        5. Select top 4 unique channels
         6. Preserve positions from previous quad
         7. Log changes
 
@@ -50,11 +51,11 @@ class QuadBuilder:
             self.slot_identities = ["", "", "", ""]
             return Quad()
 
-        # reversed: candidates arrive best first, and the first of a duplicate author wins
-        candidate_map = {s.stream.metadata.author.lower(): s for s in reversed(candidates)}
+        # reversed: candidates arrive best first, and the first of a duplicate channel wins
+        candidate_map = {s.stream.channel: s for s in reversed(candidates)}
         existing_streams = self._get_existing_streams(candidate_map)
-        existing_authors = {s.stream.metadata.author.lower() for s in existing_streams}
-        departed_categories = self._get_departed_categories(existing_authors)
+        existing_channels = {s.stream.channel for s in existing_streams}
+        departed_categories = self._get_departed_categories(existing_channels)
 
         logger.debug(
             "quad selection started",
@@ -64,16 +65,14 @@ class QuadBuilder:
         )
 
         adjusted_candidates = self._apply_adjustments(
-            candidates, existing_authors, existing_streams, departed_categories
+            candidates, existing_channels, existing_streams, departed_categories
         )
         adjusted_candidates.sort(key=lambda s: (s.priority, s.tiebreaker), reverse=True)
         selected = self._select_top_4(adjusted_candidates)
         quad = self._build_quad_with_positions(selected, existing_streams)
         self._log_changes(quad, selected)
 
-        self.previous_categories = {
-            s.stream.metadata.author.lower(): s.stream.metadata.category for s in selected
-        }
+        self.previous_categories = {s.stream.channel: s.stream.metadata.category for s in selected}
         self.previous_positions = self._build_position_map(quad, selected)
         self.slot_identities = self._build_slot_identities(quad, selected)
 
@@ -81,24 +80,24 @@ class QuadBuilder:
 
     def _build_position_map(self, quad: Quad, selected: list[PrioritizedStream]) -> dict[str, int]:
         """
-        Build author -> position mapping from quad.
+        Build channel -> position mapping from quad.
 
         Args:
             quad: The built quad
             selected: Selected streams with metadata
 
         Returns:
-            Dict mapping author (lowercase) to position (0-3)
+            Dict mapping channel to position (0-3)
         """
-        url_to_author = {}
+        url_to_channel = {}
         for s in selected:
             url = s.stream.master_url or s.stream.url
-            url_to_author[url] = s.stream.metadata.author.lower()
+            url_to_channel[url] = s.stream.channel
 
         position_map = {}
         for position, url in enumerate(quad.to_dict().values()):
-            if url and url in url_to_author:
-                position_map[url_to_author[url]] = position
+            if url and url in url_to_channel:
+                position_map[url_to_channel[url]] = position
 
         return position_map
 
@@ -107,8 +106,8 @@ class QuadBuilder:
         Build a position-aligned list of stable channel identities.
 
         The playlist URL a slot holds is re-minted every cycle (fresh Twitch
-        token/edge), so it cannot identify a stream. The channel URL is stable,
-        so the relay uses it to distinguish a token refresh from a real switch.
+        token/edge), so it cannot identify a stream. The channel is stable, so
+        the relay uses it to distinguish a token refresh from a real switch.
 
         Args:
             quad: The built quad
@@ -120,7 +119,7 @@ class QuadBuilder:
         url_to_identity = {}
         for s in selected:
             key = s.stream.master_url or s.stream.url
-            url_to_identity[key] = s.stream.url
+            url_to_identity[key] = s.stream.channel
 
         return [url_to_identity.get(url, "") if url else "" for url in quad.to_list()]
 
@@ -131,7 +130,7 @@ class QuadBuilder:
         Get streams from previous quad that are still available.
 
         Args:
-            candidate_map: Author -> PrioritizedStream mapping
+            candidate_map: Channel -> PrioritizedStream mapping
 
         Returns:
             List of streams from previous quad (with positions)
@@ -140,9 +139,9 @@ class QuadBuilder:
             return []
 
         existing = []
-        for author, position in self.previous_positions.items():
-            if author in candidate_map:
-                stream = candidate_map[author]
+        for channel, position in self.previous_positions.items():
+            if channel in candidate_map:
+                stream = candidate_map[channel]
                 stream_with_pos = PrioritizedStream(
                     stream=stream.stream,
                     priority=stream.priority,
@@ -153,12 +152,12 @@ class QuadBuilder:
 
         return existing
 
-    def _get_departed_categories(self, existing_authors: set[str]) -> set[str]:
+    def _get_departed_categories(self, existing_channels: set[str]) -> set[str]:
         """
         Find categories from previous quad that are no longer available.
 
         Args:
-            existing_authors: Authors still available from previous quad
+            existing_channels: Channels still available from previous quad
 
         Returns:
             Set of categories that lost their streams
@@ -166,14 +165,14 @@ class QuadBuilder:
         if not self.previous_categories:
             return set()
 
-        departed_authors = set(self.previous_categories.keys()) - existing_authors
-        departed_categories = {self.previous_categories[author] for author in departed_authors}
+        departed_channels = set(self.previous_categories.keys()) - existing_channels
+        departed_categories = {self.previous_categories[channel] for channel in departed_channels}
 
         # exclude categories still represented in remaining streams
         existing_categories = {
-            self.previous_categories[author]
-            for author in existing_authors
-            if author in self.previous_categories
+            self.previous_categories[channel]
+            for channel in existing_channels
+            if channel in self.previous_categories
         }
 
         return departed_categories - existing_categories
@@ -181,7 +180,7 @@ class QuadBuilder:
     def _apply_adjustments(
         self,
         candidates: list[PrioritizedStream],
-        existing_authors: set[str],
+        existing_channels: set[str],
         existing_streams: list[PrioritizedStream],
         departed_categories: set[str],
     ) -> list[PrioritizedStream]:
@@ -190,7 +189,7 @@ class QuadBuilder:
 
         Args:
             candidates: All stream candidates
-            existing_authors: Set of authors currently in quad
+            existing_channels: Set of channels currently in quad
             existing_streams: List of existing streams with positions
             departed_categories: Categories that lost their streams
 
@@ -206,12 +205,12 @@ class QuadBuilder:
 
         adjusted = []
         for candidate in candidates:
-            author = candidate.stream.metadata.author.lower()
+            channel = candidate.stream.channel
             category = candidate.stream.metadata.category
             adjusted_priority = candidate.priority
 
             # 1. stability bonus
-            if author in existing_authors:
+            if channel in existing_channels:
                 adjusted_priority += self.config.stability_bonus
                 logger.debug(
                     "stability bonus applied",
@@ -222,7 +221,7 @@ class QuadBuilder:
 
             # 2. category saturation penalty (only for NEW streams, not existing ones)
             # existing streams shouldn't be penalized for their own presence
-            if category in category_counts and author not in existing_authors:
+            if category in category_counts and channel not in existing_channels:
                 count = category_counts[category]
                 # graduated penalty based on how many streams already in this category
                 if count == 1:
@@ -255,7 +254,7 @@ class QuadBuilder:
                 )
 
             # 4. category continuity bonus (for replacements matching departed categories)
-            if author not in existing_authors and category in departed_categories:
+            if channel not in existing_channels and category in departed_categories:
                 adjusted_priority += self.config.category_continuity_bonus
                 logger.debug(
                     "category continuity bonus applied",
@@ -278,25 +277,25 @@ class QuadBuilder:
 
     def _select_top_4(self, candidates: list[PrioritizedStream]) -> list[PrioritizedStream]:
         """
-        Select top 4 unique authors from candidates.
+        Select top 4 unique channels from candidates.
 
         Args:
             candidates: Sorted candidates (by adjusted priority + tiebreaker)
 
         Returns:
-            Top 4 streams (unique authors)
+            Top 4 streams (unique channels)
         """
         selected = []
-        seen_authors = set()
+        seen_channels = set()
 
         for candidate in candidates:
-            author = candidate.stream.metadata.author.lower()
+            channel = candidate.stream.channel
 
-            if author in seen_authors:
+            if channel in seen_channels:
                 continue
 
             selected.append(candidate)
-            seen_authors.add(author)
+            seen_channels.add(channel)
 
             if len(selected) == 4:
                 break
@@ -319,21 +318,17 @@ class QuadBuilder:
         quad_urls = ["", "", "", ""]
 
         # prefer playlist over front-facing URL for playback
-        selected_map = {
-            s.stream.metadata.author.lower(): s.stream.master_url or s.stream.url for s in selected
-        }
+        selected_map = {s.stream.channel: s.stream.master_url or s.stream.url for s in selected}
 
-        existing_authors = set()
+        existing_channels = set()
         for stream in existing_streams:
-            author = stream.stream.metadata.author.lower()
-            if author in selected_map and stream.position is not None:
-                quad_urls[stream.position] = selected_map[author]
-                existing_authors.add(author)
+            channel = stream.stream.channel
+            if channel in selected_map and stream.position is not None:
+                quad_urls[stream.position] = selected_map[channel]
+                existing_channels.add(channel)
 
         # selected is already priority-ordered, so the best newcomer takes the lowest free slot
-        new_streams = [
-            s for s in selected if s.stream.metadata.author.lower() not in existing_authors
-        ]
+        new_streams = [s for s in selected if s.stream.channel not in existing_channels]
 
         new_stream_index = 0
         for i in range(4):
@@ -357,63 +352,34 @@ class QuadBuilder:
             new_quad: Newly built quad
             selected: Selected streams with metadata
         """
-        new_authors_list = self._get_authors_in_position_order(new_quad, selected)
+        on_screen = self._in_position_order(new_quad, selected)
+        names = [s.stream.metadata.author for s in on_screen]
 
-        # compare quad composition (authors in positions) to detect any change
         if not self.previous_positions:
             self.quad_changed = True
-            logger.info("quad", streams=new_authors_list)
+            logger.info("quad", streams=names)
             return
 
-        # get previous authors in position order
-        prev_authors_ordered = sorted(self.previous_positions.items(), key=lambda x: x[1])
-        prev_authors_list = [author for author, _ in prev_authors_ordered]
-
-        # quad changed if author composition or order differs
-        new_authors_lower = [a.lower() for a in new_authors_list]
-        self.quad_changed = prev_authors_list != new_authors_lower
+        # quad changed if channel composition or order differs
+        prev_ordered = sorted(self.previous_positions.items(), key=lambda x: x[1])
+        prev_channels = [channel for channel, _ in prev_ordered]
+        self.quad_changed = prev_channels != [s.stream.channel for s in on_screen]
 
         if not self.quad_changed:
-            logger.debug("quad unchanged", streams=new_authors_list)
+            logger.debug("quad unchanged", streams=names)
             return
 
-        # quad changed, determine what changed for logging
-        prev_authors = set(self.previous_positions.keys())
-        new_authors = {s.stream.metadata.author.lower() for s in selected}
-
-        added = new_authors - prev_authors
-        removed = prev_authors - new_authors
+        added = {s.stream.channel for s in selected} - set(prev_channels)
+        removed = set(prev_channels) - {s.stream.channel for s in selected}
 
         if added or removed:
-            logger.info(
-                "quad",
-                streams=new_authors_list,
-                added=list(added),
-                removed=list(removed),
-            )
+            logger.info("quad", streams=names, added=list(added), removed=list(removed))
         else:
-            logger.info("quad", streams=new_authors_list)
+            logger.info("quad", streams=names)
 
-    def _get_authors_in_position_order(
+    def _in_position_order(
         self, quad: Quad, selected: list[PrioritizedStream]
-    ) -> list[str]:
-        """
-        Get author names in quad position order.
-
-        Args:
-            quad: The built quad
-            selected: Selected streams with metadata
-
-        Returns:
-            List of author names in position order [stream1, stream2, stream3, stream4]
-        """
-        url_to_author = {}
-        for s in selected:
-            url = s.stream.master_url or s.stream.url
-            url_to_author[url] = s.stream.metadata.author
-
-        authors = []
-        for url in [quad.stream1, quad.stream2, quad.stream3, quad.stream4]:
-            if url:
-                authors.append(url_to_author[url])
-        return authors
+    ) -> list[PrioritizedStream]:
+        """The selected streams in quad slot order, skipping empty slots."""
+        by_url = {s.stream.master_url or s.stream.url: s for s in selected}
+        return [by_url[url] for url in quad.to_list() if url]

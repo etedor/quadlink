@@ -31,34 +31,6 @@ def make_config(
     )
 
 
-class TestNormalizeUrl:
-    """Tests for URL normalization."""
-
-    def test_normalize_lowercase(self):
-        """URL should be lowercased."""
-        config = make_config()
-        processor = StreamProcessor(config)
-
-        result = processor._normalize_url("https://Twitch.TV/Streamer")
-        assert result == "https://twitch.tv/streamer"
-
-    def test_normalize_removes_trailing_slash(self):
-        """Trailing slash should be removed."""
-        config = make_config()
-        processor = StreamProcessor(config)
-
-        result = processor._normalize_url("https://twitch.tv/streamer/")
-        assert result == "https://twitch.tv/streamer"
-
-    def test_normalize_combined(self):
-        """Both transformations should apply."""
-        config = make_config()
-        processor = StreamProcessor(config)
-
-        result = processor._normalize_url("HTTPS://TWITCH.TV/STREAMER/")
-        assert result == "https://twitch.tv/streamer"
-
-
 class TestProcessSingleStream:
     """Tests for single stream processing."""
 
@@ -373,6 +345,39 @@ class TestProcessStreamGroups:
         # should only have one result (first one at priority 999)
         assert len(results) == 1
         assert results[0].priority == 999
+
+    @pytest.mark.asyncio
+    async def test_every_spelling_of_a_channel_is_looked_up_once(self, mock_fetcher):
+        """Scheme, www. and case differences name one channel; the best priority wins."""
+        mock_fetcher.fetch_stream_info.return_value = make_stream("Streamer", "Games")
+        config = make_config(
+            priorities={
+                999: [StreamGroup(urls=["https://www.twitch.tv/Streamer"], rulesets=[])],
+                500: [StreamGroup(urls=["http://twitch.tv/streamer/", "STREAMER"], rulesets=[])],
+                100: [StreamGroup(urls=["twitch.tv/streamer"], rulesets=[])],
+            }
+        )
+        processor = StreamProcessor(config)
+        processor.fetcher = mock_fetcher
+
+        results = await processor.process_stream_groups()
+
+        assert mock_fetcher.fetch_stream_info.await_count == 1
+        mock_fetcher.fetch_stream_info.assert_awaited_with("https://www.twitch.tv/Streamer")
+        assert [r.priority for r in results] == [999]
+        assert results[0].stream.channel == "streamer"
+
+    @pytest.mark.asyncio
+    async def test_lookup_failed_matches_any_spelling(self, mock_fetcher):
+        """A failed lookup is found by any spelling of the channel."""
+        mock_fetcher.fetch_stream_info.return_value = None
+        processor = StreamProcessor(make_config())
+        processor.fetcher = mock_fetcher
+
+        await processor._process_single_stream("https://www.twitch.tv/Streamer", 100, [])
+
+        assert processor.lookup_failed("http://twitch.tv/streamer/")
+        assert processor.lookup_failed("STREAMER")
 
 
 def test_close_shuts_down_the_lookup_executor():
