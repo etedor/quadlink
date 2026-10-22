@@ -2,13 +2,17 @@
 
 import asyncio
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 
-from quadlink.stream.fetcher import LookupFailed, StreamlinkFetcher, _release_plugin_cache
+from quadlink.stream.fetcher import (
+    SLOW_TIMEOUT_FACTOR,
+    LookupFailed,
+    StreamlinkFetcher,
+    _release_plugin_cache,
+)
 from quadlink.types import channel_login, channel_url
 
 
@@ -595,82 +599,162 @@ async def test_fetch_stream_info_gives_up_after_timeout():
     fetcher.executor.shutdown(wait=True)
 
 
+class _ManualClock:
+    """A `loop.time()` stand-in the test advances by hand.
+
+    `fetch_stream_info` reads the deadline off `loop.time()`, and so does
+    asyncio's own timer machinery, so patching the loop's clock with this
+    makes a lookup's result race its deadline on our schedule instead of the
+    scheduler's: real executor-thread delay (e.g. CPU contention) never flips
+    a test's outcome, since the clock only moves when we move it.
+    """
+
+    def __init__(self, start: float) -> None:
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, by: float) -> None:
+        self._now += by
+
+
+async def _pump() -> None:
+    """Give the loop a few ready-queue turns to react to a clock advance."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+def _blocks_on(event: threading.Event):
+    """A lookup that returns None once `event` is set (or after 5s, as a safety net)."""
+
+    def lookup(url):
+        event.wait(5)
+        return None
+
+    return lookup
+
+
 class TestSlowChannels:
     """A channel whose lookup outlives the timeout gets a longer one next time."""
 
     @staticmethod
-    def lookup_taking(seconds: dict[str, float]):
-        def lookup(url):
-            time.sleep(seconds[channel_login(url)])
-            return None
+    def _install_clock(monkeypatch, loop) -> _ManualClock:
+        clock = _ManualClock(loop.time())
+        monkeypatch.setattr(loop, "time", clock)
+        return clock
 
-        return lookup
+    async def test_slow_channel_resolves_on_the_next_lookup(self, monkeypatch):
+        fetcher = StreamlinkFetcher(timeout=1.0)
+        clock = self._install_clock(monkeypatch, asyncio.get_running_loop())
 
-    async def test_slow_channel_resolves_on_the_next_lookup(self):
-        fetcher = StreamlinkFetcher(timeout=0.1)
-        lookup = self.lookup_taking({"slow": 0.2, "other": 0.2})
-        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=lookup):
-            with pytest.raises(LookupFailed, match="timed out after 0.1s"):
-                await fetcher.fetch_stream_info("slow")
-            # 0.2 s is within 3 x 0.1 s
-            assert await fetcher.fetch_stream_info("slow") is None
-            assert await fetcher.fetch_stream_info("slow") is None
-            # other channels keep the normal timeout
-            with pytest.raises(LookupFailed, match="timed out after 0.1s"):
-                await fetcher.fetch_stream_info("other")
+        hang = threading.Event()
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(hang)):
+            task = asyncio.create_task(fetcher.fetch_stream_info("slow"))
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
+            with pytest.raises(LookupFailed, match="timed out after 1s"):
+                await task
+        hang.set()
+
+        # held past the base timeout (it would already be unresolved without
+        # the 3x extension) but released before 3x it, so it resolves
+        for _ in range(2):
+            release = threading.Event()
+            with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(release)):
+                task = asyncio.create_task(fetcher.fetch_stream_info("slow"))
+                await _pump()
+                clock.advance(fetcher.timeout + 0.01)
+                await _pump()
+                assert not task.done()
+                release.set()
+                assert await task is None
+
+        # other channels keep the normal timeout
+        hang_other = threading.Event()
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(hang_other)):
+            task = asyncio.create_task(fetcher.fetch_stream_info("other"))
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
+            with pytest.raises(LookupFailed, match="timed out after 1s"):
+                await task
+        hang_other.set()
         fetcher.executor.shutdown(wait=True)
 
-    async def test_fast_lookup_restores_the_normal_timeout(self):
-        fetcher = StreamlinkFetcher(timeout=0.1)
-        seconds = {"ch": 0.2}
-        with patch.object(
-            fetcher, "_fetch_stream_info_sync", side_effect=self.lookup_taking(seconds)
-        ):
+    async def test_fast_lookup_restores_the_normal_timeout(self, monkeypatch):
+        fetcher = StreamlinkFetcher(timeout=1.0)
+        clock = self._install_clock(monkeypatch, asyncio.get_running_loop())
+
+        hang = threading.Event()
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(hang)):
+            task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
             with pytest.raises(LookupFailed):
-                await fetcher.fetch_stream_info("ch")
-            seconds["ch"] = 0
+                await task
+        hang.set()
+
+        # the clock never advances here, so this is within the base timeout
+        # no matter how long the executor thread actually takes to run
+        with patch.object(fetcher, "_fetch_stream_info_sync", return_value=None):
             assert await fetcher.fetch_stream_info("ch") is None
-            seconds["ch"] = 0.2
-            with pytest.raises(LookupFailed, match="timed out after 0.1s"):
-                await fetcher.fetch_stream_info("ch")
+
+        # the mark is cleared: back to the plain base timeout, not 3x it
+        hang2 = threading.Event()
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(hang2)):
+            task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
+            with pytest.raises(LookupFailed, match="timed out after 1s"):
+                await task
+        hang2.set()
         fetcher.executor.shutdown(wait=True)
 
-    async def test_hung_channel_times_out_at_the_longer_timeout(self):
-        fetcher = StreamlinkFetcher(timeout=0.05)
+    async def test_hung_channel_times_out_at_the_longer_timeout(self, monkeypatch):
+        fetcher = StreamlinkFetcher(timeout=1.0)
+        clock = self._install_clock(monkeypatch, asyncio.get_running_loop())
         release = threading.Event()
 
-        def hung_lookup(url):
-            release.wait(5)
-            return None
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(release)):
+            task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
+            with pytest.raises(LookupFailed, match="timed out after 1s"):
+                await task
 
-        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=hung_lookup):
-            with pytest.raises(LookupFailed, match="timed out after 0.05s"):
-                await fetcher.fetch_stream_info("ch")
-            with pytest.raises(LookupFailed, match="timed out after 0.15s"):
-                await fetcher.fetch_stream_info("ch")
-            with pytest.raises(LookupFailed, match="timed out after 0.15s"):
-                await fetcher.fetch_stream_info("ch")
+            for _ in range(2):
+                task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+                await _pump()
+                clock.advance(fetcher.timeout * SLOW_TIMEOUT_FACTOR + 0.01)
+                with pytest.raises(LookupFailed, match="timed out after 3s"):
+                    await task
         release.set()
         fetcher.executor.shutdown(wait=True)
 
-    async def test_cancelled_lookup_keeps_the_longer_timeout(self):
-        fetcher = StreamlinkFetcher(timeout=0.05)
+    async def test_cancelled_lookup_keeps_the_longer_timeout(self, monkeypatch):
+        fetcher = StreamlinkFetcher(timeout=1.0)
+        clock = self._install_clock(monkeypatch, asyncio.get_running_loop())
         release = threading.Event()
 
-        def hung_lookup(url):
-            release.wait(5)
-            return None
-
-        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=hung_lookup):
-            with pytest.raises(LookupFailed):
-                await fetcher.fetch_stream_info("ch")
+        with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=_blocks_on(release)):
             task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
-            await asyncio.sleep(0.01)
+            await _pump()
+            clock.advance(fetcher.timeout + 0.01)
+            with pytest.raises(LookupFailed):
+                await task
+
+            task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+            await _pump()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            with pytest.raises(LookupFailed, match="timed out after 0.15s"):
-                await fetcher.fetch_stream_info("ch")
+
+            # a cancelled lookup never proves itself fast, so the mark stays
+            task = asyncio.create_task(fetcher.fetch_stream_info("ch"))
+            await _pump()
+            clock.advance(fetcher.timeout * SLOW_TIMEOUT_FACTOR + 0.01)
+            with pytest.raises(LookupFailed, match="timed out after 3s"):
+                await task
         release.set()
         fetcher.executor.shutdown(wait=True)
 
