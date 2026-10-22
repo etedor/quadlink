@@ -205,3 +205,17 @@ async def test_removed_keys_are_ignored_with_a_warning(minimal_config_data, tmp_
         "webhook.timeout",
         "priorities.*.limit",
     }
+
+
+@pytest.mark.asyncio
+async def test_unknown_top_level_key_still_fails(minimal_config_data, tmp_path):
+    """A typo (not one of the known removed keys) still fails loudly, not silently."""
+    config_data = {**minimal_config_data, "stabilty_bonus": 999}
+    config_file = tmp_path / "config.yaml"
+    write_yaml(config_file, config_data)
+
+    loader = ConfigLoader()
+    loader.SEARCH_PATHS = [str(config_file)]
+
+    with pytest.raises(ValidationError, match="stabilty_bonus"):
+        await loader.load_or_cache()

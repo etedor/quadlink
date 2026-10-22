@@ -99,6 +99,24 @@ class TestProcessSingleStream:
         assert result.stream.metadata.author == "Streamer"
 
     @pytest.mark.asyncio
+    async def test_display_name_differing_from_login_is_not_dropped(self, mock_fetcher):
+        """A stream whose display name differs from its login keeps its full priority."""
+        stream = Stream(
+            url="https://twitch.tv/hanryang1125",
+            metadata=Metadata(author="풍월량", category="Games", title="Test"),
+        )
+        mock_fetcher.fetch_stream_info.return_value = stream
+        config = make_config()
+        processor = StreamProcessor(config)
+        processor.fetcher = mock_fetcher
+
+        result = await processor._process_single_stream("hanryang1125", 100, [])
+
+        assert result is not None
+        assert result.priority == 100
+        assert result.stream.metadata.author == "풍월량"
+
+    @pytest.mark.asyncio
     async def test_stream_fails_filters(self, mock_fetcher):
         """Stream failing filters should return None."""
         stream = make_stream("Streamer", "Minecraft")

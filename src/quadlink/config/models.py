@@ -125,8 +125,6 @@ class Config(BaseSettings):
         env_prefix="QL_",
         env_nested_delimiter="__",
         case_sensitive=False,
-        # old config files may carry keys this version removed; load_or_cache warns and drops them
-        extra="ignore",
     )
 
     credentials: Credentials | None = None

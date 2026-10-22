@@ -11,25 +11,32 @@ from .models import Config
 
 logger = structlog.get_logger()
 
-# top-level keys this version accepts but does not act on
+# top-level keys Config does not define
 _REMOVED_KEYS = ("skip_hosted", "hosted_offset", "logging")
-# webhook.* keys this version accepts but does not act on
+# webhook.* keys Webhook does not define
 _REMOVED_WEBHOOK_KEYS = ("timeout",)
-# priorities.*.*.* (stream group) keys this version accepts but does not act on
+# priorities.*.*.* (stream group) keys StreamGroup does not define
 _REMOVED_GROUP_KEYS = ("limit",)
 
 
-def _warn_removed_keys(data: dict[str, Any]) -> None:
-    """Warn once per load for each config key this version no longer reads."""
+def _strip_removed_keys(data: dict[str, Any]) -> None:
+    """Warn about and drop each removed config key, in place, so Config keeps rejecting typos.
+
+    Config itself has no `extra="ignore"`: a stray top-level key (a typo like
+    stabilty_bonus) must still fail loudly. Only the specific keys this version
+    stopped reading are let through, and only after being named in a warning.
+    """
     for key in _REMOVED_KEYS:
         if key in data:
             logger.warning("config key has no effect and is ignored", key=key)
+            del data[key]
 
     webhook = data.get("webhook")
     if isinstance(webhook, dict):
         for key in _REMOVED_WEBHOOK_KEYS:
             if key in webhook:
                 logger.warning("config key has no effect and is ignored", key=f"webhook.{key}")
+                del webhook[key]
 
     priorities = data.get("priorities")
     if isinstance(priorities, dict):
@@ -45,6 +52,7 @@ def _warn_removed_keys(data: dict[str, Any]) -> None:
                             "config key has no effect and is ignored",
                             key=f"priorities.*.{key}",
                         )
+                        del group[key]
 
 
 class ConfigNotFoundError(Exception):
@@ -122,7 +130,7 @@ class ConfigLoader:
                 with open(path) as f:
                     data = yaml.load(f)
 
-                _warn_removed_keys(data)
+                _strip_removed_keys(data)
                 config = Config(**data)
 
                 if "stability_bonus" in data and "diversity_bonus" in data:

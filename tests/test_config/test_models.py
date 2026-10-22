@@ -220,24 +220,15 @@ def test_config_full():
     assert config.low_latency is False
 
 
-def test_config_ignores_removed_keys():
-    """Config accepts and discards keys it no longer defines, so old config files still load."""
+def test_config_rejects_unknown_top_level_keys():
+    """Config has no extra="ignore": an unknown top-level key fails, not a silent no-op."""
     config_data = {
         "credentials": {"username": "user", "secret": "pass"},
-        "priorities": {999: [{"urls": ["streamer1"], "limit": 2}]},
+        "priorities": {999: [{"urls": ["streamer1"]}]},
         "skip_hosted": True,
-        "hosted_offset": 50,
-        "webhook": {"enabled": True, "url": "https://example.com", "timeout": 15},
-        "logging": {"level": "debug", "format": "text"},
     }
-    config = Config(**config_data)
-
-    assert config.webhook.enabled is True
-    assert config.webhook.url == "https://example.com"
-    assert not hasattr(config, "skip_hosted")
-    assert not hasattr(config, "logging")
-    assert not hasattr(config.webhook, "timeout")
-    assert not hasattr(config.priorities[999][0], "limit")
+    with pytest.raises(ValidationError, match="skip_hosted"):
+        Config(**config_data)
 
 
 def test_config_mode_defaults_to_both():
