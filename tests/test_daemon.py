@@ -49,6 +49,8 @@ class Twitch:
         # while set and clear, lookups wait for it
         self.gate: asyncio.Event | None = None
         self.fetchers: list[FakeFetcher] = []
+        # channel -> display name, when it differs from the login
+        self.display: dict[str, str] = {}
 
     def go_live(self, *channels: str, category: str = "Games", title: str = "t") -> None:
         for channel in channels:
@@ -72,7 +74,9 @@ class Twitch:
         category, title = found
         return Stream(
             url=f"https://twitch.tv/{channel}",
-            metadata=Metadata(author=channel, category=category, title=title),
+            metadata=Metadata(
+                author=self.display.get(channel, channel), category=category, title=title
+            ),
             master_url=f"https://edge.example/{channel}.m3u8?token={self.minted}",
         )
 
@@ -489,6 +493,68 @@ class TestStillPlaying:
         assert store_channels(daemon) == ["e", "b", "c", "d"]
 
 
+class TestLoginKeying:
+    """Channels are keyed by their lowercase login, never by their display name."""
+
+    async def test_display_name_differing_from_login(self, make_daemon, twitch):
+        twitch.display["a"] = "Streamer A"
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert store_channels(daemon) == list(CHANNELS)
+            assert daemon.quad_state.positions["a"] == 0
+            (row,) = [s for s in daemon.channel_statuses if s.channel == "a"]
+            assert row.state is ChannelState.LIVE
+            assert row.stream is not None
+            assert row.stream.metadata.author == "Streamer A"
+            assert Daemon._dropped_from_pool(daemon.quad_state.positions, daemon._pool) == []
+
+            # a failed lookup is matched to arriving video by login
+            twitch.live["a"] = LookupFailed("proxy error")
+            twitch.go_live("e")
+            daemon.slot_relay.video_arrived_since = (  # type: ignore[method-assign]
+                lambda slot, channel, since: channel == "a"
+            )
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert events(logs, "kept channel: lookup failed but video still arriving")
+        assert store_channels(daemon) == list(CHANNELS)
+
+    async def test_renamed_display_name_keeps_the_slot(self, make_daemon, twitch):
+        twitch.display["a"] = "Streamer A"
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.display["a"] = "A Renamed"
+            twitch.go_live("e")
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert not events(logs, "quad channels dropped from live pool")
+        assert store_channels(daemon) == list(CHANNELS)
+        (row,) = [s for s in daemon.channel_statuses if s.channel == "a"]
+        assert row.stream is not None
+        assert row.stream.metadata.author == "A Renamed"
+
+
+class TestFirstRefresh:
+    async def test_still_playing_keeps_nothing_before_the_first_refresh(self, make_daemon, twitch):
+        """No relay clock reading exists yet, so arriving video proves nothing."""
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.live["a"] = LookupFailed("proxy error")
+            assert daemon.processor is not None
+            pool = await daemon.processor.process_stream_groups()
+        daemon.slot_relay.video_arrived_since = (  # type: ignore[method-assign]
+            lambda slot, channel, since: True
+        )
+        daemon._refreshed_at = None
+        assert daemon._still_playing(pool) == []
+        # the same state after a refresh keeps the channel
+        daemon._refreshed_at = 0.0
+        assert [c.stream.channel for c in daemon._still_playing(pool)] == ["a"]
+
+
 class TestConfigReload:
     async def test_reload_keeps_slots_and_replaces_the_processor(
         self, make_daemon, config_path, quadstream, twitch
@@ -740,8 +806,9 @@ class TestOneShot:
 
 
 class TestRunDaemon:
-    async def test_sigterm_stops_the_daemon_and_releases_resources(
-        self, config_path, quadstream, twitch
+    @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+    async def test_signal_stops_the_daemon_and_releases_resources(
+        self, config_path, quadstream, twitch, sig
     ):
         made: list[Daemon] = []
 
@@ -770,10 +837,10 @@ class TestRunDaemon:
             assert daemon.health_server.server is not None
             assert daemon.webui_runner is not None
             assert daemon.webui_runner.addresses
-            os.kill(os.getpid(), signal.SIGTERM)
+            os.kill(os.getpid(), sig)
             await asyncio.wait_for(task, 2)
         assert daemon.running is False
-        assert events(logs, "shutting down")[0]["signal"] == "SIGTERM"
+        assert events(logs, "shutting down")[0]["signal"] == sig.name
         assert daemon.health_server.server is None
         assert not daemon.webui_runner.addresses
         assert daemon._segment_client.is_closed
