@@ -55,43 +55,40 @@ def test_prioritized_stream_with_position():
 def test_quad_empty():
     """Test empty quad creation."""
     quad = Quad()
-    assert quad.stream1 == ""
-    assert quad.stream2 == ""
-    assert quad.stream3 == ""
-    assert quad.stream4 == ""
+    assert quad.slots[0] == ""
+    assert quad.slots[1] == ""
+    assert quad.slots[2] == ""
+    assert quad.slots[3] == ""
     assert quad.is_empty() is True
 
 
 def test_quad_with_streams():
     """Test quad with stream URLs."""
     quad = Quad(
-        stream1="https://twitch.tv/user1",
-        stream2="https://twitch.tv/user2",
-        stream3="https://twitch.tv/user3",
-        stream4="https://twitch.tv/user4",
+        [
+            "https://twitch.tv/user1",
+            "https://twitch.tv/user2",
+            "https://twitch.tv/user3",
+            "https://twitch.tv/user4",
+        ]
     )
-    assert quad.stream1 == "https://twitch.tv/user1"
+    assert quad.slots[0] == "https://twitch.tv/user1"
     assert quad.is_empty() is False
 
 
 def test_quad_partial():
     """Test quad with only some streams filled."""
-    quad = Quad(stream1="https://twitch.tv/user1", stream2="https://twitch.tv/user2")
-    assert quad.stream1 == "https://twitch.tv/user1"
-    assert quad.stream2 == "https://twitch.tv/user2"
-    assert quad.stream3 == ""
-    assert quad.stream4 == ""
+    quad = Quad(["https://twitch.tv/user1", "https://twitch.tv/user2"])
+    assert quad.slots[0] == "https://twitch.tv/user1"
+    assert quad.slots[1] == "https://twitch.tv/user2"
+    assert quad.slots[2] == ""
+    assert quad.slots[3] == ""
     assert quad.is_empty() is False
 
 
 def test_quad_to_dict():
     """Test converting quad to dictionary."""
-    quad = Quad(
-        stream1="url1",
-        stream2="url2",
-        stream3="url3",
-        stream4="url4",
-    )
+    quad = Quad(["url1", "url2", "url3", "url4"])
     d = quad.to_dict()
     assert d == {
         "stream1": "url1",
@@ -103,7 +100,7 @@ def test_quad_to_dict():
 
 def test_quad_to_list():
     """Test converting quad to list."""
-    quad = Quad(stream1="url1", stream2="url2", stream3="url3", stream4="url4")
+    quad = Quad(["url1", "url2", "url3", "url4"])
     lst = quad.to_list()
     assert lst == ["url1", "url2", "url3", "url4"]
 
@@ -112,11 +109,11 @@ def test_quad_is_empty():
     """Test quad emptiness check."""
     # completely empty
     assert Quad().is_empty() is True
-    assert Quad("", "", "", "").is_empty() is True
+    assert Quad(["", "", "", ""]).is_empty() is True
 
     # partially filled
-    assert Quad(stream1="url1").is_empty() is False
-    assert Quad(stream4="url4").is_empty() is False
+    assert Quad(["url1"]).is_empty() is False
+    assert Quad(["", "", "", "url4"]).is_empty() is False
 
     # fully filled
-    assert Quad("url1", "url2", "url3", "url4").is_empty() is False
+    assert Quad(["url1", "url2", "url3", "url4"]).is_empty() is False

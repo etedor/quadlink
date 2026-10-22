@@ -384,7 +384,7 @@ class TestUpdateQuad:
     async def test_update_not_logged_in(self):
         """Should return False when not logged in."""
         client = QuadStreamClient("user", "secret")
-        quad = Quad(stream1="https://stream1", stream2="https://stream2")
+        quad = Quad(["https://stream1", "https://stream2"])
 
         result = await client.update_quad(quad)
 
@@ -400,7 +400,7 @@ class TestUpdateQuad:
         client.cookies = cookies
         client.short_id = "abc123"
 
-        quad = Quad(stream1="https://stream1", stream2="https://stream2")
+        quad = Quad(["https://stream1", "https://stream2"])
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -425,7 +425,7 @@ class TestUpdateQuad:
         client.cookies = cookies
         client.short_id = "abc123"
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_response = MagicMock()
         mock_response.status_code = 500
@@ -518,7 +518,7 @@ class TestUpdateQuad:
         client.short_id = "abc123"
         client.csrf_token = "tok-xyz"
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -546,7 +546,7 @@ class TestUpdateQuad:
         client.cookies = cookies
         client.short_id = "abc123"
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_403_response = MagicMock()
         mock_403_response.status_code = 403
@@ -579,7 +579,7 @@ class TestUpdateQuad:
         client.cookies = cookies
         client.short_id = "abc123"
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_403_response = MagicMock()
         mock_403_response.status_code = 403
@@ -609,7 +609,7 @@ class TestUpdateQuad:
         client.cookies = cookies
         client.short_id = "abc123"
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_403_response = MagicMock()
         mock_403_response.status_code = 403
@@ -640,7 +640,7 @@ class TestUpdateQuad:
         client._session_started_at = now - 1900  # started 31+ min ago
         client._session_expires_at = now + 1700  # 1 hour total, past 50%
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -672,7 +672,7 @@ class TestUpdateQuad:
         client._session_started_at = now  # just started
         client._session_expires_at = now + 3600  # 1 hour session
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -702,7 +702,7 @@ class TestUpdateQuad:
         client._session_started_at = now - 1900
         client._session_expires_at = now + 1700
 
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         with patch.object(client, "login", new_callable=AsyncMock) as mock_login:
             mock_login.return_value = False
@@ -748,7 +748,7 @@ class TestSendWebhook:
     async def test_webhook_with_quad(self):
         """Should include quad in payload when provided."""
         client = QuadStreamClient("user", "secret")
-        quad = Quad(stream1="https://stream1")
+        quad = Quad(["https://stream1"])
 
         mock_response = MagicMock()
         mock_response.status_code = 200

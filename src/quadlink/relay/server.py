@@ -78,8 +78,19 @@ _FILLER_DIR = Path(__file__).parent / "filler"
 _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4": "video/mp4"}
 
 
+def _route_slot(raw: str) -> int | None:
+    """The internal slot (0-3) for a /streams/{1-4} route number, or None."""
+    # int() alone accepts "+1", " 1" and "1_0"
+    if not raw.isdigit() or not 1 <= int(raw) <= 4:
+        return None
+    return int(raw) - 1
+
+
 class SlotRelay:
-    """Serves /streams/{slot} as a live, source-swappable HLS media playlist."""
+    """Serves /streams/{1-4} as live, source-swappable HLS media playlists.
+
+    Slots are numbered 0-3 inside the relay; only the routes number them 1-4.
+    """
 
     def __init__(
         self,
@@ -115,9 +126,9 @@ class SlotRelay:
         self._waits: dict[int, asyncio.Task[bool]] = {}
         # slot -> source poll on behalf of waiting segment requests, shared by them
         self._polls: dict[int, asyncio.Task[None]] = {}
-        # slots whose last source fetch failed: every client polls every ~2s, so
-        # only the first failure of a streak and the recovery are logged
-        self._failing: set[int] = set()
+        # slot -> channel whose last source fetch failed: every client polls every
+        # ~2s, so only the first failure of a channel's streak and its recovery are logged
+        self._failing: dict[int, str] = {}
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -167,12 +178,8 @@ class SlotRelay:
 
     async def handle(self, request: web.Request) -> web.Response:
         """Route handler for GET /streams/{slot}."""
-        raw = request.match_info.get("slot", "")
-        try:
-            slot = int(raw)
-        except ValueError:
-            return web.Response(status=404, text="bad slot")
-        if slot not in (1, 2, 3, 4):
+        slot = _route_slot(request.match_info.get("slot", ""))
+        if slot is None:
             return web.Response(status=404, text="bad slot")
 
         entry = self.store.get(slot)
@@ -202,13 +209,20 @@ class SlotRelay:
         try:
             text = await self._fetch_source(slot, entry.url)
         except Exception as e:
-            if slot not in self._failing:
-                self._failing.add(slot)
-                logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
+            if self._failing.get(slot) != entry.identity:
+                self._failing[slot] = entry.identity
+                logger.warning(
+                    "relay source fetch failed",
+                    slot=slot,
+                    channel=entry.identity,
+                    url=entry.url,
+                    error=str(e),
+                )
             return False
-        if slot in self._failing:
-            self._failing.discard(slot)
-            logger.info("relay source fetch recovered", slot=slot)
+        if self._failing.pop(slot, None) == entry.identity:
+            logger.info(
+                "relay source fetch recovered", slot=slot, channel=entry.identity, url=entry.url
+            )
         await self._ingest_slot(slot, state, entry, text)
         return True
 
@@ -256,7 +270,7 @@ class SlotRelay:
             if first is None or seg.seq < first:
                 return seg.uri
             ext = "m4s" if seg.map_gen is not None and not state.fmp4_as_ts else "ts"
-            return f"/streams/{slot}/seg/{seg.seq}.{ext}"
+            return f"/streams/{slot + 1}/seg/{seg.seq}.{ext}"
 
         return render(state, slot, uri_for, lambda seg: proxy.ready(slot, seg.seq))
 
@@ -387,12 +401,8 @@ class SlotRelay:
         the slot's current source and redirect to a fresh Twitch init segment,
         so the init token is never stale even though the URL never changes.
         """
-        raw = request.match_info.get("slot", "")
-        try:
-            slot = int(raw)
-        except ValueError:
-            return web.Response(status=404, text="bad slot")
-        if slot not in (1, 2, 3, 4):
+        slot = _route_slot(request.match_info.get("slot", ""))
+        if slot is None:
             return web.Response(status=404, text="bad slot")
 
         entry = self.store.get(slot)
@@ -432,12 +442,9 @@ class SlotRelay:
         # int() alone accepts "+7", " 7" and "7_0"
         if not stem.isdigit():
             return web.Response(status=404, text="bad segment")
-        try:
-            slot, seq = int(request.match_info.get("slot", "")), int(stem)
-        except ValueError:
-            return web.Response(status=404, text="bad segment")
+        slot, seq = _route_slot(request.match_info.get("slot", "")), int(stem)
         types = {"ts": "video/mp2t", "m4s": "video/iso.segment"}
-        if slot not in (1, 2, 3, 4) or ext not in types or self._segments is None:
+        if slot is None or ext not in types or self._segments is None:
             return web.Response(status=404, text="bad segment")
         try:
             body = await self._get_segment(slot, seq)

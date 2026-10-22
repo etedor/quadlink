@@ -393,7 +393,7 @@ def render(
         # changes at real init boundaries; the relay resolves it to a fresh
         # Twitch init on each fetch, so the init token never goes stale
         if seg.map_gen is not None and not state.fmp4_as_ts:
-            map_uri = FILLER_FMP4_INIT if seg.filler else f"/streams/{slot}/init/{seg.map_gen}"
+            map_uri = FILLER_FMP4_INIT if seg.filler else f"/streams/{slot + 1}/init/{seg.map_gen}"
             if map_uri != last_map:
                 lines.append(f'#EXT-X-MAP:URI="{map_uri}"')
                 last_map = map_uri

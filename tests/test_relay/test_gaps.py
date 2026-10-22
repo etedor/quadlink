@@ -85,7 +85,7 @@ def test_filler_follows_ts_window_with_discontinuity():
     ingest(state, _src(10, ["a.ts"]), "chan-A")
     add_filler(state)
     add_filler(state)
-    out = render(state, 1)
+    out = render(state, 0)
     assert out.count(FILLER_TS) == 2
     assert out.count("#EXT-X-DISCONTINUITY\n") == 2
     assert "#EXT-X-MAP" not in out
@@ -98,7 +98,7 @@ def test_filler_follows_fmp4_window_with_its_own_map():
     ingest(state, _fmp4_src(0, ["a.mp4"]), "chan-A")
     add_filler(state)
     ingest(state, _fmp4_src(1, ["b.mp4"]), "chan-A")
-    lines = render(state, 2).splitlines()
+    lines = render(state, 1).splitlines()
     assert lines.index('#EXT-X-MAP:URI="/streams/2/init/1"') < lines.index("a.mp4")
     assert lines.index(f'#EXT-X-MAP:URI="{FILLER_FMP4_INIT}"') < lines.index(FILLER_FMP4)
     # the source's init is declared again after the filler
@@ -114,11 +114,11 @@ def test_filler_on_empty_window_is_ts():
 def test_store_remembers_outgoing_channel_until_released():
     store = SlotStore()
     store.update(["a1", "", "", ""], ["A", "", "", ""])
-    assert store.outgoing(1) is None
+    assert store.outgoing(0) is None
     store.update(["b1", "", "", ""], ["B", "", "", ""])
-    assert store.outgoing(1) == SlotEntry("A", "a1")
-    store.release_outgoing(1)
-    assert store.outgoing(1) is None
+    assert store.outgoing(0) == SlotEntry("A", "a1")
+    store.release_outgoing(0)
+    assert store.outgoing(0) is None
 
 
 def test_store_swap_back_drops_outgoing():
@@ -126,10 +126,10 @@ def test_store_swap_back_drops_outgoing():
     store.update(["a1", "", "", ""], ["A", "", "", ""])
     store.update(["b1", "", "", ""], ["B", "", "", ""])
     store.update(["a2", "", "", ""], ["A", "", "", ""])
-    assert store.outgoing(1) == SlotEntry("B", "b1")
+    assert store.outgoing(0) == SlotEntry("B", "b1")
     store.update(["b2", "", "", ""], ["B", "", "", ""])
     store.update(["", "", "", ""], ["", "", "", ""])
-    assert store.outgoing(1) is None
+    assert store.outgoing(0) is None
 
 
 async def _call(relay: SlotRelay, slot: str) -> web.Response:
@@ -211,7 +211,7 @@ async def test_new_channel_preroll_plays_outgoing_channel():
     out = (await _call(relay, "1")).text
     assert "live1.ts" in out
     assert "a12.ts" not in out
-    assert store.outgoing(1) is None
+    assert store.outgoing(0) is None
 
 
 @pytest.mark.asyncio

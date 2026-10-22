@@ -235,7 +235,7 @@ def test_ingest_trims_to_window_and_counts_discontinuity_sequence():
 def test_render_has_required_headers_and_no_endlist():
     state = SlotState()
     ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
-    out = render(state, 3)
+    out = render(state, 2)
     assert out.startswith("#EXTM3U")
     assert "#EXT-X-VERSION:6" in out
     assert "#EXT-X-MEDIA-SEQUENCE:0" in out
@@ -250,7 +250,7 @@ def test_render_emits_discontinuity_tag_before_segment():
     state = SlotState()
     ingest(state, _src(100, ["a.ts"]), "chan-A")
     ingest(state, _src(0, ["x.ts"]), "chan-B")
-    out = render(state, 3)
+    out = render(state, 2)
     lines = out.splitlines()
     x_index = lines.index("x.ts")
     # the line two before the URI (EXTINF is directly before) should include the tag
@@ -273,7 +273,7 @@ def _fmp4_src(media_seq: int, uris: list[str], map_uri: str) -> str:
 def test_render_emits_ext_x_map_once_for_fmp4():
     state = SlotState()
     ingest(state, _fmp4_src(0, ["a.mp4", "b.mp4"], "https://cdn.example/init.mp4"), "chan-A")
-    out = render(state, 3)
+    out = render(state, 2)
     # served as a stable relay init URL (run generation 1), not the Twitch URL
     the_map = '#EXT-X-MAP:URI="/streams/3/init/1"'
     assert out.count("#EXT-X-MAP") == 1
@@ -287,7 +287,7 @@ def test_render_emits_ext_x_map_once_for_fmp4():
 def test_render_no_ext_x_map_for_ts():
     state = SlotState()
     ingest(state, _src(100, ["a.ts", "b.ts"]), "chan-A")
-    out = render(state, 3)
+    out = render(state, 2)
     assert "#EXT-X-MAP" not in out
 
 
@@ -295,7 +295,7 @@ def test_render_reemits_ext_x_map_on_channel_change():
     state = SlotState()
     ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/initA.mp4"), "chan-A")
     ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/initB.mp4"), "chan-B")
-    out = render(state, 3)
+    out = render(state, 2)
     # each run gets its own generation -> distinct stable relay init URL
     mapA = '#EXT-X-MAP:URI="/streams/3/init/1"'
     mapB = '#EXT-X-MAP:URI="/streams/3/init/2"'
@@ -314,7 +314,7 @@ def test_ingest_fmp4_to_ts_drops_old_window():
     ingest(state, _fmp4_src(0, ["a.mp4", "b.mp4"], "https://cdn.example/init.mp4"), "chan-A")
     ingest(state, _src(0, ["x.ts", "y.ts"]), "chan-B")
     assert [s.uri for s in state.segments] == ["x.ts", "y.ts"]
-    out = render(state, 3)
+    out = render(state, 2)
     assert "#EXT-X-MAP" not in out
     assert "x.ts" in out
     x = next(s for s in state.segments if s.uri == "x.ts")
@@ -327,7 +327,7 @@ def test_ingest_ts_to_fmp4_drops_old_window():
     ingest(state, _src(0, ["a.ts", "b.ts"]), "chan-A")
     ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/init.mp4"), "chan-B")
     assert [s.uri for s in state.segments] == ["x.mp4"]
-    out = render(state, 3)
+    out = render(state, 2)
     the_map = '#EXT-X-MAP:URI="/streams/3/init/1"'
     assert the_map in out
     lines = out.splitlines()
@@ -341,7 +341,7 @@ def test_ingest_fmp4_to_fmp4_keeps_window_and_reemits_map():
     ingest(state, _fmp4_src(0, ["a.mp4"], "https://cdn.example/initA.mp4"), "chan-A")
     ingest(state, _fmp4_src(0, ["x.mp4"], "https://cdn.example/initB.mp4"), "chan-B")
     assert [s.uri for s in state.segments] == ["a.mp4", "x.mp4"]
-    out = render(state, 3)
+    out = render(state, 2)
     assert out.count("#EXT-X-MAP") == 2
 
 
@@ -357,7 +357,7 @@ def test_ingest_latches_map_across_token_refresh():
         state, _fmp4_src(2, ["c.mp4", "d.mp4"], "https://cdn.example/init.mp4?dna=TOK2"), "chan-A"
     )
     assert [s.uri for s in state.segments] == ["a.mp4", "b.mp4", "c.mp4", "d.mp4"]
-    out = render(state, 3)
+    out = render(state, 2)
     # one stable relay init URL for the whole run; the churning Twitch token is
     # never surfaced, so AVPlayer sees an unchanging EXT-X-MAP and never re-inits
     assert out.count("#EXT-X-MAP") == 1
@@ -372,7 +372,7 @@ def _unready(*uris: str):
 def test_render_holds_back_trailing_unready_mid_run_segment():
     state = SlotState()
     ingest(state, _src(100, ["a.ts", "b.ts", "c.ts"]), "chan-A")
-    out = render(state, 3, ready=_unready("b.ts", "c.ts"))
+    out = render(state, 2, ready=_unready("b.ts", "c.ts"))
     assert "a.ts" in out
     assert "b.ts" not in out and "c.ts" not in out
 
@@ -382,7 +382,7 @@ def test_render_lists_unready_run_start_at_discontinuity():
     ingest(state, _src(100, ["a.ts"]), "chan-A")
     ingest(state, _src(0, ["x.ts"]), "chan-B")
     assert state.segments[-1].discontinuity
-    out = render(state, 3, ready=_unready("x.ts"))
+    out = render(state, 2, ready=_unready("x.ts"))
     assert out.rstrip().endswith("x.ts")
 
 
@@ -390,7 +390,7 @@ def test_render_holds_back_past_run_start_but_keeps_it():
     state = SlotState()
     ingest(state, _src(100, ["a.ts"]), "chan-A")
     ingest(state, _src(0, ["x.ts", "y.ts"]), "chan-B")
-    out = render(state, 3, ready=_unready("x.ts", "y.ts"))
+    out = render(state, 2, ready=_unready("x.ts", "y.ts"))
     assert out.rstrip().endswith("x.ts")
 
 
@@ -404,7 +404,7 @@ def test_ingest_keeps_the_init_uri_of_each_fmp4_segment():
     ingest(state, _src(1, ["b.ts"]), "chan-A")
     assert [s.map_uri for s in state.segments] == ["https://cdn.example/init.mp4?dna=z", None]
     assert [s.discontinuity for s in state.segments] == [False, True]
-    assert "#EXT-X-MAP" not in render(state, 3)
+    assert "#EXT-X-MAP" not in render(state, 2)
 
 
 def test_serving_mode_switch_leaves_a_ts_window_alone():

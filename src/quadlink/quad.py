@@ -95,7 +95,7 @@ class QuadBuilder:
             url_to_channel[url] = s.stream.channel
 
         position_map = {}
-        for position, url in enumerate(quad.to_dict().values()):
+        for position, url in enumerate(quad.to_list()):
             if url and url in url_to_channel:
                 position_map[url_to_channel[url]] = position
 
@@ -337,12 +337,7 @@ class QuadBuilder:
                 quad_urls[i] = new_stream.master_url or new_stream.url
                 new_stream_index += 1
 
-        return Quad(
-            stream1=quad_urls[0],
-            stream2=quad_urls[1],
-            stream3=quad_urls[2],
-            stream4=quad_urls[3],
-        )
+        return Quad(quad_urls)
 
     def _log_changes(self, new_quad: Quad, selected: list[PrioritizedStream]) -> None:
         """

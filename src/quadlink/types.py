@@ -1,6 +1,6 @@
 """Core data types for QuadLink."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -87,37 +87,28 @@ class Quad:
     """A quad-view of 4 streams.
 
     Attributes:
-        stream1: URL for first stream slot.
-        stream2: URL for second stream slot.
-        stream3: URL for third stream slot.
-        stream4: URL for fourth stream slot.
+        slots: Stream URL per slot 0-3 ("" for an empty slot); a shorter list
+            is padded with empty slots.
     """
 
-    stream1: str = ""
-    stream2: str = ""
-    stream3: str = ""
-    stream4: str = ""
+    slots: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if len(self.slots) > 4:
+            raise ValueError("a quad holds at most 4 slots")
+        self.slots = [*self.slots, *[""] * (4 - len(self.slots))]
 
     def to_dict(self) -> dict[str, str]:
-        """Convert to dictionary for API calls.
-
-        Returns:
-            Dict with stream1-stream4 keys mapped to URLs.
-        """
-        return {
-            "stream1": self.stream1,
-            "stream2": self.stream2,
-            "stream3": self.stream3,
-            "stream4": self.stream4,
-        }
+        """Convert to the QuadStream API payload; the API names slots stream1-stream4."""
+        return {f"stream{i + 1}": url for i, url in enumerate(self.slots)}
 
     def to_list(self) -> list[str]:
         """Convert to list of stream URLs.
 
         Returns:
-            List of 4 stream URLs in position order.
+            List of 4 stream URLs in slot order.
         """
-        return [self.stream1, self.stream2, self.stream3, self.stream4]
+        return list(self.slots)
 
     def is_empty(self) -> bool:
         """Check if quad has no streams.

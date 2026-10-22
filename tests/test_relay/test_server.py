@@ -249,21 +249,21 @@ async def test_video_arrived_since_tracks_new_segments_per_channel():
         return source[0]
 
     relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0])
-    assert not relay.video_arrived_since(1, "chan-A", 0.0)  # nothing fetched yet
+    assert not relay.video_arrived_since(0, "chan-A", 0.0)  # nothing fetched yet
 
     await _call(relay, "1")
-    assert relay.video_arrived_since(1, "chan-A", 99.0)
-    assert not relay.video_arrived_since(1, "chan-A", 100.0)  # strictly after `since`
-    assert not relay.video_arrived_since(1, "chan-B", 99.0)  # other channel's video
+    assert relay.video_arrived_since(0, "chan-A", 99.0)
+    assert not relay.video_arrived_since(0, "chan-A", 100.0)  # strictly after `since`
+    assert not relay.video_arrived_since(0, "chan-B", 99.0)  # other channel's video
 
     # the same segments again add nothing, so no fresh arrival is recorded
     now[0] = 130.0
     await _call(relay, "1")
-    assert not relay.video_arrived_since(1, "chan-A", 120.0)
+    assert not relay.video_arrived_since(0, "chan-A", 120.0)
 
     source[0] = _src(101, ["b.ts", "c.ts"])
     await _call(relay, "1")
-    assert relay.video_arrived_since(1, "chan-A", 120.0)
+    assert relay.video_arrived_since(0, "chan-A", 120.0)
 
 
 def _http_error(status: int) -> httpx.HTTPStatusError:
@@ -290,7 +290,7 @@ async def test_dead_kept_url_moves_to_newest_url(status):
     resp = await _call(relay, "1")
     assert resp.status == 200
     assert fetched == ["url-old", "url-new"]
-    assert store.get(1).url == "url-new"
+    assert store.get(0).url == "url-new"
 
 
 @pytest.mark.asyncio
@@ -359,7 +359,7 @@ async def test_proxied_playlist_points_at_relay_segments():
     assert "/streams/1/seg/0.ts" in resp.text
     assert "/streams/1/seg/1.ts" in resp.text
     assert "https://cdn/" not in resp.text
-    assert proxy.registered == [(1, 0), (1, 1)]
+    assert proxy.registered == [(0, 0), (0, 1)]
 
 
 @pytest.mark.asyncio
@@ -408,7 +408,7 @@ async def test_proxy_disabled_flushes_the_open_run():
     await _call(relay, "1")
     now[0] += 1
     await _call(relay, "1")
-    assert proxy.flushes == [1]
+    assert proxy.flushes == [0]
 
 
 @pytest.mark.asyncio
@@ -438,7 +438,7 @@ async def test_proxy_enabled_mid_stream_keeps_cdn_uri_for_segments_already_in_wi
     assert "https://cdn/a.ts" in resp.text
     # registered once proxying began: served through the relay
     assert "/streams/1/seg/1.ts" in resp.text
-    assert proxy.registered == [(1, 1)]
+    assert proxy.registered == [(0, 1)]
 
 
 @pytest.mark.asyncio
@@ -498,13 +498,13 @@ async def test_steady_state_polls_wait_only_for_new_segments():
     proxy = FakeProxy()
     relay = SlotRelay(store, fetch=fetch, cache_ttl=0, time_fn=lambda: now[0], segments=proxy)
     await _call(relay, "1")
-    assert proxy.waits == [(1, 0, FRESH_WAIT)]
+    assert proxy.waits == [(0, 0, FRESH_WAIT)]
     for _ in range(3):
         now[0] += 2
         uris.append(f"{len(uris)}.ts")
         await _call(relay, "1")
     # each new segment waits for the one before it
-    assert proxy.waits[1:] == [(1, 1, STEP_WAIT), (1, 2, STEP_WAIT), (1, 3, STEP_WAIT)]
+    assert proxy.waits[1:] == [(0, 1, STEP_WAIT), (0, 2, STEP_WAIT), (0, 3, STEP_WAIT)]
     # a poll that adds nothing does not wait
     now[0] += 1
     await _call(relay, "1")
@@ -586,7 +586,7 @@ async def test_filler_flushes_the_converter():
     now[0] += STALL_AFTER + 0.5
     resp = await _call(relay, "1")
     assert "/streams/filler/" in resp.text
-    assert proxy.flushes == [1]
+    assert proxy.flushes == [0]
 
 
 @pytest.mark.asyncio
@@ -608,7 +608,7 @@ async def test_fetch_failure_filler_flushes_the_converter():
     now[0] += STALL_AFTER + 0.5
     resp = await _call(relay, "1")
     assert "/streams/filler/" in resp.text
-    assert proxy.flushes == [1]
+    assert proxy.flushes == [0]
 
 
 @pytest.mark.asyncio
@@ -626,7 +626,7 @@ async def test_fresh_window_after_idle_flushes_the_converter():
     # nobody polled: no filler, but the window restarts at live
     now[0] += 60
     await _call(relay, "1")
-    assert 1 in proxy.flushes
+    assert 0 in proxy.flushes
 
 
 @pytest.mark.asyncio
@@ -646,7 +646,7 @@ async def test_concurrent_fresh_polls_share_one_wait():
     proxy.wait_gate.set()
     resps = await asyncio.gather(*calls)
     assert all(r.status == 200 for r in resps)
-    assert proxy.waits == [(1, 0, FRESH_WAIT)]
+    assert proxy.waits == [(0, 0, FRESH_WAIT)]
 
 
 def _seg_request(name: str) -> web.Request:
@@ -744,7 +744,7 @@ async def test_slow_segment_request_polls_the_source(monkeypatch):
     async with asyncio.timeout(2):
         resp = await request
     assert resp.status == 200 and resp.body == b"seg-1"
-    assert (1, 2) in proxy.registered
+    assert (0, 2) in proxy.registered
     await relay.aclose()
 
 
@@ -832,7 +832,7 @@ async def test_no_filler_while_a_fresh_wait_is_pending():
     await asyncio.sleep(0.01)
     # a segment request's own source poll during the wait: no client saw the window yet
     now[0] += STALL_AFTER + 0.5
-    await relay._poll(1)
+    await relay._poll(0)
     proxy.wait_gate.set()
     resp = await call
     assert "/streams/filler/" not in resp.text
@@ -1066,3 +1066,55 @@ async def test_source_fetch_failure_logs_once_per_streak():
         clock["t"] += 2.0
         await _call(relay, "1")
         assert log.warning.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_source_fetch_failure_streak_is_per_channel():
+    """A new channel's first failure is logged, and both lines name channel and URL."""
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    state = {"fail": True}
+
+    async def fetch(url):
+        if state["fail"]:
+            raise RuntimeError("boom")
+        return _src(100, ["a.ts"])
+
+    clock = {"t": 0.0}
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=1.0, time_fn=lambda: clock["t"])
+    with patch("quadlink.relay.server.logger") as log:
+        clock["t"] += 2.0
+        await _call(relay, "1")
+        store.update(["url-B", "", "", ""], ["chan-B", "", "", ""])
+        clock["t"] += 2.0
+        await _call(relay, "1")
+        assert [c.kwargs["channel"] for c in log.warning.call_args_list] == ["chan-A", "chan-B"]
+        assert log.warning.call_args.kwargs["url"] == "url-B"
+        assert log.warning.call_args.kwargs["slot"] == 0
+
+        state["fail"] = False
+        clock["t"] += 2.0
+        await _call(relay, "1")
+        recovered = [
+            c for c in log.info.call_args_list if c.args == ("relay source fetch recovered",)
+        ]
+        assert [(c.kwargs["channel"], c.kwargs["url"]) for c in recovered] == [("chan-B", "url-B")]
+
+
+@pytest.mark.asyncio
+async def test_routes_number_slots_one_to_four():
+    """/streams/4 serves internal slot 3 and lists its segments under /streams/4."""
+    store = SlotStore()
+    store.update(["", "", "", "url-D"], ["", "", "", "chan-D"])
+
+    async def fetch(url):
+        return _src(100, ["https://cdn/a.ts", "https://cdn/b.ts"])
+
+    proxy = FakeProxy()
+    relay = SlotRelay(store, fetch=fetch, segments=proxy)
+    resp = await _call(relay, "4")
+    assert resp.status == 200
+    assert _listed(resp.text) == ["/streams/4/seg/0.ts", "/streams/4/seg/1.ts"]
+    assert proxy.registered == [(3, 0), (3, 1)]
+    for bad in ("0", "5", "+1", " 1", "-1"):
+        assert (await _call(relay, bad)).status == 404

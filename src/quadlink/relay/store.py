@@ -1,5 +1,7 @@
 """Holds the current per-slot Twitch media-playlist URL and channel identity.
 
+Slots are numbered 0-3.
+
 Written by the daemon each cycle, read by the slot relay. In-process only —
 daemon loop and aiohttp app share one event loop, so no locking is needed.
 """
@@ -18,7 +20,7 @@ class SlotStore:
     """Current channel identity + media-playlist URL for each of the 4 slots."""
 
     def __init__(self) -> None:
-        self._entries: dict[int, SlotEntry | None] = {1: None, 2: None, 3: None, 4: None}
+        self._entries: dict[int, SlotEntry | None] = dict.fromkeys(range(4))
         # newest URL per slot from the last update, held back until the kept one fails
         self._fresh: dict[int, str] = {}
         # the channel a slot showed before its current one; the relay plays it
@@ -32,10 +34,9 @@ class SlotStore:
         URL, and Twitch opens every new URL as a new session with a preroll ad.
         An empty URL maps to None (an empty slot).
         """
-        for i in range(4):
-            slot = i + 1
-            url = urls[i] if i < len(urls) else ""
-            identity = identities[i] if i < len(identities) else ""
+        for slot in range(4):
+            url = urls[slot] if slot < len(urls) else ""
+            identity = identities[slot] if slot < len(identities) else ""
             if not url:
                 self._entries[slot] = None
                 self._fresh.pop(slot, None)

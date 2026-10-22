@@ -340,7 +340,7 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    quad = Quad(stream1="https://twitch.tv/streamer1")
+                    quad = Quad(["https://twitch.tv/streamer1"])
                     mock_builder = MagicMock()
                     mock_builder.build_quad.return_value = quad
                     MockBuilder.return_value = mock_builder
@@ -371,7 +371,7 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    quad = Quad(stream1="https://twitch.tv/streamer1")
+                    quad = Quad(["https://twitch.tv/streamer1"])
                     mock_builder = MagicMock()
                     mock_builder.build_quad.return_value = quad
                     MockBuilder.return_value = mock_builder
@@ -409,7 +409,7 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    quad = Quad(stream1="https://twitch.tv/streamer1")
+                    quad = Quad(["https://twitch.tv/streamer1"])
                     mock_builder = MagicMock()
                     mock_builder.build_quad.return_value = quad
                     MockBuilder.return_value = mock_builder
@@ -443,7 +443,7 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    quad = Quad(stream1="https://twitch.tv/streamer1")
+                    quad = Quad(["https://twitch.tv/streamer1"])
                     mock_builder = MagicMock()
                     mock_builder.build_quad.return_value = quad
                     MockBuilder.return_value = mock_builder
@@ -485,7 +485,7 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    quad = Quad(stream1="https://twitch.tv/streamer1")
+                    quad = Quad(["https://twitch.tv/streamer1"])
                     mock_builder = MagicMock()
                     mock_builder.build_quad.return_value = quad
                     MockBuilder.return_value = mock_builder
@@ -792,7 +792,7 @@ class TestDaemonRelayWiring:
                 daemon = Daemon(one_shot=True)
                 daemon.running = True
 
-                quad = Quad("u1", "u2", "u3", "u4")
+                quad = Quad(["u1", "u2", "u3", "u4"])
 
                 with patch("quadlink.daemon.StreamProcessor") as MockProc:
                     with patch("quadlink.daemon.QuadBuilder") as MockBuilder:
@@ -815,10 +815,10 @@ class TestDaemonRelayWiring:
                             with patch("asyncio.sleep", new_callable=AsyncMock):
                                 await daemon._main_loop()
 
-        assert daemon.slot_store.get(1).url == "u1"
-        assert daemon.slot_store.get(1).identity == "c1"
-        assert daemon.slot_store.get(4).url == "u4"
-        assert daemon.slot_store.get(4).identity == "c4"
+        assert daemon.slot_store.get(0).url == "u1"
+        assert daemon.slot_store.get(0).identity == "c1"
+        assert daemon.slot_store.get(3).url == "u4"
+        assert daemon.slot_store.get(3).identity == "c4"
 
     @pytest.mark.asyncio
     async def test_local_mode_feeds_store_and_skips_quadstream(self, mock_config):
@@ -844,7 +844,7 @@ class TestDaemonRelayWiring:
 
                             builder = MagicMock()
                             builder.build_quad = MagicMock(
-                                return_value=Quad("u1", "u2", "u3", "u4")
+                                return_value=Quad(["u1", "u2", "u3", "u4"])
                             )
                             builder.quad_changed = True
                             builder.slot_identities = ["c1", "c2", "c3", "c4"]
@@ -857,7 +857,7 @@ class TestDaemonRelayWiring:
                             MockClient.assert_not_called()
 
         # but the relay store is still fed
-        assert daemon.slot_store.get(1).url == "u1"
+        assert daemon.slot_store.get(0).url == "u1"
         assert daemon.quadstream_client is None
 
     @pytest.mark.asyncio
@@ -884,7 +884,7 @@ class TestDaemonRelayWiring:
 
                             builder = MagicMock()
                             builder.build_quad = MagicMock(
-                                return_value=Quad("u1", "u2", "u3", "u4")
+                                return_value=Quad(["u1", "u2", "u3", "u4"])
                             )
                             builder.quad_changed = True
                             builder.slot_identities = ["c1", "c2", "c3", "c4"]
@@ -902,7 +902,7 @@ class TestDaemonRelayWiring:
                             client.update_quad.assert_awaited_once()
 
         # but the relay store is not fed
-        assert daemon.slot_store.get(1) is None
+        assert daemon.slot_store.get(0) is None
 
 
 class TestDroppedFromPool:
@@ -942,7 +942,7 @@ class TestStillPlaying:
     def test_keeps_failed_lookup_with_video_arriving(self, daemon):
         kept = daemon._still_playing([make_stream("bob")])
         assert [k.stream.metadata.author for k in kept] == ["alice"]
-        daemon.slot_relay.video_arrived_since.assert_called_once_with(3, "alice", 10.0)
+        daemon.slot_relay.video_arrived_since.assert_called_once_with(2, "alice", 10.0)
         daemon.processor.lookup_failed.assert_called_once_with("alice")
 
     def test_pool_is_keyed_by_login_not_display_name(self, daemon):
@@ -1039,7 +1039,7 @@ class TestDaemonCycleFixes:
         processor = MagicMock()
         processor.process_stream_groups = AsyncMock(return_value=[make_stream("a")])
         builder = MagicMock()
-        builder.build_quad.return_value = Quad(stream1="https://twitch.tv/a")
+        builder.build_quad.return_value = Quad(["https://twitch.tv/a"])
         builder.previous_positions = {}
         builder.slot_identities = ["", "", "", ""]
         builder.quad_changed = False
@@ -1120,7 +1120,7 @@ class TestDaemonCycleFixes:
         processor.process_stream_groups = AsyncMock(return_value=[make_stream("b")])
         builder = MagicMock()
         builder.previous_positions = {"a": 0}
-        builder.build_quad.return_value = Quad(stream1="https://twitch.tv/b")
+        builder.build_quad.return_value = Quad(["https://twitch.tv/b"])
         builder.slot_identities = ["", "", "", ""]
         with (
             patch("quadlink.daemon.StreamProcessor", return_value=processor),

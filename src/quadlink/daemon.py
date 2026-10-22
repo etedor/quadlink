@@ -158,7 +158,7 @@ class Daemon:
             previous = self._on_screen.get(channel)
             if previous is None or not self.processor.lookup_failed(channel):
                 continue
-            slot = positions[channel] + 1
+            slot = positions[channel]
             if self.slot_relay.video_arrived_since(slot, channel, self._fed_at):
                 logger.info(
                     "kept channel: lookup failed but video still arriving",
