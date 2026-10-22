@@ -11,6 +11,7 @@ import structlog
 from aiohttp import web
 
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
+from quadlink.config.models import Config
 from quadlink.health import HealthServer
 from quadlink.quad import Overrides, QuadState, compose
 from quadlink.quadstream import QuadStreamClient
@@ -31,11 +32,13 @@ SEGMENT_FETCH_WAIT = 8.0
 class Daemon:
     """Main daemon for QuadLink stream curation.
 
-    Orchestrates config loading, stream processing, quad building,
-    and QuadStream API updates in a continuous loop.
+    Two loops share the event loop. Refresh (every interval) reloads the config,
+    looks up every channel and caches the live pool. Recompose (on request)
+    composes the quad from that pool, feeds the relay and pushes to QuadStream.
+    A refresh requests a recompose; so can anything else, via request_recompose().
 
     Attributes:
-        interval: Seconds between quad update cycles.
+        interval: Seconds between refreshes.
         one_shot: If True, run once and exit instead of looping.
     """
 
@@ -97,8 +100,13 @@ class Daemon:
         self._credentials: tuple[str | None, str | None] | None = None
         # channel -> its last-cycle candidate (raw priority), for channels on screen
         self._on_screen: dict[str, PrioritizedStream] = {}
-        # relay clock when the slot store was last fed
-        self._fed_at: float | None = None
+        # relay clock at the end of the last refresh; the next refresh keeps an
+        # on-screen channel whose lookup failed if its video arrived since
+        self._refreshed_at: float | None = None
+        # config and live pool of the last completed refresh, which recompose reads
+        self._config: Config | None = None
+        self._pool: list[PrioritizedStream] = []
+        self._recompose_requested = asyncio.Event()
         # every configured channel's outcome in the last refresh
         self.channel_statuses: list[ChannelStatus] = []
         # wall-clock time (epoch seconds) of that refresh; None before the first
@@ -159,7 +167,7 @@ class Daemon:
         A channel that resolved but a filter rejected is not kept.
         """
         assert self.processor is not None
-        if self._fed_at is None:
+        if self._refreshed_at is None:
             return []
         positions = self.quad_state.positions
         kept = []
@@ -168,7 +176,7 @@ class Daemon:
             if previous is None or not self.processor.lookup_failed(channel):
                 continue
             slot = positions[channel]
-            if self.slot_relay.video_arrived_since(slot, channel, self._fed_at):
+            if self.slot_relay.video_arrived_since(slot, channel, self._refreshed_at):
                 logger.info(
                     "kept channel: lookup failed but video still arriving",
                     channel=channel,
@@ -177,11 +185,27 @@ class Daemon:
                 kept.append(previous)
         return kept
 
+    def request_recompose(self) -> None:
+        """Compose the quad again from the cached pool, without new lookups.
+
+        Requests made while a recompose runs are served by one more recompose.
+        """
+        self._recompose_requested.set()
+
     async def _main_loop(self) -> None:
-        """Main daemon loop - processes streams and updates quad repeatedly."""
+        """Run the refresh loop, with the recompose loop beside it until it ends."""
+        recomposer = None if self.one_shot else asyncio.create_task(self._recompose_loop())
+        try:
+            await self._refresh_loop()
+        finally:
+            if recomposer is not None:
+                recomposer.cancel()
+                await asyncio.gather(recomposer, return_exceptions=True)
+
+    async def _refresh_loop(self) -> None:
         while self.running:
             try:
-                delay = await self._cycle()
+                delay = await (self._cycle() if self.one_shot else self._refresh())
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -199,8 +223,26 @@ class Daemon:
             logger.debug("sleeping", interval=delay)
             await asyncio.sleep(delay)
 
+    async def _recompose_loop(self) -> None:
+        # the only caller of _recompose while the daemon runs, so it never overlaps itself
+        while True:
+            await self._recompose_requested.wait()
+            self._recompose_requested.clear()
+            try:
+                await self._recompose()
+            except Exception as e:
+                logger.error("unexpected error in recompose", error=str(e), exc_info=True)
+
     async def _cycle(self) -> float:
-        """Run one cycle; return the seconds to wait before the next."""
+        """Run one refresh and the recompose it requests; return the seconds to wait."""
+        delay = await self._refresh()
+        if self._recompose_requested.is_set():
+            self._recompose_requested.clear()
+            await self._recompose()
+        return delay
+
+    async def _refresh(self) -> float:
+        """Look up every channel and cache the live pool; return the seconds to wait."""
         try:
             config = await self.config_loader.load_or_cache()
         except ConfigNotFoundError as e:
@@ -254,52 +296,65 @@ class Daemon:
         self.statuses_at = time.time()
         if serve_local:
             candidates += self._still_playing(candidates)
+        self._refreshed_at = self.slot_relay.clock()
 
         if not candidates:
             logger.info("no stream candidates available")
-            self._mark_cycle()
-            return self.interval
+        else:
+            # surface quad channels that fell out of the live pool this
+            # cycle (offline/unresolved), which otherwise looks like a re-rank
+            dropped = self._dropped_from_pool(self.quad_state.positions, candidates)
+            if dropped:
+                logger.info(
+                    "quad channels dropped from live pool",
+                    dropped=dropped,
+                    candidates=len(candidates),
+                )
 
-        # surface quad channels that fell out of the live pool this
-        # cycle (offline/unresolved), which otherwise looks like a re-rank
-        dropped = self._dropped_from_pool(self.quad_state.positions, candidates)
-        if dropped:
-            logger.info(
-                "quad channels dropped from live pool",
-                dropped=dropped,
-                candidates=len(candidates),
-            )
+        self._config = config
+        self._pool = candidates
+        self.request_recompose()
+        self._mark_cycle()
+        return self.interval
 
-        self.quad_state = state = compose(candidates, self.quad_state, self.overrides, config)
+    async def _recompose(self) -> None:
+        """Compose the quad from the cached pool, feed the relay and push when needed.
+
+        The only writer of quad_state, the slot store and the QuadStream push.
+        """
+        config, pool = self._config, self._pool
+        # an empty pool keeps the quad on screen as it is
+        if config is None or not pool:
+            return
+
+        self.quad_state = state = compose(pool, self.quad_state, self.overrides, config)
         quad = state.quad
         self._on_screen = {}
-        for c in candidates:
+        for c in pool:
             if c.stream.channel in state.positions:
                 self._on_screen.setdefault(c.stream.channel, c)
 
-        # feed the local relay every cycle (both/local modes)
-        if serve_local:
+        if config.mode in ("both", "local"):
             self.slot_store.update(quad.to_list(), list(state.channels))
-            self._fed_at = self.slot_relay.clock()
 
         if quad.is_empty():
             logger.info("quad is empty, skipping update")
-            self._mark_cycle()
-            return self.interval
+            return
 
         # push until QuadStream holds this lineup (both/remote modes); compared by
-        # channel, since every refresh re-mints the playlist URLs
-        if push_remote and state.channels != self._pushed:
-            assert self.quadstream_client is not None
-            if not await self.quadstream_client.update_quad(quad):
+        # channel, since every refresh re-mints the playlist URLs. A failed push is
+        # sent again by the next recompose, at the latest after the next refresh.
+        client = self.quadstream_client
+        if config.mode in ("both", "remote") and client and state.channels != self._pushed:
+            if not await client.update_quad(quad):
                 logger.error("quadstream update failed")
-            else:
+                return
+            # a refresh that logged in again during the push reset _pushed for the
+            # new account, which has not seen this quad
+            if client is self.quadstream_client:
                 self._pushed = state.channels
-                if config.webhook.enabled and config.webhook.url:
-                    await self.quadstream_client.send_webhook(config.webhook.url, quad)
-
-        self._mark_cycle()
-        return self.interval
+            if config.webhook.enabled and config.webhook.url:
+                await client.send_webhook(config.webhook.url, quad)
 
     def _mark_cycle(self) -> None:
         if self.health_server:

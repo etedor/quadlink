@@ -304,7 +304,6 @@ class TestDaemonMainLoop:
         """Should skip update when quad is empty."""
         daemon, mock_loader, mock_health = daemon_with_mocks
         daemon.running = True
-        daemon.one_shot = False
         mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
 
         with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
@@ -316,28 +315,17 @@ class TestDaemonMainLoop:
                     )
                     MockProcessor.return_value = mock_processor
 
-                    empty_quad = Quad()
-                    MockCompose.return_value = composed(empty_quad.slots)
+                    MockCompose.return_value = composed(Quad().slots)
 
                     mock_client = AsyncMock()
                     mock_client.login = AsyncMock(return_value=True)
                     MockClient.return_value = mock_client
 
-                    call_count = 0
+                    await daemon._main_loop()
 
-                    async def mock_load():
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count >= 2:
-                            daemon.running = False
-                        return mock_config
-
-                    mock_loader.load_or_cache = mock_load
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock):
-                        await daemon._main_loop()
-                        # update_quad should not be called for empty quad
-                        mock_client.update_quad.assert_not_called()
+                    MockCompose.assert_called_once()
+                    # update_quad should not be called for empty quad
+                    mock_client.update_quad.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_main_loop_successful_update(self, daemon_with_mocks, mock_config):
@@ -928,7 +916,7 @@ class TestStillPlaying:
         d.processor.lookup_failed = MagicMock(return_value=True)
         d.quad_state = composed(["bob", "", "alice"])
         d._on_screen = {"alice": make_stream("alice"), "bob": make_stream("bob")}
-        d._fed_at = 10.0
+        d._refreshed_at = 10.0
         d.slot_relay.video_arrived_since = MagicMock(return_value=True)
         return d
 
@@ -953,7 +941,7 @@ class TestStillPlaying:
         assert daemon._still_playing([make_stream("bob")]) == []
 
     def test_nothing_kept_before_first_feed(self, daemon):
-        daemon._fed_at = None
+        daemon._refreshed_at = None
         assert daemon._still_playing([make_stream("bob")]) == []
 
 
@@ -1192,3 +1180,250 @@ async def test_cycle_keeps_the_latest_channel_statuses():
     assert daemon.statuses_at == 1030.0
     await daemon.slot_relay.aclose()
     await daemon._segment_client.aclose()
+
+
+class TestRefreshRecompose:
+    """The refresh loop looks channels up; the recompose loop composes and pushes."""
+
+    @staticmethod
+    def config(mode: str = "local", **kwargs):
+        from quadlink.config.models import Config, Credentials
+
+        credentials = Credentials(username="user", secret="secret") if mode != "local" else None
+        return Config(mode=mode, credentials=credentials, rulesets=[], priorities={}, **kwargs)
+
+    @staticmethod
+    def processor(channels=("a", "b", "c", "d")) -> MagicMock:
+        processor = MagicMock()
+        processor.lookup_failed = MagicMock(return_value=False)
+        processor.statuses = MagicMock(return_value=[])
+        processor.process_stream_groups = AsyncMock(
+            side_effect=lambda: [make_stream(c) for c in channels]
+        )
+        return processor
+
+    @pytest.fixture
+    async def make_daemon(self):
+        made = []
+
+        def make(config, one_shot: bool = False) -> Daemon:
+            with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+                MockLoader.return_value.load_or_cache = AsyncMock(return_value=config)
+                daemon = Daemon(one_shot=one_shot)
+            daemon.running = True
+            made.append(daemon)
+            return daemon
+
+        yield make
+        for daemon in made:
+            await daemon.slot_relay.aclose()
+            await daemon._segment_client.aclose()
+
+    @staticmethod
+    def count_recomposes(daemon: Daemon) -> dict:
+        """Wrap daemon._recompose to count calls and the most running at once."""
+        counts = {"calls": 0, "running": 0, "peak": 0}
+        original = daemon._recompose
+
+        async def counted() -> None:
+            counts["calls"] += 1
+            counts["running"] += 1
+            counts["peak"] = max(counts["peak"], counts["running"])
+            try:
+                await original()
+            finally:
+                counts["running"] -= 1
+
+        daemon._recompose = counted
+        return counts
+
+    @staticmethod
+    async def settle() -> None:
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def recompose_loops() -> list[asyncio.Task]:
+        return [
+            t
+            for t in asyncio.all_tasks()
+            if t.get_coro().__qualname__ == "Daemon._recompose_loop" and not t.done()
+        ]
+
+    @pytest.mark.asyncio
+    async def test_refresh_triggers_exactly_one_recompose(self, make_daemon):
+        daemon = make_daemon(self.config())
+        counts = self.count_recomposes(daemon)
+        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
+            loop = asyncio.create_task(daemon._recompose_loop())
+            await daemon._refresh()
+            await self.settle()
+            loop.cancel()
+        assert counts["calls"] == 1
+        assert daemon.quad_state.channels == ("a", "b", "c", "d")
+        assert daemon.slot_store.get(0).identity == "a"
+
+    @pytest.mark.asyncio
+    async def test_request_recompose_composes_without_a_lookup(self, make_daemon):
+        from quadlink.quad import compose
+
+        daemon = make_daemon(self.config())
+        processor = self.processor()
+        with (
+            patch("quadlink.daemon.StreamProcessor", return_value=processor),
+            patch("quadlink.daemon.compose", side_effect=compose) as composer,
+        ):
+            loop = asyncio.create_task(daemon._recompose_loop())
+            await daemon._refresh()
+            await self.settle()
+            daemon.request_recompose()
+            await self.settle()
+            loop.cancel()
+        assert composer.call_count == 2
+        assert processor.process_stream_groups.await_count == 1
+        # the cached pool fed the second composition
+        assert composer.call_args.args[0] is daemon._pool
+        assert daemon.quad_state.channels == ("a", "b", "c", "d")
+
+    @pytest.mark.asyncio
+    async def test_recompose_never_runs_concurrently_with_itself(self, make_daemon):
+        daemon = make_daemon(self.config("remote"))
+        counts = self.count_recomposes(daemon)
+        gate = asyncio.Event()
+        client = AsyncMock()
+        client.login = AsyncMock(return_value=True)
+
+        async def slow_push(quad):
+            await gate.wait()
+            return True
+
+        client.update_quad = AsyncMock(side_effect=slow_push)
+        with (
+            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
+            patch("quadlink.daemon.QuadStreamClient", return_value=client),
+        ):
+            loop = asyncio.create_task(daemon._recompose_loop())
+            await daemon._refresh()
+            await self.settle()
+            assert counts["running"] == 1
+            # a refresh and two web actions while the push hangs
+            await daemon._refresh()
+            daemon.request_recompose()
+            daemon.request_recompose()
+            await self.settle()
+            gate.set()
+            await self.settle()
+            loop.cancel()
+        assert counts["peak"] == 1
+        # the requests made during the push are served by one more recompose
+        assert counts["calls"] == 2
+        # which found the lineup already accepted
+        assert client.update_quad.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_push_is_retried_after_the_next_refresh(self, make_daemon):
+        daemon = make_daemon(self.config("remote"))
+        client = AsyncMock()
+        client.login = AsyncMock(return_value=True)
+        client.update_quad = AsyncMock(side_effect=[False, True])
+        with (
+            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
+            patch("quadlink.daemon.QuadStreamClient", return_value=client),
+        ):
+            loop = asyncio.create_task(daemon._recompose_loop())
+            for _ in range(3):
+                await daemon._refresh()
+                await self.settle()
+            loop.cancel()
+        # failed, sent again after the next refresh and accepted, then nothing new
+        assert client.update_quad.await_count == 2
+        assert daemon._pushed == ("a", "b", "c", "d")
+
+    @pytest.mark.asyncio
+    async def test_one_shot_refreshes_and_recomposes_once(self, make_daemon):
+        daemon = make_daemon(self.config(), one_shot=True)
+        processor = self.processor()
+        counts = self.count_recomposes(daemon)
+        with patch("quadlink.daemon.StreamProcessor", return_value=processor):
+            await asyncio.wait_for(daemon._main_loop(), 1)
+        assert daemon.running is False
+        assert processor.process_stream_groups.await_count == 1
+        assert counts["calls"] == 1
+        assert daemon.slot_store.get(3).identity == "d"
+        assert self.recompose_loops() == []
+
+    @pytest.mark.asyncio
+    async def test_config_change_during_a_refresh_applies_on_the_next(self, make_daemon):
+        before = self.config()
+        after = self.config(diversity_bonus=10)
+        daemon = make_daemon(before)
+        gate = asyncio.Event()
+        first = self.processor()
+        lookup = first.process_stream_groups.side_effect
+
+        async def slow_lookup():
+            await gate.wait()
+            return lookup()
+
+        first.process_stream_groups = AsyncMock(side_effect=slow_lookup)
+        second = self.processor(channels=("d", "c", "b", "a"))
+        with patch("quadlink.daemon.StreamProcessor", side_effect=[first, second]) as MP:
+            refresh = asyncio.create_task(daemon._cycle())
+            await self.settle()
+            daemon.config_loader.load_or_cache = AsyncMock(return_value=after)
+            gate.set()
+            await refresh
+            # the refresh in progress finished with the config it started with
+            assert daemon._config is before
+            assert MP.call_count == 1
+            await daemon._cycle()
+        assert daemon._config is after
+        assert MP.call_count == 2
+        first.close.assert_called_once()
+        # the reload kept every channel in its slot
+        assert daemon.quad_state.channels == ("a", "b", "c", "d")
+
+    @pytest.mark.asyncio
+    async def test_cancel_stops_both_loops(self, make_daemon):
+        daemon = make_daemon(self.config())
+        daemon.interval = 0.01
+        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
+            task = asyncio.create_task(daemon._main_loop())
+            while daemon.slot_store.get(0) is None:
+                await asyncio.sleep(0.005)
+            assert len(self.recompose_loops()) == 1
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        assert task.done()
+        assert self.recompose_loops() == []
+
+    @pytest.mark.asyncio
+    async def test_stopping_ends_both_loops(self, make_daemon):
+        daemon = make_daemon(self.config())
+        daemon.interval = 0.01
+        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
+            task = asyncio.create_task(daemon._main_loop())
+            while daemon.slot_store.get(0) is None:
+                await asyncio.sleep(0.005)
+            daemon.running = False
+            await asyncio.wait_for(task, 1)
+        assert self.recompose_loops() == []
+
+    @pytest.mark.asyncio
+    async def test_recompose_error_keeps_the_loop_running(self, make_daemon):
+        daemon = make_daemon(self.config())
+        with (
+            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
+            patch("quadlink.daemon.compose", side_effect=[RuntimeError("boom"), QuadState()]),
+        ):
+            loop = asyncio.create_task(daemon._recompose_loop())
+            await daemon._refresh()
+            await self.settle()
+            daemon.request_recompose()
+            await self.settle()
+            assert not loop.done()
+            loop.cancel()
+        assert daemon.quad_state == QuadState()
