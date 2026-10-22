@@ -1,6 +1,7 @@
 """Web UI for configuration editing."""
 
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -27,12 +28,16 @@ TOKEN_PLACEHOLDER = "__QUADLINK_TOKEN__"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
+# urlsplit accepts userinfo, paths and fragments in a netloc; a Host header has none
+_HOST_RE = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([A-Za-z0-9.\-]+))(?::\d+)?$")
+
+
 def _hostname(netloc: str) -> str | None:
     """Return the lowercase host name of a Host header value, without the port."""
-    try:
-        return urlsplit(f"//{netloc}").hostname
-    except ValueError:
+    match = _HOST_RE.match(netloc)
+    if match is None:
         return None
+    return (match.group(1) or match.group(2)).lower()
 
 
 def _deny(status: int, message: str) -> web.Response:
@@ -166,8 +171,13 @@ class WebUI:
         fetch_site = request.headers.get("Sec-Fetch-Site")
         origin = request.headers.get("Origin")
         cross_site = fetch_site is not None and fetch_site not in ("same-origin", "none")
-        if origin is not None and urlsplit(origin).netloc.lower() != request.host.lower():
-            cross_site = True
+        if origin is not None:
+            try:
+                origin_host = urlsplit(origin).netloc.lower()
+            except ValueError:
+                origin_host = None
+            if origin_host != request.host.lower():
+                cross_site = True
         if cross_site:
             logger.warning("webui cross-site request refused", origin=origin, site=fetch_site)
             return _deny(403, "the request does not come from the quadlink page")
@@ -176,7 +186,7 @@ class WebUI:
         if request.method == "POST" and request.content_type != "application/json":
             return _deny(415, "the request body must be JSON (application/json)")
         sent = request.headers.get(TOKEN_HEADER, "")
-        if not secrets.compare_digest(sent.encode(), self.token.encode()):
+        if not secrets.compare_digest(sent.encode("utf-8", "surrogateescape"), self.token.encode()):
             return _deny(403, "the page token is missing or incorrect; reload the page")
 
         return await handler(request)

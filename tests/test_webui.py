@@ -168,6 +168,23 @@ class TestGuards:
         assert resp.status == 403
         assert "host name" in (await resp.json())["error"]
 
+    @pytest.mark.parametrize(
+        "host",
+        ["evil.example@localhost", "localhost#.evil.example", "localhost/.x", "localhost:abc"],
+    )
+    async def test_malformed_host_is_403(self, client: TestClient, webui: WebUI, host: str) -> None:
+        resp = await client.get("/api/config", headers=_auth(webui, Host=host))
+        assert resp.status == 403
+
+    @pytest.mark.parametrize("origin", ["null", "http://[::1"])
+    async def test_odd_origin_is_403(self, client: TestClient, webui: WebUI, origin: str) -> None:
+        resp = await client.get("/api/config", headers=_auth(webui, Origin=origin))
+        assert resp.status == 403
+
+    async def test_non_ascii_token_is_403(self, client: TestClient) -> None:
+        resp = await client.get("/api/config", headers={TOKEN_HEADER: "\xff"})
+        assert resp.status == 403
+
     async def test_unknown_host_post_is_403(self, client: TestClient, webui: WebUI) -> None:
         resp = await client.post(
             "/api/config",
