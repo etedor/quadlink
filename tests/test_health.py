@@ -203,14 +203,6 @@ class TestHealthServerReadiness:
         server.mark_ready()
         assert HealthCheckHandler.config_loaded is True
 
-    def test_mark_not_ready(self):
-        """mark_not_ready() should set config_loaded to False."""
-        HealthCheckHandler.config_loaded = True
-        server = HealthServer()
-
-        server.mark_not_ready()
-        assert HealthCheckHandler.config_loaded is False
-
 
 class TestHealthServerIntegration:
     """Integration tests with actual HTTP requests."""
@@ -268,8 +260,8 @@ class TestHealthServerIntegration:
 
         assert exc_info.value.code == 404
 
-    def test_ready_toggle(self, running_server):
-        """Should be able to toggle ready state."""
+    def test_ready_becomes_ready(self, running_server):
+        """Should go from not ready to ready after mark_ready()."""
         server, port = running_server
 
         # initially not ready
@@ -281,9 +273,3 @@ class TestHealthServerIntegration:
         server.mark_ready()
         response = urllib.request.urlopen(f"http://127.0.0.1:{port}/ready")
         assert response.status == 200
-
-        # mark not ready again
-        server.mark_not_ready()
-        with pytest.raises(urllib.error.HTTPError) as exc_info:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/ready")
-        assert exc_info.value.code == 503

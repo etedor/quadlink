@@ -13,7 +13,7 @@ in
 
 python3Packages.buildPythonApplication {
   pname = "quadlink";
-  version = "2025.01.0";
+  version = "2026.05.0";
 
   src = ../.;
   format = "pyproject";

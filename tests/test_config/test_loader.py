@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import structlog.testing
 from pydantic import ValidationError
 from ruamel.yaml import YAML
 from ruamel.yaml.scanner import ScannerError
@@ -123,46 +124,6 @@ async def test_no_cache_on_first_error(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_has_config_when_file_exists(minimal_config_data, tmp_path):
-    """Test has_config when file exists."""
-    config_file = tmp_path / "config.yaml"
-    write_yaml(config_file, minimal_config_data)
-
-    loader = ConfigLoader()
-    loader.SEARCH_PATHS = [str(config_file)]
-
-    assert await loader.has_config() is True
-
-
-@pytest.mark.asyncio
-async def test_has_config_when_cached(minimal_config_data, tmp_path):
-    """Test has_config when config is cached."""
-    config_file = tmp_path / "config.yaml"
-    write_yaml(config_file, minimal_config_data)
-
-    loader = ConfigLoader()
-    loader.SEARCH_PATHS = [str(config_file)]
-
-    # load and cache
-    await loader.load_or_cache()
-
-    # delete file
-    config_file.unlink()
-
-    # should still have config (from cache)
-    assert await loader.has_config() is True
-
-
-@pytest.mark.asyncio
-async def test_has_config_when_none(tmp_path):
-    """Test has_config when no config exists."""
-    loader = ConfigLoader()
-    loader.SEARCH_PATHS = [str(tmp_path / "nonexistent.yaml")]
-
-    assert await loader.has_config() is False
-
-
-@pytest.mark.asyncio
 async def test_load_with_bonus_adjustment(tmp_path):
     """Test loading config with bonus auto-adjustment."""
     config_data = {
@@ -211,3 +172,36 @@ async def test_load_from_first_available_path(tmp_path):
 
     # should load from first path
     assert config.credentials.username == "user1"
+
+
+@pytest.mark.asyncio
+async def test_removed_keys_are_ignored_with_a_warning(minimal_config_data, tmp_path):
+    """Config keys this version does not read still load; each logs one warning naming it."""
+    config_data = {
+        **minimal_config_data,
+        "priorities": {999: [{"urls": ["streamer1"], "limit": 2}]},
+        "skip_hosted": True,
+        "hosted_offset": 50,
+        "webhook": {"enabled": True, "url": "https://example.com", "timeout": 15},
+        "logging": {"level": "debug"},
+    }
+    config_file = tmp_path / "config.yaml"
+    write_yaml(config_file, config_data)
+
+    loader = ConfigLoader()
+    loader.SEARCH_PATHS = [str(config_file)]
+
+    with structlog.testing.capture_logs() as logs:
+        config = await loader.load_or_cache()
+
+    assert config.webhook.url == "https://example.com"
+    warned_keys = {
+        log["key"] for log in logs if log["event"] == "config key has no effect and is ignored"
+    }
+    assert warned_keys == {
+        "skip_hosted",
+        "hosted_offset",
+        "logging",
+        "webhook.timeout",
+        "priorities.*.limit",
+    }

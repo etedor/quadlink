@@ -3,6 +3,21 @@
 from unittest.mock import MagicMock, patch
 
 
+def _close_coro(coro, *_args, **_kwargs):
+    """asyncio.run side_effect: close the coroutine it would have awaited."""
+    coro.close()
+
+
+def _close_coro_and_raise(exc: BaseException):
+    """asyncio.run side_effect: close the coroutine, then raise exc as it would have."""
+
+    def side_effect(coro, *_args, **_kwargs):
+        coro.close()
+        raise exc
+
+    return side_effect
+
+
 class TestSetupLogging:
     """Tests for setup_logging function."""
 
@@ -103,7 +118,7 @@ class TestMain:
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging") as mock_setup:
-                with patch("quadlink.__main__.asyncio.run") as mock_run:
+                with patch("quadlink.__main__.asyncio.run", side_effect=_close_coro) as mock_run:
                     main()
 
                     mock_setup.assert_called_once()
@@ -126,7 +141,7 @@ class TestMain:
 
             with patch("quadlink.__main__.setup_logging"):
                 with patch("quadlink.__main__.os.environ.get", return_value="false"):
-                    with patch("quadlink.__main__.asyncio.run"):
+                    with patch("quadlink.__main__.asyncio.run", side_effect=_close_coro):
                         with patch("quadlink.__main__.run_daemon") as mock_daemon:
                             main()
 
@@ -152,9 +167,10 @@ class TestMain:
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
-                with patch("quadlink.__main__.asyncio.run") as mock_run:
-                    mock_run.side_effect = KeyboardInterrupt()
-
+                with patch(
+                    "quadlink.__main__.asyncio.run",
+                    side_effect=_close_coro_and_raise(KeyboardInterrupt()),
+                ):
                     # should not raise
                     main()
 
@@ -169,9 +185,10 @@ class TestMain:
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
-                with patch("quadlink.__main__.asyncio.run") as mock_run:
-                    mock_run.side_effect = RuntimeError("test error")
-
+                with patch(
+                    "quadlink.__main__.asyncio.run",
+                    side_effect=_close_coro_and_raise(RuntimeError("test error")),
+                ):
                     with patch("quadlink.__main__.sys.exit") as mock_exit:
                         main()
                         mock_exit.assert_called_once_with(1)
@@ -187,7 +204,7 @@ class TestMain:
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
-                with patch("quadlink.__main__.asyncio.run"):
+                with patch("quadlink.__main__.asyncio.run", side_effect=_close_coro):
                     with patch("quadlink.__main__.structlog") as mock_structlog:
                         mock_logger = MagicMock()
                         mock_structlog.get_logger.return_value = mock_logger
@@ -209,7 +226,7 @@ class TestMain:
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
-                with patch("quadlink.__main__.asyncio.run"):
+                with patch("quadlink.__main__.asyncio.run", side_effect=_close_coro):
                     with patch("quadlink.__main__.structlog") as mock_structlog:
                         mock_logger = MagicMock()
                         mock_structlog.get_logger.return_value = mock_logger

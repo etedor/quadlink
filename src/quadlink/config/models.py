@@ -85,12 +85,10 @@ class StreamGroup(BaseModel):
     Attributes:
         urls: List of Twitch usernames or URLs.
         rulesets: Names of rulesets to apply to these streams.
-        limit: Maximum streams to select from this group.
     """
 
     urls: list[str]
     rulesets: list[str] = Field(default_factory=list)
-    limit: int | None = None
 
 
 class Webhook(BaseModel):
@@ -99,62 +97,10 @@ class Webhook(BaseModel):
     Attributes:
         enabled: Whether webhook notifications are active.
         url: Webhook endpoint URL.
-        timeout: Request timeout in seconds.
     """
 
     enabled: bool = False
     url: str = ""
-    timeout: int = 10
-
-
-class Logging(BaseModel):
-    """Logging configuration.
-
-    Attributes:
-        level: Log level (debug, info, warn, error, critical).
-        format: Output format (json, text, console).
-    """
-
-    level: str = "info"
-    format: str = "json"
-
-    @field_validator("level")
-    @classmethod
-    def validate_level(cls, v: str) -> str:
-        """Validate and normalize log level.
-
-        Args:
-            v: Input log level string.
-
-        Returns:
-            Lowercase validated log level.
-
-        Raises:
-            ValueError: If level is not recognized.
-        """
-        valid_levels = ["debug", "info", "warn", "warning", "error", "critical"]
-        if v.lower() not in valid_levels:
-            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
-        return v.lower()
-
-    @field_validator("format")
-    @classmethod
-    def validate_format(cls, v: str) -> str:
-        """Validate and normalize log format.
-
-        Args:
-            v: Input log format string.
-
-        Returns:
-            Lowercase validated log format.
-
-        Raises:
-            ValueError: If format is not recognized.
-        """
-        valid_formats = ["json", "text", "console"]
-        if v.lower() not in valid_formats:
-            raise ValueError(f"Invalid log format: {v}. Must be one of {valid_formats}")
-        return v.lower()
 
 
 class Config(BaseSettings):
@@ -169,10 +115,7 @@ class Config(BaseSettings):
         diversity_bonus: Points added for new categories in quad.
         stability_bonus: Points added for streams already in quad.
         category_continuity_bonus: Points for replacing departed category.
-        skip_hosted: Whether to skip hosted/raided streams.
-        hosted_offset: Priority reduction for hosted streams (if not skipped).
         webhook: Webhook notification settings.
-        logging: Logging configuration.
         proxy_playlist: Twitch playlist proxy URL for ad-free streams.
         low_latency: Enable low-latency streaming mode.
         relay_segments: Serve segments from the relay and convert audio to 48 kHz.
@@ -182,6 +125,8 @@ class Config(BaseSettings):
         env_prefix="QL_",
         env_nested_delimiter="__",
         case_sensitive=False,
+        # old config files may carry keys this version removed; load_or_cache warns and drops them
+        extra="ignore",
     )
 
     credentials: Credentials | None = None
@@ -191,11 +136,8 @@ class Config(BaseSettings):
     diversity_bonus: int = 25
     stability_bonus: int = 30
     category_continuity_bonus: int = 10
-    skip_hosted: bool = True
-    hosted_offset: int = 50
 
     webhook: Webhook = Field(default_factory=Webhook)
-    logging: Logging = Field(default_factory=Logging)
 
     proxy_playlist: str = "https://eu.luminous.dev"
     low_latency: bool = True

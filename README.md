@@ -84,25 +84,6 @@ Deploy: `sudo nixos-rebuild switch`
 
 Manage: `systemctl status quadlink`, `journalctl -u quadlink -f`
 
-### Docker
-
-```bash
-# pure nix build
-nix build .#docker
-docker load < result
-docker run -d \
-  -e QL_ENABLE_HEALTH_SERVER=true \
-  -v $(pwd)/config.yaml:/app/config.yaml:ro \
-  -p 8080:8080 \
-  quadlink
-
-# or multi-stage Dockerfile
-docker build -f docker/Dockerfile -t quadlink .
-
-# or Docker Compose
-cd docker && docker-compose up -d
-```
-
 ## Configuration
 
 Configuration is loaded from these paths (in order):
@@ -135,7 +116,7 @@ HTTP endpoints on port 8080 (disabled by default, enable with `QL_ENABLE_HEALTH_
 - `GET /health`: Always returns `200 OK` if process is running
 - `GET /ready`: Returns `200 OK` if config loaded, `503` otherwise
 
-**Note**: Health checks are intended for containerized deployments (Docker, Kubernetes). For systemd deployments, leave disabled as systemd monitors the process directly.
+**Note**: Health checks are intended for containerized deployments. For systemd deployments, leave disabled as systemd monitors the process directly.
 
 ### Web UI
 
@@ -170,7 +151,6 @@ Trigger external automations when quad updates:
 webhook:
   enabled: true
   url: https://homeassistant.local/api/webhook/refresh-appletv
-  timeout: 10
 ```
 
 ## Development

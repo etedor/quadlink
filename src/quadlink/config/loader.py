@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import structlog
 from ruamel.yaml import YAML
@@ -9,6 +10,41 @@ from ruamel.yaml import YAML
 from .models import Config
 
 logger = structlog.get_logger()
+
+# top-level keys this version accepts but does not act on
+_REMOVED_KEYS = ("skip_hosted", "hosted_offset", "logging")
+# webhook.* keys this version accepts but does not act on
+_REMOVED_WEBHOOK_KEYS = ("timeout",)
+# priorities.*.*.* (stream group) keys this version accepts but does not act on
+_REMOVED_GROUP_KEYS = ("limit",)
+
+
+def _warn_removed_keys(data: dict[str, Any]) -> None:
+    """Warn once per load for each config key this version no longer reads."""
+    for key in _REMOVED_KEYS:
+        if key in data:
+            logger.warning("config key has no effect and is ignored", key=key)
+
+    webhook = data.get("webhook")
+    if isinstance(webhook, dict):
+        for key in _REMOVED_WEBHOOK_KEYS:
+            if key in webhook:
+                logger.warning("config key has no effect and is ignored", key=f"webhook.{key}")
+
+    priorities = data.get("priorities")
+    if isinstance(priorities, dict):
+        for groups in priorities.values():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                for key in _REMOVED_GROUP_KEYS:
+                    if key in group:
+                        logger.warning(
+                            "config key has no effect and is ignored",
+                            key=f"priorities.*.{key}",
+                        )
 
 
 class ConfigNotFoundError(Exception):
@@ -86,6 +122,7 @@ class ConfigLoader:
                 with open(path) as f:
                     data = yaml.load(f)
 
+                _warn_removed_keys(data)
                 config = Config(**data)
 
                 if "stability_bonus" in data and "diversity_bonus" in data:
@@ -106,14 +143,6 @@ class ConfigLoader:
             raise ConfigNotFoundError(
                 f"No config file found. Searched: {', '.join(self.SEARCH_PATHS)}"
             )
-
-    async def has_config(self) -> bool:
-        """Check if configuration is available (loaded or cached).
-
-        Returns:
-            True if config file exists or cache is populated.
-        """
-        return self._cached_config is not None or self._find_config_file() is not None
 
     def _find_config_file(self) -> Path | None:
         """Find first available config file.

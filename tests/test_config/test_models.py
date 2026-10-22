@@ -7,7 +7,6 @@ from quadlink.config.models import (
     Config,
     Credentials,
     Filters,
-    Logging,
     Ruleset,
     StreamGroup,
     Webhook,
@@ -106,7 +105,6 @@ def test_stream_group():
     group = StreamGroup(urls=["streamer1", "streamer2"], rulesets=["global"])
     assert len(group.urls) == 2
     assert group.rulesets == ["global"]
-    assert group.limit is None
 
 
 def test_webhook_defaults():
@@ -114,38 +112,6 @@ def test_webhook_defaults():
     webhook = Webhook()
     assert webhook.enabled is False
     assert webhook.url == ""
-    assert webhook.timeout == 10
-
-
-def test_logging_defaults():
-    """Test logging defaults."""
-    logging = Logging()
-    assert logging.level == "info"
-    assert logging.format == "json"
-
-
-def test_logging_validates_level():
-    """Test logging level validation."""
-    # valid levels
-    for level in ["debug", "info", "warn", "warning", "error", "critical"]:
-        log = Logging(level=level)
-        assert log.level == level.lower()
-
-    # invalid level
-    with pytest.raises(ValidationError, match="Invalid log level"):
-        Logging(level="invalid")
-
-
-def test_logging_validates_format():
-    """Test logging format validation."""
-    # valid formats
-    for fmt in ["json", "text", "console"]:
-        log = Logging(format=fmt)
-        assert log.format == fmt.lower()
-
-    # invalid format
-    with pytest.raises(ValidationError, match="Invalid log format"):
-        Logging(format="invalid")
 
 
 def test_config_minimal():
@@ -235,10 +201,7 @@ def test_config_full():
         ],
         "diversity_bonus": 30,
         "stability_bonus": 40,
-        "skip_hosted": True,
-        "hosted_offset": 50,
-        "webhook": {"enabled": True, "url": "https://example.com", "timeout": 15},
-        "logging": {"level": "debug", "format": "text"},
+        "webhook": {"enabled": True, "url": "https://example.com"},
         "proxy_playlist": "https://custom-proxy.com",
         "low_latency": False,
     }
@@ -251,14 +214,30 @@ def test_config_full():
     assert len(config.rulesets) == 1
     assert config.diversity_bonus == 30
     assert config.stability_bonus == 40
-    assert config.skip_hosted is True
-    assert config.hosted_offset == 50
     assert config.webhook.enabled is True
     assert config.webhook.url == "https://example.com"
-    assert config.logging.level == "debug"
-    assert config.logging.format == "text"
     assert config.proxy_playlist == "https://custom-proxy.com"
     assert config.low_latency is False
+
+
+def test_config_ignores_removed_keys():
+    """Config accepts and discards keys it no longer defines, so old config files still load."""
+    config_data = {
+        "credentials": {"username": "user", "secret": "pass"},
+        "priorities": {999: [{"urls": ["streamer1"], "limit": 2}]},
+        "skip_hosted": True,
+        "hosted_offset": 50,
+        "webhook": {"enabled": True, "url": "https://example.com", "timeout": 15},
+        "logging": {"level": "debug", "format": "text"},
+    }
+    config = Config(**config_data)
+
+    assert config.webhook.enabled is True
+    assert config.webhook.url == "https://example.com"
+    assert not hasattr(config, "skip_hosted")
+    assert not hasattr(config, "logging")
+    assert not hasattr(config.webhook, "timeout")
+    assert not hasattr(config.priorities[999][0], "limit")
 
 
 def test_config_mode_defaults_to_both():

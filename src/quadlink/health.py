@@ -110,8 +110,3 @@ class HealthServer:
     def mark_ready(self) -> None:
         """Mark the daemon as ready (config loaded successfully)."""
         HealthCheckHandler.config_loaded = True
-
-    def mark_not_ready(self) -> None:
-        """Mark the daemon as not ready (config not loaded)."""
-        HealthCheckHandler.config_loaded = False
-        logger.debug("health server marked not ready")

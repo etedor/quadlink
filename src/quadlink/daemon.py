@@ -120,10 +120,7 @@ class Daemon:
             )
             self.webui_runner = await self.webui.start()
         self.running = True
-        try:
-            await self._main_loop()
-        except asyncio.CancelledError:
-            raise
+        await self._main_loop()
 
     @staticmethod
     def _dropped_from_pool(
@@ -169,11 +166,6 @@ class Daemon:
         while self.running:
             try:
                 config = await self.config_loader.load_or_cache()
-
-                if not config:
-                    logger.error("failed to load config, retrying in 30s")
-                    await asyncio.sleep(30)
-                    continue
 
                 if self.health_server:
                     self.health_server.mark_ready()

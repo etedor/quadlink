@@ -44,42 +44,11 @@
           python3Packages = pythonPackages;
         };
 
-        dockerImage = pkgs.dockerTools.buildLayeredImage {
-          name = "quadlink";
-          tag = "latest";
-
-          contents = [
-            quadlink
-
-            pkgs.cacert
-            pkgs.coreutils
-            pythonPackages.python
-          ];
-
-          config = {
-            Cmd = [
-              "${quadlink}/bin/quadlink"
-              "--interval"
-              "30"
-            ];
-            ExposedPorts = {
-              "8080/tcp" = { };
-            };
-            Env = [
-              "PYTHONUNBUFFERED=1"
-              "QL_LOG_LEVEL=info"
-            ];
-            User = "1000:1000";
-            WorkingDir = "/app";
-          };
-        };
-
       in
       {
         packages = {
           default = quadlink;
           quadlink = quadlink;
-          docker = dockerImage;
         };
 
         devShells.default = pkgs.mkShell {

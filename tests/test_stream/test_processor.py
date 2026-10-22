@@ -22,16 +22,12 @@ def make_stream(author: str, category: str, url: str = None) -> Stream:
 def make_config(
     priorities: dict = None,
     rulesets: list = None,
-    skip_hosted: bool = True,
-    hosted_offset: int = 50,
 ) -> Config:
     """Helper to create a config."""
     return Config(
         credentials=Credentials(username="test", secret="test"),
         priorities=priorities or {},
         rulesets=rulesets or [],
-        skip_hosted=skip_hosted,
-        hosted_offset=hosted_offset,
     )
 
 
@@ -61,38 +57,6 @@ class TestNormalizeUrl:
 
         result = processor._normalize_url("HTTPS://TWITCH.TV/STREAMER/")
         assert result == "https://twitch.tv/streamer"
-
-
-class TestIsHosted:
-    """Tests for hosted stream detection."""
-
-    def test_not_hosted_matching_author(self):
-        """Stream is not hosted when URL author matches metadata author."""
-        config = make_config()
-        processor = StreamProcessor(config)
-        stream = make_stream("Streamer", "Games", "https://twitch.tv/streamer")
-
-        assert processor._is_hosted(stream) is False
-
-    def test_hosted_different_author(self):
-        """Stream is hosted when URL author differs from metadata author."""
-        config = make_config()
-        processor = StreamProcessor(config)
-        # URL says "hostchannel" but metadata says "actualstreamer"
-        stream = Stream(
-            url="https://twitch.tv/hostchannel",
-            metadata=Metadata(author="actualstreamer", category="Games", title="Test"),
-        )
-
-        assert processor._is_hosted(stream) is True
-
-    def test_hosted_case_insensitive(self):
-        """Hosted check should be case insensitive."""
-        config = make_config()
-        processor = StreamProcessor(config)
-        stream = make_stream("STREAMER", "Games", "https://twitch.tv/streamer")
-
-        assert processor._is_hosted(stream) is False
 
 
 class TestProcessSingleStream:
@@ -204,39 +168,6 @@ class TestProcessSingleStream:
         await processor._process_single_stream("streamer", 100, [])
 
         assert processor.lookup_failed("https://twitch.tv/streamer")
-
-    @pytest.mark.asyncio
-    async def test_hosted_stream_skipped(self, mock_fetcher):
-        """Hosted stream should be skipped when skip_hosted=True."""
-        # URL is "hostchannel" but actual author is "realstreamer"
-        stream = Stream(
-            url="https://twitch.tv/hostchannel",
-            metadata=Metadata(author="realstreamer", category="Games", title="Test"),
-        )
-        mock_fetcher.fetch_stream_info.return_value = stream
-        config = make_config(skip_hosted=True)
-        processor = StreamProcessor(config)
-        processor.fetcher = mock_fetcher
-
-        result = await processor._process_single_stream("hostchannel", 100, [])
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_hosted_stream_priority_reduced(self, mock_fetcher):
-        """Hosted stream should have reduced priority when skip_hosted=False."""
-        stream = Stream(
-            url="https://twitch.tv/hostchannel",
-            metadata=Metadata(author="realstreamer", category="Games", title="Test"),
-        )
-        mock_fetcher.fetch_stream_info.return_value = stream
-        config = make_config(skip_hosted=False, hosted_offset=50)
-        processor = StreamProcessor(config)
-        processor.fetcher = mock_fetcher
-
-        result = await processor._process_single_stream("hostchannel", 100, [])
-
-        assert result is not None
-        assert result.priority == 50  # 100 - 50 offset
 
     @pytest.mark.asyncio
     async def test_duplicate_stream_rejected(self, mock_fetcher):

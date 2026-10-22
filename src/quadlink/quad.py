@@ -19,7 +19,6 @@ class QuadBuilder:
             config: Application configuration with bonuses and penalties
         """
         self.config = config
-        self.previous_quad: Quad | None = None
         self.previous_categories: dict[str, str] = {}  # author -> category
         self.previous_positions: dict[str, int] = {}  # author -> position (0-3)
         self.quad_changed: bool = False
@@ -71,7 +70,6 @@ class QuadBuilder:
         quad = self._build_quad_with_positions(selected, existing_streams)
         self._log_changes(quad, selected)
 
-        self.previous_quad = quad
         self.previous_categories = {
             s.stream.metadata.author.lower(): s.stream.metadata.category for s in selected
         }

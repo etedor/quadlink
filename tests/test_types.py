@@ -1,6 +1,6 @@
 """Tests for core data types."""
 
-from quadlink.types import Metadata, PrioritizedStream, Quad, QuadPosition, Stream
+from quadlink.types import Metadata, PrioritizedStream, Quad, Stream
 
 
 def test_metadata_creation():
@@ -120,33 +120,3 @@ def test_quad_is_empty():
 
     # fully filled
     assert Quad("url1", "url2", "url3", "url4").is_empty() is False
-
-
-def test_quad_position_creation():
-    """Test creating QuadPosition."""
-    qp = QuadPosition(
-        author="testuser",
-        category="TestGame",
-        title="Test Title",
-        url="https://twitch.tv/testuser",
-        position=1,
-    )
-    assert qp.author == "testuser"
-    assert qp.category == "TestGame"
-    assert qp.title == "Test Title"
-    assert qp.url == "https://twitch.tv/testuser"
-    assert qp.position == 1
-
-
-def test_quad_position_from_stream():
-    """Test creating QuadPosition from Stream."""
-    meta = Metadata(author="testuser", category="TestGame", title="Test Title")
-    stream = Stream(url="https://twitch.tv/testuser", metadata=meta)
-
-    qp = QuadPosition.from_stream(stream, position=2)
-
-    assert qp.author == "testuser"
-    assert qp.category == "TestGame"
-    assert qp.title == "Test Title"
-    assert qp.url == "https://twitch.tv/testuser"
-    assert qp.position == 2

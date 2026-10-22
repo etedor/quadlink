@@ -141,7 +141,7 @@ def main() -> None:
     args = parse_args()
     setup_logging(args.log_level)
 
-    # health server disabled by default (enable for Docker)
+    # health server disabled by default (enable for a container's health check)
     enable_health_server = os.environ.get("QL_ENABLE_HEALTH_SERVER", "false").lower() in (
         "true",
         "1",

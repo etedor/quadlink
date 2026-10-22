@@ -8,7 +8,7 @@ import structlog
 from quadlink.config.models import Config, StreamGroup
 from quadlink.stream.fetcher import StreamlinkFetcher, channel_url
 from quadlink.stream.filters import StreamFilter
-from quadlink.types import PrioritizedStream, Stream
+from quadlink.types import PrioritizedStream
 
 logger = structlog.get_logger()
 
@@ -162,24 +162,6 @@ class StreamProcessor:
                     )
                     return None
 
-                if self.config.skip_hosted and self._is_hosted(stream):
-                    logger.debug(
-                        "skipping hosted stream",
-                        author=stream.metadata.author,
-                        url=url,
-                    )
-                    return None
-
-                effective_priority = priority
-                if not self.config.skip_hosted and self._is_hosted(stream):
-                    effective_priority -= self.config.hosted_offset
-                    logger.debug(
-                        "hosted stream priority reduced",
-                        author=stream.metadata.author,
-                        original_priority=priority,
-                        new_priority=effective_priority,
-                    )
-
                 normalized_url = self._normalize_url(stream.url)
                 if normalized_url in self._seen_urls:
                     logger.debug(
@@ -193,7 +175,7 @@ class StreamProcessor:
 
                 prioritized = PrioritizedStream(
                     stream=stream,
-                    priority=effective_priority,
+                    priority=priority,
                     tiebreaker=random.random(),
                 )
 
@@ -201,7 +183,7 @@ class StreamProcessor:
                     "stream accepted",
                     author=stream.metadata.author,
                     category=stream.metadata.category,
-                    priority=effective_priority,
+                    priority=priority,
                 )
 
                 return prioritized
@@ -214,32 +196,6 @@ class StreamProcessor:
                 )
                 self._unresolved.add(self._normalize_url(channel_url(url)))
                 return None
-
-    def _is_hosted(self, stream: Stream) -> bool:
-        """
-        Check if stream is hosted (channel hosting another channel).
-
-        A stream is hosted if the URL/author doesn't match the metadata author.
-
-        Args:
-            stream: Stream to check
-
-        Returns:
-            True if hosted, False otherwise
-        """
-        url_parts = stream.url.rstrip("/").split("/")
-        url_author = url_parts[-1].lower() if url_parts else ""
-        metadata_author = stream.metadata.author.lower()
-        is_hosted = url_author != metadata_author
-
-        if is_hosted:
-            logger.debug(
-                "hosted stream detected",
-                url_author=url_author,
-                actual_author=metadata_author,
-            )
-
-        return is_hosted
 
     def _normalize_url(self, url: str) -> str:
         """
