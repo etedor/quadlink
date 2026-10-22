@@ -14,16 +14,54 @@ def channel_url(url: str) -> str:
     return f"https://twitch.tv/{url}"
 
 
-def channel_login(url: str) -> str:
-    """The lowercase Twitch login a channel URL or bare channel name refers to.
+# first path segments that name a Twitch page, not a channel
+_NOT_CHANNELS = frozenset(
+    {
+        "clip",
+        "directory",
+        "downloads",
+        "friends",
+        "inventory",
+        "jobs",
+        "messages",
+        "moderator",
+        "p",
+        "popout",
+        "search",
+        "settings",
+        "subscriptions",
+        "turbo",
+        "v",
+        "video",
+        "videos",
+        "wallet",
+    }
+)
 
-    Scheme, host ("www." or not) and case do not change the result, so every
-    spelling of one channel maps to one key.
+
+def channel_login(url: str) -> str:
+    """The channel key for a configured URL or bare channel name.
+
+    For a live channel this is its lowercase Twitch login; scheme, host ("www."
+    or not), trailing slash and case do not change it, so every spelling of one
+    channel maps to one key. Any other URL (a VOD, a clip, a directory page)
+    keys on the URL itself, lowercased without scheme or "www.", so distinct
+    pages never share a key.
     """
     parts = urlsplit(channel_url(url.strip()))
+    host = parts.hostname or ""
     # player.twitch.tv/?channel=<login> names the channel in its query
-    login = parse_qs(parts.query).get("channel", [""])[0] or parts.path.strip("/").split("/")[0]
-    return login.lower()
+    login = parse_qs(parts.query).get("channel", [""])[0]
+    segments = parts.path.strip("/").split("/")
+    page = len(segments) != 1 or segments[0].lower() in _NOT_CHANNELS
+    # clips.twitch.tv/<slug> is a clip, not a channel
+    if not login and not page and not host.startswith("clips."):
+        login = segments[0]
+    if login:
+        return login.lower()
+    host = host.removeprefix("www.")
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{host}{parts.path.rstrip('/')}{query}".lower()
 
 
 @dataclass

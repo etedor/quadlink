@@ -80,8 +80,8 @@ _FILLER_TYPES = {"2s.ts": "video/mp2t", "2s.m4s": "video/iso.segment", "init.mp4
 
 def _route_slot(raw: str) -> int | None:
     """The internal slot (0-3) for a /streams/{1-4} route number, or None."""
-    # int() alone accepts "+1", " 1" and "1_0"
-    if not raw.isdigit() or not 1 <= int(raw) <= 4:
+    # int() alone accepts "+1", " 1" and "1_0"; isdigit() alone accepts "²", which int() rejects
+    if not (raw.isascii() and raw.isdigit()) or not 1 <= int(raw) <= 4:
         return None
     return int(raw) - 1
 
@@ -439,8 +439,8 @@ class SlotRelay:
         """Route handler for GET /streams/{slot}/seg/{seq}.{ts|m4s}."""
         name = request.match_info.get("name", "")
         stem, _, ext = name.partition(".")
-        # int() alone accepts "+7", " 7" and "7_0"
-        if not stem.isdigit():
+        # int() alone accepts "+7", " 7" and "7_0"; isdigit() alone accepts "²"
+        if not (stem.isascii() and stem.isdigit()):
             return web.Response(status=404, text="bad segment")
         slot, seq = _route_slot(request.match_info.get("slot", "")), int(stem)
         types = {"ts": "video/mp2t", "m4s": "video/iso.segment"}

@@ -656,7 +656,7 @@ def _seg_request(name: str) -> web.Request:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["+7.ts", " 7.ts", "7_0.ts", "-1.ts", "7.mp4"])
+@pytest.mark.parametrize("name", ["+7.ts", " 7.ts", "7_0.ts", "-1.ts", "7.mp4", "².ts", "١.ts"])
 async def test_segment_route_rejects_loose_seq(name):
     relay = SlotRelay(SlotStore(), segments=FakeProxy())
     assert (await relay.handle_segment(_seg_request(name))).status == 404
@@ -1116,5 +1116,5 @@ async def test_routes_number_slots_one_to_four():
     assert resp.status == 200
     assert _listed(resp.text) == ["/streams/4/seg/0.ts", "/streams/4/seg/1.ts"]
     assert proxy.registered == [(3, 0), (3, 1)]
-    for bad in ("0", "5", "+1", " 1", "-1"):
+    for bad in ("0", "5", "+1", " 1", "-1", "²", "١"):
         assert (await _call(relay, bad)).status == 404

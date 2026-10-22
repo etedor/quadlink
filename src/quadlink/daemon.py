@@ -89,7 +89,7 @@ class Daemon:
         self._config_hash: int | None = None
         # (username, secret) the current QuadStream client logged in with
         self._credentials: tuple[str | None, str | None] | None = None
-        # last cycle's candidate (raw priority) for each channel on screen, by channel
+        # channel -> its last-cycle candidate (raw priority), for channels on screen
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock when the slot store was last fed
         self._fed_at: float | None = None

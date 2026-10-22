@@ -632,3 +632,18 @@ def test_channel_url(given, expected):
 )
 def test_channel_login_maps_every_spelling_to_one_key(given):
     assert channel_login(given) == "foo"
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("https://www.twitch.tv/videos/123", "twitch.tv/videos/123"),
+        ("https://twitch.tv/videos/456/", "twitch.tv/videos/456"),
+        ("twitch.tv/foo/clip/Slug", "twitch.tv/foo/clip/slug"),
+        ("https://clips.twitch.tv/Slug", "clips.twitch.tv/slug"),
+        ("https://www.twitch.tv/directory", "twitch.tv/directory"),
+    ],
+)
+def test_channel_login_keys_other_pages_by_url(given, expected):
+    """Pages that are not a live channel keep distinct keys."""
+    assert channel_login(given) == expected
