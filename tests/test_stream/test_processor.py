@@ -367,6 +367,68 @@ class TestProcessStreamGroups:
         assert [r.priority for r in results] == [999]
         assert results[0].stream.channel == "streamer"
 
+    @staticmethod
+    def two_entry_config() -> Config:
+        """Foo at 100 only while playing X (group A), at 50 otherwise (group B)."""
+        return make_config(
+            priorities={
+                100: [StreamGroup(urls=["https://twitch.tv/Foo"], rulesets=["only-x"])],
+                50: [StreamGroup(urls=["foo"], rulesets=[])],
+            },
+            rulesets=[Ruleset(name="only-x", filters=Filters(allow_categories=["^X$"]))],
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("category", "priority"), [("Y", 50), ("X", 100)])
+    async def test_channel_takes_its_best_passing_entry(self, mock_fetcher, category, priority):
+        """Each entry applies its own group's rules; the best one that passes wins."""
+        mock_fetcher.fetch_stream_info.return_value = make_stream("Foo", category)
+        processor = StreamProcessor(self.two_entry_config())
+        processor.fetcher = mock_fetcher
+
+        results = await processor.process_stream_groups()
+
+        assert [(r.stream.channel, r.priority) for r in results] == [("foo", priority)]
+        # one lookup per cycle, though the entries spell the channel differently
+        assert mock_fetcher.fetch_stream_info.await_count == 1
+        assert processor.rejection("foo") is None
+
+    @pytest.mark.asyncio
+    async def test_channel_is_looked_up_once_per_cycle(self, mock_fetcher):
+        """Every cycle looks the channel up again, once."""
+        mock_fetcher.fetch_stream_info.return_value = make_stream("Foo", "Y")
+        processor = StreamProcessor(self.two_entry_config())
+        processor.fetcher = mock_fetcher
+
+        await processor.process_stream_groups()
+        await processor.process_stream_groups()
+
+        assert mock_fetcher.fetch_stream_info.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_rejected_channel_records_its_best_entry_reason(self, mock_fetcher):
+        """When no entry passes, the highest-priority entry's reason is kept."""
+        mock_fetcher.fetch_stream_info.return_value = make_stream("Foo", "Y")
+        config = make_config(
+            priorities={
+                100: [StreamGroup(urls=["https://twitch.tv/Foo"], rulesets=["only-x"])],
+                50: [StreamGroup(urls=["foo"], rulesets=["no-y"])],
+            },
+            rulesets=[
+                Ruleset(name="only-x", filters=Filters(allow_categories=["^X$"])),
+                Ruleset(name="no-y", filters=Filters(block_categories=["^Y$"])),
+            ],
+        )
+        processor = StreamProcessor(config)
+        processor.fetcher = mock_fetcher
+
+        assert await processor.process_stream_groups() == []
+
+        reason = processor.rejection("FOO")
+        assert reason is not None
+        assert reason == processor.filter.apply_filters(make_stream("Foo", "Y"), ["only-x"])[1]
+        assert not processor.lookup_failed("foo")
+
     @pytest.mark.asyncio
     async def test_lookup_failed_matches_any_spelling(self, mock_fetcher):
         """A failed lookup is found by any spelling of the channel."""

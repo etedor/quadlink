@@ -8,7 +8,7 @@ import structlog
 from quadlink.config.models import Config, StreamGroup
 from quadlink.stream.fetcher import StreamlinkFetcher
 from quadlink.stream.filters import StreamFilter
-from quadlink.types import PrioritizedStream, channel_login
+from quadlink.types import PrioritizedStream, Stream, channel_login
 
 logger = structlog.get_logger()
 
@@ -39,11 +39,14 @@ class StreamProcessor:
         )
         self.filter = StreamFilter(config)
         self.semaphore = asyncio.Semaphore(max_concurrent)
-        # channel keys already looked up this run; the first (highest-priority)
-        # configured entry for a channel wins
-        self._queued: set[str] = set()
-        # channel keys already accepted this run, by the login the lookup resolved
+        # channel key -> this run's one lookup, shared by every configured entry of
+        # the channel (one channel may sit in several groups with different rulesets)
+        self._lookups: dict[str, asyncio.Future[Stream | None]] = {}
+        # channel keys accepted this run; entries are evaluated in priority order,
+        # so the highest-priority entry that passes its filters wins
         self._seen: set[str] = set()
+        # channel key -> rejection reason of its highest-priority entry
+        self._rejections: dict[str, str] = {}
         # channels whose lookup returned nothing this run; filter rejections are
         # absent, since those channels are known live and deliberately excluded
         self._unresolved: set[str] = set()
@@ -60,6 +63,16 @@ class StreamProcessor:
         """
         return channel_login(url) in self._unresolved
 
+    def rejection(self, url: str) -> str | None:
+        """Why the last run left out a live channel, from its highest-priority entry.
+
+        None when the channel was accepted or its lookup failed.
+        """
+        channel = channel_login(url)
+        if channel in self._seen:
+            return None
+        return self._rejections.get(channel)
+
     async def process_stream_groups(self) -> list[PrioritizedStream]:
         """
         Process all stream groups from config, sorted by priority.
@@ -68,8 +81,9 @@ class StreamProcessor:
             List of PrioritizedStream objects, sorted by priority (descending)
         """
         all_streams = []
-        self._queued.clear()
+        self._lookups.clear()
         self._seen.clear()
+        self._rejections.clear()
         self._unresolved.clear()
 
         sorted_priorities = sorted(self.config.priorities.keys(), reverse=True)
@@ -113,11 +127,6 @@ class StreamProcessor:
 
         for group in stream_groups:
             for url in group.urls:
-                channel = channel_login(url)
-                if channel in self._queued:
-                    logger.debug("duplicate channel (already configured)", channel=channel)
-                    continue
-                self._queued.add(channel)
                 task = self._process_single_stream(url, priority, group.rulesets)
                 tasks.append(task)
 
@@ -150,58 +159,73 @@ class StreamProcessor:
         Returns:
             PrioritizedStream if successful and passes filters, None otherwise
         """
-        async with self.semaphore:
-            try:
-                stream = await self.fetcher.fetch_stream_info(url)
+        try:
+            stream = await self._lookup(url)
 
-                if not stream:
-                    self._unresolved.add(channel_login(url))
-                    return None
-
-                # kept out of _unresolved: a failed lookup keeps a channel whose
-                # segments still arrive, and audio-only segments do arrive
-                if not stream.has_video:
-                    logger.debug(
-                        "stream rejected", author=stream.metadata.author, reason="no video"
-                    )
-                    return None
-
-                passed, reason, ruleset = self.filter.apply_filters(stream, rulesets)
-                if not passed:
-                    logger.debug(
-                        "stream rejected",
-                        author=stream.metadata.author,
-                        reason=reason,
-                        ruleset=ruleset,
-                    )
-                    return None
-
-                if stream.channel in self._seen:
-                    logger.debug("duplicate stream (already seen)", channel=stream.channel)
-                    return None
-
-                self._seen.add(stream.channel)
-
-                prioritized = PrioritizedStream(
-                    stream=stream,
-                    priority=priority,
-                    tiebreaker=random.random(),
-                )
-
-                logger.debug(
-                    "stream accepted",
-                    author=stream.metadata.author,
-                    category=stream.metadata.category,
-                    priority=priority,
-                )
-
-                return prioritized
-
-            except Exception as e:
-                logger.error(
-                    "error processing stream",
-                    url=url,
-                    error=str(e),
-                )
+            if not stream:
                 self._unresolved.add(channel_login(url))
                 return None
+
+            # kept out of _unresolved: a failed lookup keeps a channel whose
+            # segments still arrive, and audio-only segments do arrive
+            if not stream.has_video:
+                logger.debug("stream rejected", author=stream.metadata.author, reason="no video")
+                self._rejections.setdefault(stream.channel, "no video")
+                return None
+
+            passed, reason, ruleset = self.filter.apply_filters(stream, rulesets)
+            if not passed:
+                logger.debug(
+                    "stream rejected",
+                    author=stream.metadata.author,
+                    reason=reason,
+                    ruleset=ruleset,
+                )
+                self._rejections.setdefault(stream.channel, reason)
+                return None
+
+            if stream.channel in self._seen:
+                logger.debug("duplicate stream (already seen)", channel=stream.channel)
+                return None
+
+            self._seen.add(stream.channel)
+
+            prioritized = PrioritizedStream(
+                stream=stream,
+                priority=priority,
+                tiebreaker=random.random(),
+            )
+
+            logger.debug(
+                "stream accepted",
+                author=stream.metadata.author,
+                category=stream.metadata.category,
+                priority=priority,
+            )
+
+            return prioritized
+
+        except Exception as e:
+            logger.error(
+                "error processing stream",
+                url=url,
+                error=str(e),
+            )
+            self._unresolved.add(channel_login(url))
+            return None
+
+    async def _lookup(self, url: str) -> Stream | None:
+        """Look a channel up once per run, whichever of its entries asks first.
+
+        Entries waiting on the shared lookup resume in the order they asked, which
+        is config order within a priority level.
+        """
+        channel = channel_login(url)
+        lookup = self._lookups.get(channel)
+        if lookup is None:
+            lookup = self._lookups[channel] = asyncio.ensure_future(self._fetch(url))
+        return await asyncio.shield(lookup)
+
+    async def _fetch(self, url: str) -> Stream | None:
+        async with self.semaphore:
+            return await self.fetcher.fetch_stream_info(url)
