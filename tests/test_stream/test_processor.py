@@ -373,3 +373,11 @@ class TestProcessStreamGroups:
         # should only have one result (first one at priority 999)
         assert len(results) == 1
         assert results[0].priority == 999
+
+
+def test_close_shuts_down_the_lookup_executor():
+    config = Config(credentials=Credentials(username="u", secret="s"), rulesets=[], priorities={})
+    processor = StreamProcessor(config)
+    processor.close()
+    with pytest.raises(RuntimeError):
+        processor.fetcher.executor.submit(lambda: None)

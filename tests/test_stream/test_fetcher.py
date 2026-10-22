@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 
-from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache
+from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache, channel_url
 
 
 class TestStreamlinkFetcherInit:
@@ -575,3 +575,18 @@ async def test_fetch_stream_info_gives_up_after_timeout():
     release.set()
     fetcher.executor.shutdown(wait=True)
     assert result is None
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("foo", "https://twitch.tv/foo"),
+        ("twitch.tv/foo", "https://twitch.tv/foo"),
+        ("www.twitch.tv/foo", "https://www.twitch.tv/foo"),
+        ("https://twitch.tv/foo", "https://twitch.tv/foo"),
+        ("http://twitch.tv/foo", "http://twitch.tv/foo"),
+        ("httpfoo", "https://twitch.tv/httpfoo"),
+    ],
+)
+def test_channel_url(given, expected):
+    assert channel_url(given) == expected

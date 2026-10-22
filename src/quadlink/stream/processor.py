@@ -44,6 +44,10 @@ class StreamProcessor:
         # absent, since those channels are known live and deliberately excluded
         self._unresolved: set[str] = set()
 
+    def close(self) -> None:
+        """Release the lookup threads; a lookup still running finishes on its own."""
+        self.fetcher.executor.shutdown(wait=False, cancel_futures=True)
+
     def lookup_failed(self, url: str) -> bool:
         """Whether the last run's lookup for this channel returned no stream.
 

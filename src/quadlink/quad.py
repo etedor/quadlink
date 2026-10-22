@@ -50,7 +50,8 @@ class QuadBuilder:
             self.slot_identities = ["", "", "", ""]
             return Quad()
 
-        candidate_map = {s.stream.metadata.author.lower(): s for s in candidates}
+        # reversed: candidates arrive best first, and the first of a duplicate author wins
+        candidate_map = {s.stream.metadata.author.lower(): s for s in reversed(candidates)}
         existing_streams = self._get_existing_streams(candidate_map)
         existing_authors = {s.stream.metadata.author.lower() for s in existing_streams}
         departed_categories = self._get_departed_categories(existing_authors)

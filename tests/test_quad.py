@@ -411,3 +411,21 @@ class TestComplexScenario:
         assert "streamer1" in authors
         assert "streamer2" in authors
         assert "streamer3" in authors
+
+
+def test_duplicate_author_keeps_the_first_candidate(builder):
+    """The best-ranked duplicate of an on-screen author decides its category."""
+    builder.previous_positions = {"a": 0}
+    builder.previous_categories = {"a": "Chess"}
+    candidates = [
+        make_stream("a", "Chess", 100),
+        make_stream("b", "Chess", 100),
+        make_stream("c", "Art", 100),
+        make_stream("d", "Art", 100),
+        make_stream("e", "Speed", 100),
+        make_stream("a", "Art", 10),
+    ]
+    quad = builder.build_quad(candidates)
+    # a counts as Chess, so b (a second Chess) is penalized out of the quad
+    assert "https://twitch.tv/b" not in quad.to_list()
+    assert quad.to_list()[0] == "https://twitch.tv/a"

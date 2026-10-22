@@ -1,7 +1,7 @@
 """Tests for the SlotRelay aiohttp server."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -1031,3 +1031,38 @@ async def test_toggling_conversion_while_the_source_fails_keeps_the_format(turn_
     # either way the listed fMP4 segment cannot change format in place
     assert "#EXT-X-MAP" not in resp.text
     assert _listed(resp.text) == ["/streams/filler/2s.ts"]
+
+
+@pytest.mark.asyncio
+async def test_source_fetch_failure_logs_once_per_streak():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    state = {"fail": True}
+
+    async def fetch(url):
+        if state["fail"]:
+            raise RuntimeError("boom")
+        return _src(100, ["a.ts"])
+
+    clock = {"t": 0.0}
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=1.0, time_fn=lambda: clock["t"])
+    with patch("quadlink.relay.server.logger") as log:
+        for _ in range(3):
+            clock["t"] += 2.0
+            await _call(relay, "1")
+        assert log.warning.call_count == 1
+        assert log.warning.call_args.args == ("relay source fetch failed",)
+
+        state["fail"] = False
+        for _ in range(2):
+            clock["t"] += 2.0
+            await _call(relay, "1")
+        recovered = [
+            c for c in log.info.call_args_list if c.args == ("relay source fetch recovered",)
+        ]
+        assert len(recovered) == 1
+
+        state["fail"] = True
+        clock["t"] += 2.0
+        await _call(relay, "1")
+        assert log.warning.call_count == 2

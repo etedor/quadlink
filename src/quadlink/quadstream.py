@@ -120,11 +120,8 @@ class QuadStreamClient:
                 response = await client.post(login_url, json=payload, headers=headers)
 
                 if response.status_code != 200:
-                    logger.error(
-                        "quadstream login failed",
-                        status=response.status_code,
-                        response=response.text,
-                    )
+                    # status only: the body can echo the submitted credentials
+                    logger.error("quadstream login failed", status=response.status_code)
                     return False
 
                 # session typically rotates on auth; re-fetch the bootstrap to

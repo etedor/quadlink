@@ -9,7 +9,7 @@ import httpx
 import structlog
 from aiohttp import web
 
-from quadlink.config.loader import ConfigLoader
+from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.health import HealthServer
 from quadlink.quad import QuadBuilder
 from quadlink.quadstream import QuadStreamClient
@@ -69,7 +69,7 @@ class Daemon:
         self.webui_port = webui_port
         self.webui_allowed_hosts = webui_allowed_hosts or []
         self.config_loader = ConfigLoader(explicit_path=config_path)
-        self.health_server = HealthServer() if enable_health_server else None
+        self.health_server = HealthServer(max_age=3 * interval) if enable_health_server else None
         self.slot_store = SlotStore()
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
@@ -87,6 +87,8 @@ class Daemon:
         self.quad_builder: QuadBuilder | None = None
         self.quadstream_client: QuadStreamClient | None = None
         self._config_hash: int | None = None
+        # (username, secret) the current QuadStream client logged in with
+        self._credentials: tuple[str | None, str | None] | None = None
         # last cycle's candidate (raw priority) for each channel on screen
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock when the slot store was last fed
@@ -108,9 +110,12 @@ class Daemon:
         if self.health_server:
             self.health_server.start()
         if self.enable_webui:
-            # register /streams routes only when the local relay is served
-            config = await self.config_loader.load_or_cache()
-            mode = config.mode if config else "both"
+            # register /streams routes only when the local relay is served; with no
+            # config yet the web UI still starts, so the user can write one
+            try:
+                mode = (await self.config_loader.load_or_cache()).mode
+            except ConfigNotFoundError:
+                mode = "both"
             self.webui = WebUI(
                 self.config_loader,
                 host=self.webui_host,
@@ -165,107 +170,129 @@ class Daemon:
         """Main daemon loop - processes streams and updates quad repeatedly."""
         while self.running:
             try:
-                config = await self.config_loader.load_or_cache()
-
-                if self.health_server:
-                    self.health_server.mark_ready()
-
-                # detect config changes and recreate components
-                config_hash = hash(str(config.model_dump(exclude={"credentials"})))
-                if self._config_hash != config_hash:
-                    if self._config_hash is not None:
-                        logger.info("config changed, reloading")
-                    self._config_hash = config_hash
-                    # a lookup slower than one cycle is useless: the next cycle is already due
-                    self.processor = StreamProcessor(config, lookup_timeout=self.interval)
-                    self.quad_builder = QuadBuilder(config)
-
-                assert self.processor is not None
-                assert self.quad_builder is not None
-
-                push_remote = config.mode in ("both", "remote")
-                serve_local = config.mode in ("both", "local")
-                self.slot_relay.proxy_segments = config.relay_segments
-
-                # log in to quadstream only when we push to it (skipped in local)
-                if push_remote and not self.quadstream_client:
-                    assert config.credentials is not None
-                    assert config.credentials.username is not None
-                    assert config.credentials.secret is not None
-                    self.quadstream_client = QuadStreamClient(
-                        username=config.credentials.username,
-                        secret=config.credentials.secret,
-                    )
-
-                    login_success = await self.quadstream_client.login()
-                    if not login_success:
-                        logger.error("quadstream login failed, retrying in 30s")
-                        self.quadstream_client = None
-                        await asyncio.sleep(30)
-                        continue
-
-                candidates = await self.processor.process_stream_groups()
-                if serve_local:
-                    candidates += self._still_playing(candidates)
-
-                if not candidates:
-                    logger.info("no stream candidates available")
-                    await asyncio.sleep(self.interval)
-                    continue
-
-                # surface quad channels that fell out of the live pool this
-                # cycle (offline/unresolved), which otherwise looks like a re-rank
-                dropped = self._dropped_from_pool(self.quad_builder.previous_positions, candidates)
-                if dropped:
-                    logger.warning(
-                        "quad channels dropped from live pool",
-                        dropped=dropped,
-                        candidates=len(candidates),
-                    )
-
-                quad = self.quad_builder.build_quad(candidates)
-                self._on_screen = {}
-                for c in candidates:
-                    author = c.stream.metadata.author.lower()
-                    if author in self.quad_builder.previous_positions:
-                        self._on_screen.setdefault(author, c)
-
-                # feed the local relay every cycle (both/local modes)
-                if serve_local:
-                    self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
-                    self._fed_at = self.slot_relay.clock()
-
-                if quad.is_empty():
-                    logger.info("quad is empty, skipping update")
-                    await asyncio.sleep(self.interval)
-                    continue
-
-                # push to quadstream only when it changed (both/remote modes)
-                if push_remote and self.quad_builder.quad_changed:
-                    assert self.quadstream_client is not None
-                    update_success = await self.quadstream_client.update_quad(quad)
-
-                    if not update_success:
-                        logger.error("quadstream update failed")
-                    elif config.webhook.enabled and config.webhook.url:
-                        await self.quadstream_client.send_webhook(config.webhook.url, quad)
-
-                if self.one_shot:
-                    self.running = False
-                    break
-
-                logger.debug("sleeping", interval=self.interval)
-                await asyncio.sleep(self.interval)
-
+                delay = await self._cycle()
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if self.one_shot:
+                    raise
                 logger.error(
                     "unexpected error in main loop",
                     error=str(e),
                     exc_info=True,
                 )
-                await asyncio.sleep(30)
+                delay = 30
+            if self.one_shot:
+                self.running = False
+                break
+            logger.debug("sleeping", interval=delay)
+            await asyncio.sleep(delay)
+
+    async def _cycle(self) -> float:
+        """Run one cycle; return the seconds to wait before the next."""
+        try:
+            config = await self.config_loader.load_or_cache()
+        except ConfigNotFoundError as e:
+            # one-shot has nothing to wait for; a daemon waits for the web UI or an operator
+            if self.one_shot:
+                raise
+            logger.warning("waiting for a config file", error=str(e))
+            return self.interval
+
+        # detect config changes and recreate components
+        config_hash = hash(str(config.model_dump(exclude={"credentials"})))
+        if self._config_hash != config_hash:
+            if self._config_hash is not None:
+                logger.info("config changed, reloading")
+            self._config_hash = config_hash
+            if self.processor is not None:
+                self.processor.close()
+            # a lookup slower than one cycle is useless: the next cycle is already due
+            self.processor = StreamProcessor(config, lookup_timeout=self.interval)
+            self.quad_builder = QuadBuilder(config)
+
+        assert self.processor is not None
+        assert self.quad_builder is not None
+
+        push_remote = config.mode in ("both", "remote")
+        serve_local = config.mode in ("both", "local")
+        self.slot_relay.proxy_segments = config.relay_segments
+
+        credentials = (
+            (config.credentials.username, config.credentials.secret) if config.credentials else None
+        )
+        if self.quadstream_client and credentials != self._credentials:
+            logger.info("quadstream credentials changed, logging in again")
+            self.quadstream_client = None
+
+        # log in to QuadStream only when we push to it (skipped in local)
+        logged_in = False
+        if push_remote and not self.quadstream_client:
+            assert credentials is not None
+            username, secret = credentials
+            assert username is not None
+            assert secret is not None
+            client = QuadStreamClient(username=username, secret=secret)
+            if not await client.login():
+                logger.error("quadstream login failed, retrying in 30s")
+                return 30
+            self.quadstream_client = client
+            self._credentials = credentials
+            logged_in = True
+
+        candidates = await self.processor.process_stream_groups()
+        if serve_local:
+            candidates += self._still_playing(candidates)
+
+        if not candidates:
+            logger.info("no stream candidates available")
+            self._mark_cycle()
+            return self.interval
+
+        # surface quad channels that fell out of the live pool this
+        # cycle (offline/unresolved), which otherwise looks like a re-rank
+        dropped = self._dropped_from_pool(self.quad_builder.previous_positions, candidates)
+        if dropped:
+            logger.info(
+                "quad channels dropped from live pool",
+                dropped=dropped,
+                candidates=len(candidates),
+            )
+
+        quad = self.quad_builder.build_quad(candidates)
+        self._on_screen = {}
+        for c in candidates:
+            author = c.stream.metadata.author.lower()
+            if author in self.quad_builder.previous_positions:
+                self._on_screen.setdefault(author, c)
+
+        # feed the local relay every cycle (both/local modes)
+        if serve_local:
+            self.slot_store.update(quad.to_list(), self.quad_builder.slot_identities)
+            self._fed_at = self.slot_relay.clock()
+
+        if quad.is_empty():
+            logger.info("quad is empty, skipping update")
+            self._mark_cycle()
+            return self.interval
+
+        # push to QuadStream when the quad changed or a new login (other
+        # account) has not seen it yet (both/remote modes)
+        if push_remote and (self.quad_builder.quad_changed or logged_in):
+            assert self.quadstream_client is not None
+            update_success = await self.quadstream_client.update_quad(quad)
+
+            if not update_success:
+                logger.error("quadstream update failed")
+            elif config.webhook.enabled and config.webhook.url:
+                await self.quadstream_client.send_webhook(config.webhook.url, quad)
+
+        self._mark_cycle()
+        return self.interval
+
+    def _mark_cycle(self) -> None:
+        if self.health_server:
+            self.health_server.mark_cycle()
 
 
 async def run_daemon(
@@ -327,5 +354,7 @@ async def run_daemon(
             daemon.health_server.stop()
         if daemon.webui_runner:
             await daemon.webui_runner.cleanup()
+        if daemon.processor:
+            daemon.processor.close()
         await daemon.slot_relay.aclose()
         await daemon._segment_client.aclose()

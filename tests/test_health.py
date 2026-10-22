@@ -21,13 +21,6 @@ def get_free_port() -> int:
 class TestHealthCheckHandler:
     """Tests for HealthCheckHandler."""
 
-    @pytest.fixture(autouse=True)
-    def reset_config_loaded(self):
-        """Reset config_loaded between tests."""
-        HealthCheckHandler.config_loaded = False
-        yield
-        HealthCheckHandler.config_loaded = False
-
     def test_log_message_suppressed(self):
         """log_message should not produce output."""
         # create a mock handler without a real socket
@@ -79,9 +72,10 @@ class TestHealthCheckHandler:
         assert handler.wfile.getvalue() == b"OK"
 
     def test_readiness_check_ready(self):
-        """_readiness_check should return 200 READY when config loaded."""
-        HealthCheckHandler.config_loaded = True
+        """_readiness_check should return 200 READY after a recent cycle."""
         handler = MagicMock(spec=HealthCheckHandler)
+        handler.server = MagicMock()
+        handler.server.health.is_ready.return_value = True
         handler.wfile = BytesIO()
 
         HealthCheckHandler._readiness_check(handler)
@@ -92,9 +86,10 @@ class TestHealthCheckHandler:
         assert handler.wfile.getvalue() == b"READY"
 
     def test_readiness_check_not_ready(self):
-        """_readiness_check should return 503 NOT READY when config not loaded."""
-        HealthCheckHandler.config_loaded = False
+        """_readiness_check should return 503 NOT READY without a recent cycle."""
         handler = MagicMock(spec=HealthCheckHandler)
+        handler.server = MagicMock()
+        handler.server.health.is_ready.return_value = False
         handler.wfile = BytesIO()
 
         HealthCheckHandler._readiness_check(handler)
@@ -127,13 +122,6 @@ class TestHealthServerInit:
 
 class TestHealthServerStartStop:
     """Tests for HealthServer start/stop."""
-
-    @pytest.fixture(autouse=True)
-    def reset_config_loaded(self):
-        """Reset config_loaded between tests."""
-        HealthCheckHandler.config_loaded = False
-        yield
-        HealthCheckHandler.config_loaded = False
 
     def test_start_creates_server(self):
         """start() should create and start server thread."""
@@ -188,31 +176,35 @@ class TestHealthServerStartStop:
 class TestHealthServerReadiness:
     """Tests for HealthServer readiness methods."""
 
-    @pytest.fixture(autouse=True)
-    def reset_config_loaded(self):
-        """Reset config_loaded between tests."""
-        HealthCheckHandler.config_loaded = False
-        yield
-        HealthCheckHandler.config_loaded = False
+    def test_not_ready_before_first_cycle(self):
+        """is_ready() should be False until a cycle completes."""
+        assert HealthServer().is_ready() is False
 
-    def test_mark_ready(self):
-        """mark_ready() should set config_loaded to True."""
+    def test_ready_after_cycle(self):
+        """mark_cycle() should make is_ready() True."""
+        server = HealthServer(max_age=90)
+        server.mark_cycle()
+        assert server.is_ready() is True
+
+    def test_not_ready_when_heartbeat_is_stale(self):
+        """is_ready() should go False once the last cycle is older than max_age."""
+        server = HealthServer(max_age=90)
+        with patch("quadlink.health.time.monotonic", return_value=1000.0):
+            server.mark_cycle()
+        with patch("quadlink.health.time.monotonic", return_value=1089.0):
+            assert server.is_ready() is True
+        with patch("quadlink.health.time.monotonic", return_value=1091.0):
+            assert server.is_ready() is False
+
+    def test_readiness_is_per_server(self):
+        """One server's heartbeat should not make another ready."""
         server = HealthServer()
-
-        assert HealthCheckHandler.config_loaded is False
-        server.mark_ready()
-        assert HealthCheckHandler.config_loaded is True
+        server.mark_cycle()
+        assert HealthServer().is_ready() is False
 
 
 class TestHealthServerIntegration:
     """Integration tests with actual HTTP requests."""
-
-    @pytest.fixture(autouse=True)
-    def reset_config_loaded(self):
-        """Reset config_loaded between tests."""
-        HealthCheckHandler.config_loaded = False
-        yield
-        HealthCheckHandler.config_loaded = False
 
     @pytest.fixture
     def running_server(self):
@@ -244,7 +236,7 @@ class TestHealthServerIntegration:
     def test_ready_endpoint_ready(self, running_server):
         """GET /ready should return 200 when ready."""
         server, port = running_server
-        server.mark_ready()
+        server.mark_cycle()
 
         response = urllib.request.urlopen(f"http://127.0.0.1:{port}/ready")
 
@@ -261,7 +253,7 @@ class TestHealthServerIntegration:
         assert exc_info.value.code == 404
 
     def test_ready_becomes_ready(self, running_server):
-        """Should go from not ready to ready after mark_ready()."""
+        """Should go from not ready to ready after mark_cycle()."""
         server, port = running_server
 
         # initially not ready
@@ -269,7 +261,6 @@ class TestHealthServerIntegration:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/ready")
         assert exc_info.value.code == 503
 
-        # mark ready
-        server.mark_ready()
+        server.mark_cycle()
         response = urllib.request.urlopen(f"http://127.0.0.1:{port}/ready")
         assert response.status == 200

@@ -103,6 +103,31 @@ class TestLogin:
         assert client.short_id is None
 
     @pytest.mark.asyncio
+    async def test_login_failure_logs_status_not_body(self):
+        """A failed login should log its status and never the response body."""
+        client = QuadStreamClient("user", "secret")
+
+        login_resp = MagicMock()
+        login_resp.status_code = 401
+        login_resp.text = "echoed secret"
+
+        with (
+            patch("httpx.AsyncClient") as MockClient,
+            patch("quadlink.quadstream.logger") as log,
+        ):
+            mock_client = AsyncMock()
+            mock_client.get.return_value = _mock_bootstrap_response()
+            mock_client.post.return_value = login_resp
+            mock_client.cookies = httpx.Cookies()
+            mock_client.__aenter__.return_value = mock_client
+            mock_client.__aexit__.return_value = None
+            MockClient.return_value = mock_client
+
+            assert await client.login() is False
+
+        log.error.assert_called_once_with("quadstream login failed", status=401)
+
+    @pytest.mark.asyncio
     async def test_login_missing_short_id(self):
         """Should return False when login response missing short_id."""
         client = QuadStreamClient("user", "secret")

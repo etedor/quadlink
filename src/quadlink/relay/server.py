@@ -115,6 +115,9 @@ class SlotRelay:
         self._waits: dict[int, asyncio.Task[bool]] = {}
         # slot -> source poll on behalf of waiting segment requests, shared by them
         self._polls: dict[int, asyncio.Task[None]] = {}
+        # slots whose last source fetch failed: every client polls every ~2s, so
+        # only the first failure of a streak and the recovery are logged
+        self._failing: set[int] = set()
 
     def clock(self) -> float:
         """Current time on the clock that video_arrived_since compares against."""
@@ -199,8 +202,13 @@ class SlotRelay:
         try:
             text = await self._fetch_source(slot, entry.url)
         except Exception as e:
-            logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
+            if slot not in self._failing:
+                self._failing.add(slot)
+                logger.warning("relay source fetch failed", slot=slot, url=entry.url, error=str(e))
             return False
+        if slot in self._failing:
+            self._failing.discard(slot)
+            logger.info("relay source fetch recovered", slot=slot)
         await self._ingest_slot(slot, state, entry, text)
         return True
 

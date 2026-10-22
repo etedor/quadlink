@@ -1,5 +1,6 @@
 """Health check HTTP server for monitoring."""
 
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from typing import Any
@@ -9,14 +10,14 @@ import structlog
 logger = structlog.get_logger()
 
 
+class _HealthHTTPServer(HTTPServer):
+    health: "HealthServer"
+
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for health and readiness checks.
+    """HTTP request handler for health and readiness checks."""
 
-    Attributes:
-        config_loaded: Class variable tracking if config has been loaded.
-    """
-
-    config_loaded = False
+    server: _HealthHTTPServer
 
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default HTTP request logging (too noisy for health checks)."""
@@ -43,11 +44,8 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def _readiness_check(self) -> None:
-        """Handle /ready endpoint - returns 200 if config loaded, 503 otherwise.
-
-        Indicates whether the daemon is ready to process streams.
-        """
-        if HealthCheckHandler.config_loaded:
+        """Handle /ready endpoint - 200 if a daemon cycle completed recently, 503 otherwise."""
+        if self.server.health.is_ready():
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.end_headers()
@@ -69,16 +67,21 @@ class HealthServer:
         port: Port number to listen on.
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8080, max_age: float = 90.0):
         """Initialize health server.
 
         Args:
             host: Host address to bind to.
             port: Port number to listen on.
+            max_age: Seconds after the last completed cycle before /ready fails.
         """
         self.host = host
         self.port = port
-        self.server: HTTPServer | None = None
+        self.max_age = max_age
+        # monotonic time of the last completed cycle; written by the event loop,
+        # read by the server thread (a float assignment is atomic)
+        self.last_cycle: float | None = None
+        self.server: _HealthHTTPServer | None = None
         self.thread: Thread | None = None
 
     def start(self) -> None:
@@ -87,7 +90,8 @@ class HealthServer:
             logger.warning("health server already running")
             return
 
-        self.server = HTTPServer((self.host, self.port), HealthCheckHandler)
+        self.server = _HealthHTTPServer((self.host, self.port), HealthCheckHandler)
+        self.server.health = self
         self.thread = Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
 
@@ -107,6 +111,10 @@ class HealthServer:
         self.server = None
         self.thread = None
 
-    def mark_ready(self) -> None:
-        """Mark the daemon as ready (config loaded successfully)."""
-        HealthCheckHandler.config_loaded = True
+    def mark_cycle(self) -> None:
+        """Record that a daemon cycle completed now."""
+        self.last_cycle = time.monotonic()
+
+    def is_ready(self) -> bool:
+        """Whether a daemon cycle completed within max_age seconds."""
+        return self.last_cycle is not None and time.monotonic() - self.last_cycle <= self.max_age

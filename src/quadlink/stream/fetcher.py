@@ -30,7 +30,12 @@ def channel_url(url: str) -> str:
     Callers that track channels a lookup missed key them by this, so the keys
     match Stream.url for the same channel.
     """
-    return url if url.startswith("http") else f"https://twitch.tv/{url}"
+    if "://" in url:
+        return url
+    # "twitch.tv/foo" has a host already; only a bare name needs one
+    if "/" in url:
+        return f"https://{url}"
+    return f"https://twitch.tv/{url}"
 
 
 _VIDEO_CODECS = ("avc1", "avc3", "hvc1", "hev1", "av01", "vp09")
