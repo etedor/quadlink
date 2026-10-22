@@ -393,7 +393,7 @@ class TestProcessStreamGroups:
         assert [(r.stream.channel, r.priority) for r in results] == [("foo", priority)]
         # one lookup per cycle, though the entries spell the channel differently
         assert mock_fetcher.fetch_stream_info.await_count == 1
-        assert processor.rejection("foo") is None
+        assert processor.statuses()[0].state is ChannelState.LIVE
 
     @pytest.mark.asyncio
     async def test_channel_is_looked_up_once_per_cycle(self, mock_fetcher):
@@ -426,9 +426,9 @@ class TestProcessStreamGroups:
 
         assert await processor.process_stream_groups() == []
 
-        reason = processor.rejection("FOO")
-        assert reason is not None
-        assert reason == processor.filter.apply_filters(make_stream("Foo", "Y"), ["only-x"])[1]
+        (row,) = processor.statuses()
+        assert row.state is ChannelState.REJECTED
+        assert row.reason == processor.filter.apply_filters(make_stream("Foo", "Y"), ["only-x"])[1]
         assert not processor.lookup_failed("foo")
 
     @pytest.mark.asyncio
@@ -694,7 +694,9 @@ class TestConcurrentLevels:
         results = await processor.process_stream_groups()
 
         assert [(r.stream.metadata.author, r.priority) for r in results] == [("alias", 100)]
-        assert processor.rejection("same") == "duplicate of another configured channel"
+        rows = {r.channel: r for r in processor.statuses()}
+        assert rows["same"].state is ChannelState.REJECTED
+        assert rows["same"].reason == "duplicate of another configured channel"
 
     @pytest.mark.asyncio
     async def test_lookups_start_highest_priority_first(self, mock_fetcher):

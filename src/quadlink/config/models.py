@@ -144,12 +144,12 @@ class Config(BaseSettings):
     # gets 3x this on its next lookup
     lookup_timeout: float = Field(default=10.0, gt=0, le=120)
 
-    # serve segments from duke (fetched once for all clients) with audio re-encoded
-    # to 48 kHz; false sends clients straight to Twitch's CDN
+    # serve segments from the relay (fetched once for all clients) with audio
+    # re-encoded to 48 kHz; false sends clients straight to Twitch's CDN
     relay_segments: bool = True
 
     # where quadlink publishes the quad:
-    #   both   - local relay + push to quadstream.tv (default, no regression)
+    #   both   - local relay + push to quadstream.tv
     #   local  - local relay only; no quadstream login/push (credentials optional)
     #   remote - push to quadstream.tv only; local relay not served
     mode: Literal["both", "local", "remote"] = "both"

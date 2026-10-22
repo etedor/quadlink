@@ -77,16 +77,6 @@ class StreamProcessor:
         """
         return channel_login(url) in self._unresolved
 
-    def rejection(self, url: str) -> str | None:
-        """Why the last run left out a live channel, from its highest-priority entry.
-
-        None when the channel was accepted or its lookup failed.
-        """
-        channel = channel_login(url)
-        if channel in self._accepted:
-            return None
-        return self._rejections.get(channel)
-
     def statuses(self) -> list[ChannelStatus]:
         """Every configured channel's outcome in the last run, one row per channel.
 

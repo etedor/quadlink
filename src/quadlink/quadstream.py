@@ -44,6 +44,8 @@ class QuadStreamClient:
         self.csrf_token: str | None = None
         self._session_started_at: float | None = None
         self._session_expires_at: float | None = None
+        # why the last login() call failed; None after a successful login
+        self.login_error: str | None = None
 
     def _extract_session_expiry(self) -> None:
         """Extract earliest cookie expiration time from session cookies."""
@@ -104,11 +106,13 @@ class QuadStreamClient:
                         "quadstream bootstrap failed",
                         status=bootstrap.status_code,
                     )
+                    self.login_error = f"bootstrap request failed (status {bootstrap.status_code})"
                     return False
 
                 csrf_token = self._parse_csrf_token(bootstrap.text)
                 if not csrf_token:
                     logger.info("quadstream bootstrap missing csrf token")
+                    self.login_error = "bootstrap page had no CSRF token"
                     return False
 
                 headers = {
@@ -122,6 +126,7 @@ class QuadStreamClient:
                 if response.status_code != 200:
                     # status only: the body can echo the submitted credentials
                     logger.info("quadstream login failed", status=response.status_code)
+                    self.login_error = f"login request failed (status {response.status_code})"
                     return False
 
                 # session typically rotates on auth; re-fetch the bootstrap to
@@ -146,19 +151,24 @@ class QuadStreamClient:
 
                 if not self.short_id:
                     logger.info("quadstream login response missing short_id")
+                    self.login_error = "login response had no short ID"
                     return False
 
                 logger.info("quadstream logged in", short_id=self.short_id)
+                self.login_error = None
                 return True
 
         except httpx.TimeoutException:
             logger.info("quadstream login timeout")
+            self.login_error = "login request timed out"
             return False
         except httpx.RequestError as e:
             logger.info("quadstream login request error", error=str(e))
+            self.login_error = f"login request error: {e}"
             return False
         except Exception as e:
             logger.info("quadstream login unexpected error", error=str(e))
+            self.login_error = f"login unexpected error: {e}"
             return False
 
     @staticmethod

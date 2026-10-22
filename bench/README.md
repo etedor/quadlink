@@ -53,7 +53,7 @@ Thread pool of 4 threads (equal to the concurrency limit):
 
 With 4 threads, a shorter timeout helps little from 32 channels on, and more lookups fail. A hung lookup keeps its thread for 40 seconds. The next lookups wait for a free thread, and their timeout runs while they wait.
 
-Thread pool of 8 threads (twice the concurrency limit, the processor's value now):
+Thread pool of 8 threads (twice the concurrency limit, matching `StreamProcessor`):
 
 | Channels | Levels | 30 s | 15 s | 10 s | 8 s |
 |---|---|---|---|---|---|
@@ -70,7 +70,7 @@ Thread pool of 8 threads (twice the concurrency limit, the processor's value now
 Result: `lookup_timeout` is 10 seconds by default, and the thread pool has twice the concurrency limit.
 
 - 10 seconds is 8.6 times the real p99 (1.16 s) and 5.9 times the real maximum (1.70 s).
-- Against the old 30 s timeout with 4 threads, a 10 s timeout with 8 threads makes the median refresh 55-58% shorter for 16 channels, 27-37% shorter for 32 channels and 36-41% shorter for 64 channels. The p90 is 42-57% shorter.
+- Compared with a 30 s timeout and 4 threads, a 10 s timeout with 8 threads makes the median refresh 55-58% shorter for 16 channels, 27-37% shorter for 32 channels and 36-41% shorter for 64 channels. The p90 is 42-57% shorter.
 - 8 seconds cuts lookups that would succeed (the 8-10 s tail of the fake model) and gains little more.
 - A channel that times out gets 3 times the timeout (30 s) on its next lookup. Thus a channel that is always slow fails on one refresh and then resolves on each refresh after it.
 
@@ -102,7 +102,7 @@ Setup: 4 slots, accelerated x8 (0.25 s per 2 s segment), 600 real seconds (80 st
 | HTTP errors (404s) | 0 | 0 | 0 | 0 |
 | Segment latency, p95 / max (s) | 0.004 / 1.07 | 0.004 / 1.06 | 0.004 / 1.24 | 0.004 / 1.13 |
 
-Result: no regression. The Python anon difference in run A (about 20 MiB) does not occur in run B, where "after" is 4 MiB lower. The difference comes from dead httpx responses that only the cyclic GC frees (58-66 MiB at the end of each run). Refer to `.superpowers/sdd/bench-report.md`, section 2b.
+Result: no regression. The Python anon difference in run A (about 20 MiB) does not occur in run B, where "after" is 4 MiB lower. The difference comes from dead httpx responses that only the cyclic GC frees (58-66 MiB at the end of each run).
 
 ## Refresh time by priority level
 

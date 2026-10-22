@@ -132,9 +132,11 @@ class FakeClient:
         self.username = username
         self.secret = secret
         self.logged_in = False
+        self.login_error: str | None = None
 
     async def login(self) -> bool:
         self.logged_in = self.service.accounts.get(self.username) == self.secret
+        self.login_error = None if self.logged_in else "bad credentials"
         return self.logged_in
 
     async def update_quad(self, quad: Quad) -> bool:
@@ -637,7 +639,8 @@ class TestConfigReload:
             write_config(config_path, secret="rotated")
             with structlog.testing.capture_logs() as logs:
                 assert await loops.refresh() == daemon.interval
-            assert events(logs, "quadstream login failed, retrying after each refresh")
+            (warning,) = events(logs, "quadstream login failed, retrying after each refresh")
+            assert warning["reason"] == "bad credentials"
             assert daemon.quadstream_client is None
             quadstream.accounts["user"] = "rotated"
             await loops.refresh()
@@ -670,6 +673,7 @@ class TestQuadStreamDown:
         assert twitch.lookups == 5 * len(CONFIGURED)
         (warning,) = events(down, "quadstream login failed, retrying after each refresh")
         assert warning["log_level"] == "warning"
+        assert warning["reason"] == "bad credentials"
         (recovered,) = events(up, "quadstream login recovered")
         assert recovered["log_level"] == "info"
         # the quad on screen at recovery, pushed once
@@ -886,6 +890,15 @@ class TestOneShot:
         assert "login" in failed["error"]
         assert twitch.lookups == len(CONFIGURED)
         assert len(quadstream.clients) == 1
+        assert quadstream.pushes == []
+
+    def test_failed_push_exits_one(self, config_path, quadstream, twitch):
+        """A push QuadStream refuses fails one-shot exactly like a failed login."""
+        quadstream.refuse_pushes = 1
+        with structlog.testing.capture_logs() as logs:
+            assert self.run(config_path) == 1
+        (failed,) = events(logs, "daemon failed")
+        assert "update" in failed["error"]
         assert quadstream.pushes == []
 
     def test_unexpected_error_exits_one(self, config_path):

@@ -78,6 +78,7 @@ class TestLogin:
         assert client.short_id == "abc123"
         assert client.csrf_token == "tok123"
         assert client.cookies is not None
+        assert client.login_error is None
 
     @pytest.mark.asyncio
     async def test_login_failure_status(self):
@@ -101,6 +102,7 @@ class TestLogin:
 
         assert result is False
         assert client.short_id is None
+        assert client.login_error == "login request failed (status 401)"
 
     @pytest.mark.asyncio
     async def test_login_failure_logs_status_not_body(self):
@@ -148,6 +150,7 @@ class TestLogin:
             result = await client.login()
 
         assert result is False
+        assert client.login_error == "login response had no short ID"
 
     @pytest.mark.asyncio
     async def test_bootstrap_failure_status(self):
@@ -166,6 +169,7 @@ class TestLogin:
 
         assert result is False
         assert client.csrf_token is None
+        assert client.login_error == "bootstrap request failed (status 500)"
 
     @pytest.mark.asyncio
     async def test_bootstrap_missing_csrf(self):
@@ -188,6 +192,7 @@ class TestLogin:
 
         assert result is False
         assert client.csrf_token is None
+        assert client.login_error == "bootstrap page had no CSRF token"
 
     @pytest.mark.asyncio
     async def test_login_timeout(self):
@@ -206,6 +211,7 @@ class TestLogin:
             result = await client.login()
 
         assert result is False
+        assert client.login_error == "login request timed out"
 
     @pytest.mark.asyncio
     async def test_login_request_error(self):
@@ -224,6 +230,7 @@ class TestLogin:
             result = await client.login()
 
         assert result is False
+        assert client.login_error == "login request error: connection failed"
 
     @pytest.mark.asyncio
     async def test_login_unexpected_error(self):
@@ -242,6 +249,7 @@ class TestLogin:
             result = await client.login()
 
         assert result is False
+        assert client.login_error == "login unexpected error: unexpected"
 
 
 class TestParseCsrfToken:

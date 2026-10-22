@@ -2,7 +2,6 @@
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import structlog
 from ruamel.yaml import YAML
@@ -10,49 +9,6 @@ from ruamel.yaml import YAML
 from .models import Config
 
 logger = structlog.get_logger()
-
-# top-level keys Config does not define
-_REMOVED_KEYS = ("skip_hosted", "hosted_offset", "logging")
-# webhook.* keys Webhook does not define
-_REMOVED_WEBHOOK_KEYS = ("timeout",)
-# priorities.*.*.* (stream group) keys StreamGroup does not define
-_REMOVED_GROUP_KEYS = ("limit",)
-
-
-def strip_removed_keys(data: dict[str, Any]) -> None:
-    """Warn about and drop each removed config key, in place, so Config keeps rejecting typos.
-
-    Config itself has no `extra="ignore"`: a stray top-level key (a typo like
-    stabilty_bonus) must still fail loudly. Only the specific keys this version
-    stopped reading are let through, and only after being named in a warning.
-    """
-    for key in _REMOVED_KEYS:
-        if key in data:
-            logger.warning("config key has no effect and is ignored", key=key)
-            del data[key]
-
-    webhook = data.get("webhook")
-    if isinstance(webhook, dict):
-        for key in _REMOVED_WEBHOOK_KEYS:
-            if key in webhook:
-                logger.warning("config key has no effect and is ignored", key=f"webhook.{key}")
-                del webhook[key]
-
-    priorities = data.get("priorities")
-    if isinstance(priorities, dict):
-        for groups in priorities.values():
-            if not isinstance(groups, list):
-                continue
-            for group in groups:
-                if not isinstance(group, dict):
-                    continue
-                for key in _REMOVED_GROUP_KEYS:
-                    if key in group:
-                        logger.warning(
-                            "config key has no effect and is ignored",
-                            key=f"priorities.*.{key}",
-                        )
-                        del group[key]
 
 
 class ConfigNotFoundError(Exception):
@@ -130,7 +86,6 @@ class ConfigLoader:
                 with open(path) as f:
                     data = yaml.load(f)
 
-                strip_removed_keys(data)
                 config = Config(**data)
 
                 if "stability_bonus" in data and "diversity_bonus" in data:

@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from quadlink import __version__
-from quadlink.config.loader import ConfigLoader, strip_removed_keys
+from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
 from quadlink.relay.server import SlotRelay
 
@@ -306,7 +306,6 @@ class WebUI:
             yaml = YAML(typ="safe")
             parsed = yaml.load(StringIO(yaml_content))
             parsed = self._clean_parsed_yaml(parsed)
-            strip_removed_keys(parsed)
 
             # validate with pydantic (but don't require credentials for validation)
             if "credentials" not in parsed:
@@ -332,8 +331,6 @@ class WebUI:
             if not isinstance(parsed, dict):
                 raise ValueError("the config must be a YAML mapping")
             parsed = self._clean_parsed_yaml(parsed)
-            # keys older versions read are dropped on save, not rejected
-            strip_removed_keys(parsed)
 
             # the page never sees credentials, and values resolved from
             # credentials.file or QL_* env must never be written inline

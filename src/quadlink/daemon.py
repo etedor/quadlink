@@ -325,10 +325,6 @@ class Daemon:
         if config.mode in ("both", "local"):
             self.slot_store.update(quad.to_list(), list(state.channels))
 
-        if quad.is_empty():
-            logger.info("quad is empty, skipping update")
-            return
-
         if config.mode not in ("both", "remote"):
             return
         client = self.quadstream_client or await self._login(config)
@@ -337,6 +333,9 @@ class Daemon:
         # recompose, at the latest after the next refresh.
         if client and state.channels != self._pushed:
             if not await client.update_quad(quad):
+                # one-shot has no later refresh to retry the push; it exits 1
+                if self.one_shot:
+                    raise RuntimeError("QuadStream did not accept the quad update")
                 logger.error("quadstream update failed")
                 return
             # a refresh that logged in again during the push reset _pushed for the
@@ -368,7 +367,10 @@ class Daemon:
             if self.one_shot:
                 raise RuntimeError("QuadStream did not accept the login")
             if not self._login_failing:
-                logger.warning("quadstream login failed, retrying after each refresh")
+                logger.warning(
+                    "quadstream login failed, retrying after each refresh",
+                    reason=client.login_error,
+                )
                 self._login_failing = True
             return None
         if self._login_failing:
