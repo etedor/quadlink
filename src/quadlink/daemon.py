@@ -284,6 +284,8 @@ class Daemon:
             assert secret is not None
             client = QuadStreamClient(username=username, secret=secret)
             if not await client.login():
+                if self.one_shot:
+                    raise RuntimeError("QuadStream did not accept the login")
                 logger.error("quadstream login failed, retrying in 30s")
                 return 30
             self.quadstream_client = client

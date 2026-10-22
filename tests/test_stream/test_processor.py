@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import structlog
 
 from quadlink.config.models import Config, Credentials, Filters, Ruleset, StreamGroup
 from quadlink.stream.fetcher import LookupFailed
@@ -580,6 +581,55 @@ class TestStatuses:
 
         assert row.state is ChannelState.LIVE
         assert row.priority == 50
+
+    @pytest.mark.asyncio
+    async def test_filter_error_leaves_the_channel_out_with_the_error(self, mock_fetcher):
+        """A filter that raises on every entry of a channel keeps it out of the pool."""
+        processor = StreamProcessor(self.config())
+
+        def broken(stream, rulesets):
+            raise ValueError("bad pattern")
+
+        processor.filter.apply_filters = broken
+        mock_fetcher.fetch_stream_info.side_effect = lambda url: make_stream("Foo", "X")
+        processor.fetcher = mock_fetcher
+        with structlog.testing.capture_logs() as logs:
+            results = await processor.process_stream_groups()
+
+        (row,) = [r for r in processor.statuses() if r.channel == "foo"]
+
+        assert results == []
+        assert row.state is ChannelState.LOOKUP_FAILED
+        assert row.reason == "bad pattern"
+        assert processor.lookup_failed("foo")
+        assert any(e["event"] == "error processing stream" for e in logs)
+
+    @pytest.mark.asyncio
+    async def test_second_channel_resolving_to_a_live_one_is_a_duplicate(self, mock_fetcher):
+        """Two configured channels resolving to one stream: the second is rejected."""
+
+        async def fetch(url):
+            return Stream(
+                url=url,
+                metadata=Metadata(author="Same", category="X", title="t"),
+                channel="same",
+            )
+
+        mock_fetcher.fetch_stream_info.side_effect = fetch
+        processor = StreamProcessor(
+            make_config(
+                priorities={100: [StreamGroup(urls=["alias"])], 50: [StreamGroup(urls=["same"])]}
+            )
+        )
+        processor.fetcher = mock_fetcher
+        results = await processor.process_stream_groups()
+
+        rows = {r.channel: r for r in processor.statuses()}
+
+        assert [r.priority for r in results] == [100]
+        assert rows["alias"].state is ChannelState.LIVE
+        assert rows["same"].state is ChannelState.REJECTED
+        assert rows["same"].reason == "duplicate of another configured channel"
 
 
 class TestConcurrentLevels:

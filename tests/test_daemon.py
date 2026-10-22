@@ -1,759 +1,811 @@
-"""Tests for daemon module."""
+"""Tests for the daemon: refresh and recompose loops, pushes, logins, reloads, one-shot.
+
+The daemon runs with real config files, the real stream processor and compose; only
+Twitch (the stream fetcher) and quadstream.tv (the QuadStream client) are faked.
+"""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import itertools
+import json
+import os
+import signal
+import sys
+import time
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
 
+import httpx
 import pytest
+import structlog
 
-from quadlink.config.loader import ConfigNotFoundError
+from quadlink import __main__ as cli
 from quadlink.daemon import Daemon, run_daemon
-from quadlink.quad import QuadState
-from quadlink.types import (
-    ChannelState,
-    ChannelStatus,
-    Metadata,
-    PrioritizedStream,
-    Quad,
-    Stream,
-    channel_login,
-)
+from quadlink.health import HealthServer
+from quadlink.quad import compose
+from quadlink.stream.fetcher import LookupFailed
+from quadlink.types import ChannelState, Metadata, Quad, Stream, channel_login
+
+CHANNELS = ("a", "b", "c", "d")
+# "e" is configured but offline until a test brings it live
+CONFIGURED = (*CHANNELS, "e")
 
 
-def make_stream(author: str) -> PrioritizedStream:
-    """Create a prioritized stream."""
-    return PrioritizedStream(
-        stream=Stream(
-            url=f"https://twitch.tv/{author}",
-            metadata=Metadata(author=author, category="Games", title="Test"),
-        ),
-        priority=100,
-        tiebreaker=0.5,
-    )
+class Twitch:
+    """Fake Twitch: what a lookup of each channel finds.
 
+    Every lookup mints a new playlist URL, as Twitch does.
+    """
 
-def composed(urls: list[str], channels: list[str] | None = None) -> QuadState:
-    """A composition holding urls, identified by channels (default: each URL's login)."""
-    quad = Quad(urls)
-    if channels is None:
-        channels = [channel_login(u) if u else "" for u in quad.slots]
-    return QuadState(quad=quad, channels=tuple(channels))
+    def __init__(self) -> None:
+        # channel -> (category, title), or the exception its lookup raises
+        self.live: dict[str, tuple[str, str] | Exception] = {}
+        self.lookups = 0
+        self.minted = 0
+        # while set and clear, lookups wait for it
+        self.gate: asyncio.Event | None = None
+        self.fetchers: list[FakeFetcher] = []
 
+    def go_live(self, *channels: str, category: str = "Games", title: str = "t") -> None:
+        for channel in channels:
+            self.live[channel] = (category, title)
 
-class TestDaemonInit:
-    """Tests for Daemon initialization."""
+    def go_offline(self, *channels: str) -> None:
+        for channel in channels:
+            self.live.pop(channel, None)
 
-    def test_default_initialization(self):
-        """Should initialize with default values."""
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
-
-        assert daemon.interval == 30
-        assert daemon.one_shot is False
-        assert daemon.running is False
-        assert daemon.processor is None
-        assert daemon.quad_state == QuadState()
-        assert daemon.quadstream_client is None
-        assert daemon.enable_webui is False
-        assert daemon.webui_host == "0.0.0.0"
-        assert daemon.webui_port == 8081
-        assert daemon.webui is None
-        assert daemon.webui_runner is None
-
-    def test_custom_initialization(self):
-        """Should accept custom interval and one_shot."""
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon(interval=60, one_shot=True)
-
-        assert daemon.interval == 60
-        assert daemon.one_shot is True
-
-
-class TestDaemonStart:
-    """Tests for daemon start method."""
-
-    @pytest.mark.asyncio
-    async def test_start_starts_health_server(self):
-        """start() should start the health server when enabled."""
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer") as MockHealth:
-                mock_health = MagicMock()
-                MockHealth.return_value = mock_health
-
-                daemon = Daemon(enable_health_server=True)
-                daemon._main_loop = AsyncMock()
-
-                await daemon.start()
-
-                mock_health.start.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_start_sets_running_true(self):
-        """start() should set running to True."""
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
-                daemon._main_loop = AsyncMock()
-
-                await daemon.start()
-
-                assert daemon.running is True
-
-    @pytest.mark.asyncio
-    async def test_start_handles_cancelled_error(self):
-        """start() should re-raise CancelledError."""
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
-                daemon._main_loop = AsyncMock(side_effect=asyncio.CancelledError())
-
-                with pytest.raises(asyncio.CancelledError):
-                    await daemon.start()
-
-
-class TestDaemonMainLoop:
-    """Tests for daemon main loop."""
-
-    @pytest.fixture
-    def mock_config(self):
-        """Create a mock config."""
-        config = MagicMock()
-        config.mode = "both"
-        config.credentials.username = "user"
-        config.credentials.secret = "secret"
-        config.webhook.enabled = False
-        config.webhook.url = ""
-        return config
-
-    @pytest.fixture
-    def daemon_with_mocks(self):
-        """Create a daemon with mocked dependencies."""
-        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-            with patch("quadlink.daemon.HealthServer") as MockHealth:
-                mock_loader = MagicMock()
-                mock_loader.load_or_cache = AsyncMock()
-                MockLoader.return_value = mock_loader
-
-                mock_health = MagicMock()
-                MockHealth.return_value = mock_health
-
-                daemon = Daemon(one_shot=True, enable_health_server=True)
-                yield daemon, mock_loader, mock_health
-
-    @pytest.mark.asyncio
-    async def test_main_loop_config_load_failure(self, daemon_with_mocks):
-        """Should sleep and retry on config load failure."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-
-        # first call returns None, second call we stop
-        call_count = 0
-
-        async def mock_load():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                daemon.running = False
+    async def lookup(self, url: str) -> Stream | None:
+        self.lookups += 1
+        if self.gate is not None:
+            await self.gate.wait()
+        channel = channel_login(url)
+        found = self.live.get(channel)
+        if isinstance(found, Exception):
+            raise found
+        if found is None:
             return None
+        self.minted += 1
+        category, title = found
+        return Stream(
+            url=f"https://twitch.tv/{channel}",
+            metadata=Metadata(author=channel, category=category, title=title),
+            master_url=f"https://edge.example/{channel}.m3u8?token={self.minted}",
+        )
 
-        mock_loader.load_or_cache = mock_load
 
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            await daemon._main_loop()
-            mock_sleep.assert_called_with(30)
+class FakeExecutor:
+    def __init__(self) -> None:
+        self.shut_down = False
 
-    @pytest.mark.asyncio
-    async def test_main_loop_login_failure_is_not_a_completed_cycle(
-        self, daemon_with_mocks, mock_config
+    def shutdown(self, **_: Any) -> None:
+        self.shut_down = True
+
+
+class FakeFetcher:
+    """Stands in for StreamlinkFetcher inside the real StreamProcessor."""
+
+    def __init__(self, twitch: Twitch) -> None:
+        self.fetch_stream_info = twitch.lookup
+        self.executor = FakeExecutor()
+
+
+def slot_channels(quad: Quad) -> tuple[str, ...]:
+    """Channel per slot of a quad of fake playlist URLs."""
+    return tuple(url.rsplit("/", 1)[1].split(".")[0] if url else "" for url in quad.slots)
+
+
+class QuadStream:
+    """Fake quadstream.tv: accounts, accepted pushes and webhooks."""
+
+    def __init__(self) -> None:
+        self.accounts = {"user": "secret"}
+        self.clients: list[FakeClient] = []
+        # (secret of the account, channel per slot) of every accepted push
+        self.pushes: list[tuple[str, tuple[str, ...]]] = []
+        self.refuse_pushes = 0
+        self.webhooks: list[tuple[str, tuple[str, ...]]] = []
+        # while set and clear, pushes wait for it
+        self.gate: asyncio.Event | None = None
+        self.in_flight = 0
+        self.peak = 0
+
+    def client(self, username: str, secret: str) -> "FakeClient":
+        client = FakeClient(self, username, secret)
+        self.clients.append(client)
+        return client
+
+
+class FakeClient:
+    """Stands in for QuadStreamClient."""
+
+    def __init__(self, service: QuadStream, username: str, secret: str) -> None:
+        self.service = service
+        self.username = username
+        self.secret = secret
+        self.logged_in = False
+
+    async def login(self) -> bool:
+        self.logged_in = self.service.accounts.get(self.username) == self.secret
+        return self.logged_in
+
+    async def update_quad(self, quad: Quad) -> bool:
+        assert self.logged_in
+        service = self.service
+        service.in_flight += 1
+        service.peak = max(service.peak, service.in_flight)
+        try:
+            if service.gate is not None:
+                await service.gate.wait()
+        finally:
+            service.in_flight -= 1
+        if service.refuse_pushes:
+            service.refuse_pushes -= 1
+            return False
+        service.pushes.append((self.secret, slot_channels(quad)))
+        return True
+
+    async def send_webhook(self, url: str, quad: Quad | None = None) -> bool:
+        assert quad is not None
+        self.service.webhooks.append((url, slot_channels(quad)))
+        return True
+
+
+def write_config(
+    path: Path,
+    channels: tuple[str, ...] = CONFIGURED,
+    mode: str = "both",
+    secret: str = "secret",
+    **extra: Any,
+) -> None:
+    """Write a config file (JSON is YAML) with all channels in one group."""
+    data: dict[str, Any] = {"mode": mode, "priorities": {100: [{"urls": list(channels)}]}}
+    if mode != "local":
+        data["credentials"] = {"username": "user", "secret": secret}
+    data.update(extra)
+    path.write_text(json.dumps(data))
+
+
+async def settle() -> None:
+    """Let every ready task run until none is (the fakes never sleep)."""
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+def recompose_loops() -> list[asyncio.Task]:
+    return [
+        t
+        for t in asyncio.all_tasks()
+        if t.get_coro().__qualname__ == "Daemon._recompose_loop" and not t.done()
+    ]
+
+
+def events(logs: list[dict[str, Any]], event: str) -> list[dict[str, Any]]:
+    return [entry for entry in logs if entry["event"] == event]
+
+
+async def wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.005)
+
+
+@pytest.fixture
+def twitch() -> Twitch:
+    twitch = Twitch()
+    twitch.go_live(*CHANNELS)
+    return twitch
+
+
+@pytest.fixture
+def quadstream() -> QuadStream:
+    return QuadStream()
+
+
+@pytest.fixture(autouse=True)
+def fakes(twitch: Twitch, quadstream: QuadStream) -> Any:
+    """Replace Twitch and quadstream.tv for every test; nothing reaches the network."""
+
+    def fetcher(**_: Any) -> FakeFetcher:
+        made = FakeFetcher(twitch)
+        twitch.fetchers.append(made)
+        return made
+
+    # tiebreakers fall in lookup order, so equal-priority channels rank in config order
+    order = itertools.count()
+    tiebreakers = SimpleNamespace(random=lambda: 1 / (2 + next(order)))
+    with (
+        patch("quadlink.stream.processor.StreamlinkFetcher", fetcher),
+        patch("quadlink.stream.processor.random", tiebreakers),
+        patch("quadlink.daemon.QuadStreamClient", quadstream.client),
     ):
-        """A failed login should not count as a completed cycle for /ready."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
+        yield
+
+
+@pytest.fixture
+def config_path(tmp_path: Path) -> Path:
+    path = tmp_path / "config.yaml"
+    write_config(path)
+    return path
+
+
+@pytest.fixture
+async def make_daemon(config_path: Path) -> AsyncIterator[Callable[..., Daemon]]:
+    made: list[Daemon] = []
+
+    def make(**kwargs: Any) -> Daemon:
+        kwargs.setdefault("config_path", str(config_path))
+        daemon = Daemon(**kwargs)
         daemon.running = True
-        daemon.one_shot = False
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor"):
-            with patch("quadlink.daemon.compose"):
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=False)
-                    MockClient.return_value = mock_client
-
-                    # login fails, so we stop after first iteration
-                    call_count = 0
-
-                    async def mock_load():
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count >= 2:
-                            daemon.running = False
-                        return mock_config
-
-                    mock_loader.load_or_cache = mock_load
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock):
-                        await daemon._main_loop()
-
-                    mock_health.mark_cycle.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_initializes_components(self, daemon_with_mocks, mock_config):
-        """Should initialize the processor on first run."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=False)
-                    MockClient.return_value = mock_client
-
-                    call_count = 0
-
-                    async def mock_load():
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count >= 2:
-                            daemon.running = False
-                        return mock_config
-
-                    mock_loader.load_or_cache = mock_load
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock):
-                        await daemon._main_loop()
-
-                    MockProcessor.assert_called_once_with(
-                        mock_config, lookup_timeout=daemon.interval
-                    )
-                    # login failed, so nothing was composed
-                    MockCompose.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_login_failure(self, daemon_with_mocks, mock_config):
-        """Should retry on login failure."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor"):
-            with patch("quadlink.daemon.compose"):
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=False)
-                    MockClient.return_value = mock_client
-
-                    call_count = 0
-
-                    async def mock_load():
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count >= 2:
-                            daemon.running = False
-                        return mock_config
-
-                    mock_loader.load_or_cache = mock_load
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                        await daemon._main_loop()
-                        # should sleep on login failure
-                        mock_sleep.assert_called_with(30)
-
-    @pytest.mark.asyncio
-    async def test_main_loop_no_candidates(self, daemon_with_mocks, mock_config):
-        """Should sleep when no candidates available."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose"):
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(return_value=[])
-                    MockProcessor.return_value = mock_processor
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    call_count = 0
-                    original_interval = daemon.interval
-
-                    async def mock_load():
-                        nonlocal call_count
-                        call_count += 1
-                        if call_count >= 2:
-                            daemon.running = False
-                        return mock_config
-
-                    mock_loader.load_or_cache = mock_load
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                        await daemon._main_loop()
-                        mock_sleep.assert_called_with(original_interval)
-
-    @pytest.mark.asyncio
-    async def test_main_loop_empty_quad(self, daemon_with_mocks, mock_config):
-        """Should skip update when quad is empty."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    MockCompose.return_value = composed(Quad().slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    await daemon._main_loop()
-
-                    MockCompose.assert_called_once()
-                    # update_quad should not be called for empty quad
-                    mock_client.update_quad.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_successful_update(self, daemon_with_mocks, mock_config):
-        """Should update quad on success."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = True
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    quad = Quad(["https://twitch.tv/streamer1"])
-                    MockCompose.return_value = composed(quad.slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    mock_client.update_quad = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    await daemon._main_loop()
-
-                    mock_client.update_quad.assert_called_once_with(quad)
-
-    @pytest.mark.asyncio
-    async def test_main_loop_update_failure(self, daemon_with_mocks, mock_config):
-        """Should log error on update failure."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = True
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    quad = Quad(["https://twitch.tv/streamer1"])
-                    MockCompose.return_value = composed(quad.slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    mock_client.update_quad = AsyncMock(return_value=False)
-                    MockClient.return_value = mock_client
-
-                    # should not raise, just log error
-                    await daemon._main_loop()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_webhook_enabled(self, daemon_with_mocks):
-        """Should send webhook when enabled."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = True
-
-        config = MagicMock()
-        config.mode = "both"
-        config.credentials.username = "user"
-        config.credentials.secret = "secret"
-        config.webhook.enabled = True
-        config.webhook.url = "https://webhook.example.com"
-
-        mock_loader.load_or_cache = AsyncMock(return_value=config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    quad = Quad(["https://twitch.tv/streamer1"])
-                    MockCompose.return_value = composed(quad.slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    mock_client.update_quad = AsyncMock(return_value=True)
-                    mock_client.send_webhook = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    await daemon._main_loop()
-
-                    mock_client.send_webhook.assert_called_once_with(
-                        "https://webhook.example.com", quad
-                    )
-
-    @pytest.mark.asyncio
-    async def test_main_loop_one_shot_exits(self, daemon_with_mocks, mock_config):
-        """Should exit after one iteration in one-shot mode."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = True
-        mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    quad = Quad(["https://twitch.tv/streamer1"])
-                    MockCompose.return_value = composed(quad.slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    mock_client.update_quad = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    await daemon._main_loop()
-
-                    assert daemon.running is False
-
-    @pytest.mark.asyncio
-    async def test_main_loop_continuous_mode_sleeps(self, daemon_with_mocks, mock_config):
-        """Should sleep between iterations in continuous mode."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-        daemon.interval = 45
-
-        call_count = 0
-
-        async def mock_load():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                daemon.running = False
-            return mock_config
-
-        mock_loader.load_or_cache = mock_load
-
-        with patch("quadlink.daemon.StreamProcessor") as MockProcessor:
-            with patch("quadlink.daemon.compose") as MockCompose:
-                with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                    mock_processor = MagicMock()
-                    mock_processor.process_stream_groups = AsyncMock(
-                        return_value=[make_stream("streamer1")]
-                    )
-                    MockProcessor.return_value = mock_processor
-
-                    quad = Quad(["https://twitch.tv/streamer1"])
-                    MockCompose.return_value = composed(quad.slots)
-
-                    mock_client = AsyncMock()
-                    mock_client.login = AsyncMock(return_value=True)
-                    mock_client.update_quad = AsyncMock(return_value=True)
-                    MockClient.return_value = mock_client
-
-                    with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-                        await daemon._main_loop()
-                        # should sleep for interval after successful update
-                        mock_sleep.assert_called_with(45)
-
-    @pytest.mark.asyncio
-    async def test_main_loop_cancelled_error(self, daemon_with_mocks, mock_config):
-        """Should exit cleanly on CancelledError."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-
-        mock_loader.load_or_cache = AsyncMock(side_effect=asyncio.CancelledError())
-
-        # should not raise
-        await daemon._main_loop()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_unexpected_error(self, daemon_with_mocks, mock_config):
-        """Should sleep and retry on unexpected error."""
-        daemon, mock_loader, mock_health = daemon_with_mocks
-        daemon.running = True
-        daemon.one_shot = False
-
-        call_count = 0
-
-        async def mock_load():
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
-                daemon.running = False
-                return None
-            raise RuntimeError("unexpected")
-
-        mock_loader.load_or_cache = mock_load
-
-        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            await daemon._main_loop()
-            mock_sleep.assert_called_with(30)
+        made.append(daemon)
+        return daemon
+
+    yield make
+    for daemon in made:
+        if daemon.processor is not None:
+            daemon.processor.close()
+        await daemon.slot_relay.aclose()
+        await daemon._segment_client.aclose()
+
+
+class Stepper:
+    """The daemon's real recompose loop, with refreshes stepped by the test."""
+
+    def __init__(self, daemon: Daemon) -> None:
+        self.daemon = daemon
+
+    async def refresh(self) -> float:
+        delay = await self.daemon._refresh()
+        await settle()
+        return delay
+
+    async def recompose(self) -> None:
+        self.daemon.request_recompose()
+        await settle()
+
+
+@asynccontextmanager
+async def stepped(daemon: Daemon) -> AsyncIterator[Stepper]:
+    task = asyncio.create_task(daemon._recompose_loop())
+    try:
+        yield Stepper(daemon)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def store_channels(daemon: Daemon) -> list[str | None]:
+    entries = [daemon.slot_store.get(slot) for slot in range(4)]
+    return [e.identity if e else None for e in entries]
+
+
+class TestRefreshAndRecompose:
+    """A refresh looks every channel up; the recompose it requests composes and pushes."""
+
+    async def test_refresh_feeds_the_relay_and_pushes(self, make_daemon, quadstream):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            delay = await loops.refresh()
+        assert delay == daemon.interval
+        assert store_channels(daemon) == list(CHANNELS)
+        assert quadstream.pushes == [("secret", CHANNELS)]
+        assert [(s.channel, s.state) for s in daemon.channel_statuses] == [
+            *((c, ChannelState.LIVE) for c in CHANNELS),
+            ("e", ChannelState.OFFLINE),
+        ]
+        assert daemon.statuses_at is not None
+
+    async def test_unchanged_lineup_is_pushed_once(self, make_daemon, quadstream, twitch):
+        """Every refresh mints new URLs; the push compares channels, not URLs."""
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            for _ in range(3):
+                await loops.refresh()
+        assert twitch.minted == 12
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_failed_push_is_retried_after_the_next_refresh(self, make_daemon, quadstream):
+        daemon = make_daemon()
+        quadstream.refuse_pushes = 1
+        async with stepped(daemon) as loops:
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+            assert quadstream.pushes == []
+            assert events(logs, "quadstream update failed")
+            await loops.refresh()
+            assert quadstream.pushes == [("secret", CHANNELS)]
+            await loops.refresh()
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_request_recompose_retries_a_push_without_a_lookup(
+        self, make_daemon, quadstream, twitch
+    ):
+        daemon = make_daemon()
+        quadstream.refuse_pushes = 1
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            lookups = twitch.lookups
+            await loops.recompose()
+        assert twitch.lookups == lookups
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_request_recompose_before_any_refresh_does_nothing(self, make_daemon, quadstream):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.recompose()
+        assert store_channels(daemon) == [None] * 4
+        assert quadstream.clients == []
+
+    async def test_requests_during_a_push_get_one_more_recompose(
+        self, make_daemon, quadstream, twitch
+    ):
+        daemon = make_daemon()
+        quadstream.gate = asyncio.Event()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert quadstream.in_flight == 1
+            # a refresh with a new lineup and two web actions while the push hangs
+            twitch.go_offline("d")
+            twitch.go_live("e")
+            await loops.refresh()
+            daemon.request_recompose()
+            daemon.request_recompose()
+            await settle()
+            quadstream.gate.set()
+            await settle()
+        assert quadstream.peak == 1
+        assert quadstream.pushes == [("secret", CHANNELS), ("secret", ("a", "b", "c", "e"))]
+
+    async def test_recompose_error_keeps_the_loop_running(self, make_daemon):
+        daemon = make_daemon()
+        failures = [RuntimeError("boom")]
+
+        def flaky(*args: Any) -> Any:
+            if failures:
+                raise failures.pop()
+            return compose(*args)
+
+        with patch("quadlink.daemon.compose", flaky):
+            async with stepped(daemon) as loops:
+                with structlog.testing.capture_logs() as logs:
+                    await loops.refresh()
+                assert events(logs, "unexpected error in recompose")
+                assert store_channels(daemon) == [None] * 4
+                await loops.recompose()
+        assert store_channels(daemon) == list(CHANNELS)
+
+    async def test_empty_pool_keeps_the_quad(self, make_daemon, quadstream, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_offline(*CHANNELS)
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert events(logs, "no stream candidates available")
+        assert store_channels(daemon) == list(CHANNELS)
+        assert daemon.quad_state.channels == CHANNELS
+        assert len(quadstream.pushes) == 1
+
+    async def test_dropped_channel_is_logged_and_its_slot_refilled(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_offline("b")
+            twitch.go_live("e")
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        (dropped,) = events(logs, "quad channels dropped from live pool")
+        assert dropped["log_level"] == "info"
+        assert dropped["dropped"] == ["b"]
+        assert store_channels(daemon) == ["a", "e", "c", "d"]
+
+    async def test_statuses_follow_the_latest_refresh(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            with patch("quadlink.daemon.time.time", side_effect=[1000.0, 1030.0]):
+                await loops.refresh()
+                assert daemon.statuses_at == 1000.0
+                twitch.go_offline("a")
+                twitch.live["b"] = LookupFailed("timed out")
+                await loops.refresh()
+        assert daemon.statuses_at == 1030.0
+        states = {s.channel: (s.state, s.reason) for s in daemon.channel_statuses}
+        assert states["a"] == (ChannelState.OFFLINE, None)
+        assert states["b"] == (ChannelState.LOOKUP_FAILED, "timed out")
+        assert states["c"] == (ChannelState.LIVE, None)
+
+    async def test_webhook_follows_an_accepted_push(self, make_daemon, config_path, quadstream):
+        write_config(config_path, webhook={"enabled": True, "url": "https://hooks.example/q"})
+        daemon = make_daemon()
+        quadstream.refuse_pushes = 1
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert quadstream.webhooks == []
+            await loops.refresh()
+        assert quadstream.webhooks == [("https://hooks.example/q", CHANNELS)]
+
+    async def test_local_mode_feeds_the_relay_only(self, make_daemon, config_path, quadstream):
+        write_config(config_path, mode="local")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+        assert store_channels(daemon) == list(CHANNELS)
+        assert quadstream.clients == []
+
+    async def test_remote_mode_pushes_only(self, make_daemon, config_path, quadstream):
+        write_config(config_path, mode="remote")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+        assert quadstream.pushes == [("secret", CHANNELS)]
+        assert store_channels(daemon) == [None] * 4
+
+
+class TestStillPlaying:
+    """An on-screen channel whose lookup failed keeps its slot while its video arrives."""
+
+    @staticmethod
+    def video_from(*channels: str) -> Callable[[int, str, float], bool]:
+        return lambda slot, channel, since: channel in channels
+
+    async def test_failed_lookup_with_video_arriving_keeps_the_slot(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_live("e")
+            twitch.live["a"] = LookupFailed("proxy error")
+            daemon.slot_relay.video_arrived_since = self.video_from("a")
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert events(logs, "kept channel: lookup failed but video still arriving")
+        assert store_channels(daemon) == list(CHANNELS)
+
+    async def test_failed_lookup_without_new_video_loses_the_slot(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_live("e")
+            twitch.live["a"] = LookupFailed("proxy error")
+            daemon.slot_relay.video_arrived_since = self.video_from()
+            await loops.refresh()
+        assert store_channels(daemon) == ["e", "b", "c", "d"]
+
+    async def test_channel_a_filter_rejects_loses_the_slot(self, make_daemon, config_path, twitch):
+        rulesets = [{"name": "no-reruns", "filters": {"block_titles": ["rerun"]}}]
+        write_config(config_path, rulesets=rulesets)
+        config = json.loads(config_path.read_text())
+        config["priorities"]["100"][0]["rulesets"] = ["no-reruns"]
+        config_path.write_text(json.dumps(config))
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_live("e")
+            twitch.go_live("a", title="rerun")
+            daemon.slot_relay.video_arrived_since = self.video_from("a")
+            await loops.refresh()
+        assert store_channels(daemon) == ["e", "b", "c", "d"]
+
+
+class TestConfigReload:
+    async def test_reload_keeps_slots_and_replaces_the_processor(
+        self, make_daemon, config_path, quadstream, twitch
+    ):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            first = daemon.processor
+            write_config(config_path, channels=tuple(reversed(CONFIGURED)), diversity_bonus=10)
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert events(logs, "config changed, reloading")
+        assert daemon.processor is not first
+        assert twitch.fetchers[0].executor.shut_down
+        assert not twitch.fetchers[1].executor.shut_down
+        assert store_channels(daemon) == list(CHANNELS)
+        assert daemon.quad_state.channels == CHANNELS
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_config_change_during_a_refresh_applies_on_the_next(
+        self, make_daemon, config_path, twitch
+    ):
+        daemon = make_daemon()
+        twitch.gate = asyncio.Event()
+        async with stepped(daemon) as loops:
+            refresh = asyncio.create_task(loops.refresh())
+            await settle()
+            write_config(config_path, diversity_bonus=10)
+            twitch.gate.set()
+            await refresh
+            # the refresh in progress finished with the config it started with
+            assert daemon._config is not None
+            assert daemon._config.diversity_bonus == 25
+            assert len(twitch.fetchers) == 1
+            await loops.refresh()
+        assert daemon._config.diversity_bonus == 10
+        assert len(twitch.fetchers) == 2
+        assert store_channels(daemon) == list(CHANNELS)
+
+    async def test_credential_change_logs_in_again(
+        self, make_daemon, config_path, quadstream, twitch
+    ):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            processor = daemon.processor
+            quadstream.accounts["user"] = "rotated"
+            write_config(config_path, secret="rotated")
+            await loops.refresh()
+        assert [c.secret for c in quadstream.clients] == ["secret", "rotated"]
+        # the new login gets the quad although the lineup did not change
+        assert quadstream.pushes == [("secret", CHANNELS), ("rotated", CHANNELS)]
+        # credentials are not part of the config hash: no processor rebuild
+        assert daemon.processor is processor
+        assert len(twitch.fetchers) == 1
+
+    async def test_failed_relogin_drops_the_old_client_and_retries(
+        self, make_daemon, config_path, quadstream
+    ):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            old = daemon.quadstream_client
+            # the config has the new secret before the account does
+            write_config(config_path, secret="rotated")
+            with structlog.testing.capture_logs() as logs:
+                assert await loops.refresh() == 30
+            assert events(logs, "quadstream login failed, retrying in 30s")
+            assert daemon.quadstream_client is None
+            quadstream.accounts["user"] = "rotated"
+            await loops.refresh()
+        assert daemon.quadstream_client is not old
+        assert [c.secret for c in quadstream.clients] == ["secret", "rotated", "rotated"]
+        assert quadstream.pushes == [("secret", CHANNELS), ("rotated", CHANNELS)]
+
+
+class TestLoginAndReadiness:
+    """/ready turns green only once a refresh completes."""
+
+    async def test_ready_after_a_completed_refresh(self, make_daemon):
+        daemon = make_daemon(enable_health_server=True, interval=20)
+        assert daemon.health_server is not None
+        assert daemon.health_server.max_age == 60
+        assert not daemon.health_server.is_ready()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+        assert daemon.health_server.is_ready()
+
+    async def test_failed_login_is_not_ready_and_retries(self, make_daemon, quadstream, twitch):
+        daemon = make_daemon(enable_health_server=True)
+        quadstream.accounts["user"] = "other"
+        async with stepped(daemon) as loops:
+            assert await loops.refresh() == 30
+            assert not daemon.health_server.is_ready()
+            assert twitch.lookups == 0
+            quadstream.accounts["user"] = "secret"
+            assert await loops.refresh() == daemon.interval
+        assert daemon.health_server.is_ready()
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_missing_config_is_not_ready_and_waits(self, make_daemon, tmp_path):
+        daemon = make_daemon(enable_health_server=True, config_path=str(tmp_path / "none.yaml"))
+        async with stepped(daemon) as loops:
+            with structlog.testing.capture_logs() as logs:
+                assert await loops.refresh() == daemon.interval
+        assert events(logs, "waiting for a config file")
+        assert not daemon.health_server.is_ready()
+
+
+class TestRunningLoops:
+    """The two loops run together until the daemon stops or is cancelled."""
+
+    async def test_stopping_ends_both_loops(self, make_daemon, quadstream):
+        daemon = make_daemon(interval=0.01)
+        task = asyncio.create_task(daemon._main_loop())
+        await wait_for(lambda: bool(quadstream.pushes))
+        assert len(recompose_loops()) == 1
+        daemon.running = False
+        await asyncio.wait_for(task, 1)
+        assert recompose_loops() == []
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    @pytest.mark.parametrize("during", ["wait", "lookup"])
+    async def test_cancel_ends_both_loops(self, make_daemon, twitch, during):
+        daemon = make_daemon(interval=0.01)
+        task = asyncio.create_task(daemon._main_loop())
+        await wait_for(lambda: daemon.slot_store.get(0) is not None)
+        if during == "lookup":
+            twitch.gate = asyncio.Event()
+            lookups = twitch.lookups
+            await wait_for(lambda: twitch.lookups > lookups)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert task.done()
+        assert recompose_loops() == []
+
+    async def test_unexpected_refresh_error_is_logged_and_the_loop_survives(
+        self, make_daemon, quadstream
+    ):
+        daemon = make_daemon(interval=0.01)
+
+        async def broken() -> float:
+            raise RuntimeError("boom")
+
+        daemon._refresh = broken  # type: ignore[method-assign]
+        with structlog.testing.capture_logs() as logs:
+            task = asyncio.create_task(daemon._main_loop())
+            await wait_for(lambda: bool(events(logs, "unexpected error in main loop")))
+        # the loop waits 30 s before the next refresh instead of ending
+        await settle()
+        assert not task.done()
+        assert len(recompose_loops()) == 1
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert quadstream.pushes == []
+
+    async def test_webui_starts_without_a_config_and_waits_for_one(
+        self, make_daemon, tmp_path, quadstream
+    ):
+        path = tmp_path / "later.yaml"
+        daemon = make_daemon(
+            config_path=str(path),
+            interval=0.01,
+            enable_webui=True,
+            webui_host="127.0.0.1",
+            webui_port=0,
+        )
+        task = asyncio.create_task(daemon.start())
+        try:
+            await wait_for(lambda: daemon.webui_runner is not None)
+            assert daemon.webui is not None
+            assert daemon.webui.slot_relay is daemon.slot_relay
+            host, port = daemon.webui_runner.addresses[0][:2]
+            async with httpx.AsyncClient() as http:
+                page = await http.get(f"http://{host}:{port}/")
+            assert page.status_code == 200
+            write_config(path)
+            await wait_for(lambda: bool(quadstream.pushes))
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if daemon.webui_runner is not None:
+                await daemon.webui_runner.cleanup()
+        assert store_channels(daemon) == list(CHANNELS)
+
+
+class TestOneShot:
+    """`quadlink --one-shot` runs one refresh and recompose, then exits."""
+
+    @staticmethod
+    def run(config: Path, *extra: str) -> int:
+        """Run the CLI; return its exit code."""
+        argv = ["quadlink", "--one-shot", "--config", str(config), *extra]
+        with patch.object(sys, "argv", argv), patch.object(cli, "setup_logging"):
+            try:
+                cli.main()
+            except SystemExit as e:
+                return int(e.code or 0)
+        return 0
+
+    def test_pushes_once_and_exits_without_waiting(self, config_path, quadstream, twitch):
+        started = time.monotonic()
+        assert self.run(config_path) == 0
+        assert time.monotonic() - started < 5
+        assert twitch.lookups == len(CONFIGURED)
+        assert quadstream.pushes == [("secret", CHANNELS)]
+        # the processor's lookup threads are released
+        assert twitch.fetchers[0].executor.shut_down
+
+    def test_no_live_channel_exits_zero(self, config_path, quadstream, twitch):
+        twitch.go_offline(*CHANNELS)
+        started = time.monotonic()
+        assert self.run(config_path) == 0
+        assert time.monotonic() - started < 5
+        assert quadstream.pushes == []
+
+    def test_missing_config_exits_one(self, tmp_path):
+        with structlog.testing.capture_logs() as logs:
+            assert self.run(tmp_path / "none.yaml") == 1
+        (failed,) = events(logs, "daemon failed")
+        assert "none.yaml" in failed["error"]
+
+    def test_invalid_config_exits_one(self, config_path, twitch):
+        config_path.write_text(json.dumps({"priorities": {}}))
+        with structlog.testing.capture_logs() as logs:
+            assert self.run(config_path) == 1
+        assert events(logs, "daemon failed")
+        assert twitch.lookups == 0
+
+    def test_failed_login_exits_one_without_retrying(self, config_path, quadstream, twitch):
+        quadstream.accounts["user"] = "other"
+        started = time.monotonic()
+        with structlog.testing.capture_logs() as logs:
+            assert self.run(config_path) == 1
+        assert time.monotonic() - started < 5
+        assert not [e for e in logs if "retrying" in e["event"]]
+        (failed,) = events(logs, "daemon failed")
+        assert "login" in failed["error"]
+        assert twitch.lookups == 0
+
+    def test_unexpected_error_exits_one(self, config_path):
+        with (
+            patch("quadlink.daemon.compose", side_effect=RuntimeError("boom")),
+            structlog.testing.capture_logs() as logs,
+        ):
+            assert self.run(config_path) == 1
+        (failed,) = events(logs, "daemon failed")
+        assert failed["error"] == "boom"
 
 
 class TestRunDaemon:
-    """Tests for run_daemon function."""
+    async def test_sigterm_stops_the_daemon_and_releases_resources(
+        self, config_path, quadstream, twitch
+    ):
+        made: list[Daemon] = []
 
-    @pytest.mark.asyncio
-    async def test_run_daemon_creates_daemon(self):
-        """run_daemon should create and run daemon."""
-        with patch("quadlink.daemon.Daemon") as MockDaemon:
-            mock_daemon = MagicMock()
-            mock_daemon.start = AsyncMock()
-            mock_daemon.running = True
-            mock_daemon.health_server = MagicMock()
-            mock_daemon.webui_runner = None
-            mock_daemon.slot_relay = AsyncMock()
-            mock_daemon._segment_client = AsyncMock()
-            MockDaemon.return_value = mock_daemon
+        class Recorded(Daemon):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                made.append(self)
 
-            with patch("asyncio.get_event_loop") as mock_get_loop:
-                mock_loop = MagicMock()
-                mock_get_loop.return_value = mock_loop
-
-                # cancel task immediately
-                async def mock_start():
-                    mock_daemon.running = False
-                    raise asyncio.CancelledError()
-
-                mock_daemon.start = mock_start
-
-                await run_daemon(
-                    one_shot=True, interval=60, enable_health_server=False, config_path=None
+        with (
+            patch("quadlink.daemon.Daemon", Recorded),
+            patch("quadlink.daemon.HealthServer", partial(HealthServer, host="127.0.0.1", port=0)),
+            structlog.testing.capture_logs() as logs,
+        ):
+            task = asyncio.create_task(
+                run_daemon(
+                    config_path=str(config_path),
+                    enable_health_server=True,
+                    enable_webui=True,
+                    webui_host="127.0.0.1",
+                    webui_port=0,
                 )
-
-                MockDaemon.assert_called_once_with(
-                    interval=60,
-                    one_shot=True,
-                    enable_health_server=False,
-                    config_path=None,
-                    enable_webui=False,
-                    webui_host="0.0.0.0",
-                    webui_port=8081,
-                    webui_allowed_hosts=None,
-                )
-
-    @pytest.mark.asyncio
-    async def test_run_daemon_stops_health_server_on_exit(self):
-        """run_daemon should stop health server on exit."""
-        with patch("quadlink.daemon.Daemon") as MockDaemon:
-            mock_daemon = MagicMock()
-            mock_health = MagicMock()
-            mock_daemon.health_server = mock_health
-            mock_daemon.webui_runner = None
-            mock_daemon.slot_relay = AsyncMock()
-            mock_daemon._segment_client = AsyncMock()
-            mock_daemon.running = True
-            MockDaemon.return_value = mock_daemon
-
-            with patch("asyncio.get_event_loop") as mock_get_loop:
-                mock_loop = MagicMock()
-                mock_get_loop.return_value = mock_loop
-
-                async def mock_start():
-                    raise asyncio.CancelledError()
-
-                mock_daemon.start = mock_start
-
-                await run_daemon()
-
-                mock_health.stop.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_run_daemon_closes_relay_and_segment_client_on_exit(self):
-        """run_daemon should close the relay and its segment client on exit."""
-        with patch("quadlink.daemon.Daemon") as MockDaemon:
-            mock_daemon = MagicMock()
-            mock_daemon.health_server = None
-            mock_daemon.webui_runner = None
-            mock_daemon.slot_relay = AsyncMock()
-            mock_daemon._segment_client = AsyncMock()
-            mock_daemon.running = True
-            MockDaemon.return_value = mock_daemon
-
-            with patch("asyncio.get_event_loop") as mock_get_loop:
-                mock_loop = MagicMock()
-                mock_get_loop.return_value = mock_loop
-
-                async def mock_start():
-                    raise asyncio.CancelledError()
-
-                mock_daemon.start = mock_start
-
-                await run_daemon()
-
-                mock_daemon.slot_relay.aclose.assert_called_once()
-                mock_daemon._segment_client.aclose.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_run_daemon_sets_up_signal_handlers(self):
-        """run_daemon should set up SIGINT and SIGTERM handlers."""
-        import signal
-
-        with patch("quadlink.daemon.Daemon") as MockDaemon:
-            mock_daemon = MagicMock()
-            mock_daemon.health_server = MagicMock()
-            mock_daemon.webui_runner = None
-            mock_daemon.slot_relay = AsyncMock()
-            mock_daemon._segment_client = AsyncMock()
-            mock_daemon.running = True
-            MockDaemon.return_value = mock_daemon
-
-            with patch("asyncio.get_event_loop") as mock_get_loop:
-                mock_loop = MagicMock()
-                mock_get_loop.return_value = mock_loop
-
-                async def mock_start():
-                    raise asyncio.CancelledError()
-
-                mock_daemon.start = mock_start
-
-                await run_daemon()
-
-                # verify signal handlers were added
-                assert mock_loop.add_signal_handler.call_count == 2
-                calls = mock_loop.add_signal_handler.call_args_list
-                signals_registered = {call[0][0] for call in calls}
-                assert signal.SIGINT in signals_registered
-                assert signal.SIGTERM in signals_registered
-
-    @pytest.mark.asyncio
-    async def test_run_daemon_signal_handler_callback(self):
-        """Signal handler should stop daemon and cancel task."""
-        import signal
-
-        with patch("quadlink.daemon.Daemon") as MockDaemon:
-            mock_daemon = MagicMock()
-            mock_health = MagicMock()
-            mock_daemon.health_server = mock_health
-            mock_daemon.webui_runner = None
-            mock_daemon.slot_relay = AsyncMock()
-            mock_daemon._segment_client = AsyncMock()
-            mock_daemon.running = True
-            MockDaemon.return_value = mock_daemon
-
-            captured_handler = None
-
-            with patch("asyncio.get_event_loop") as mock_get_loop:
-                mock_loop = MagicMock()
-
-                def capture_handler(sig, handler):
-                    nonlocal captured_handler
-                    if sig == signal.SIGINT:
-                        captured_handler = handler
-
-                mock_loop.add_signal_handler.side_effect = capture_handler
-                mock_get_loop.return_value = mock_loop
-
-                async def mock_start():
-                    # wait a bit to allow signal handler to be set up
-                    await asyncio.sleep(0.01)
-                    raise asyncio.CancelledError()
-
-                mock_daemon.start = mock_start
-
-                await run_daemon()
-
-                # call the captured signal handler
-                assert captured_handler is not None
-                captured_handler()
-
-                # verify handler effects
-                assert mock_daemon.running is False
-                mock_health.stop.assert_called()
+            )
+            await wait_for(lambda: bool(quadstream.pushes))
+            (daemon,) = made
+            assert daemon.health_server is not None
+            assert daemon.health_server.server is not None
+            assert daemon.webui_runner is not None
+            assert daemon.webui_runner.addresses
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.wait_for(task, 2)
+        assert daemon.running is False
+        assert events(logs, "shutting down")[0]["signal"] == "SIGTERM"
+        assert daemon.health_server.server is None
+        assert not daemon.webui_runner.addresses
+        assert daemon._segment_client.is_closed
+        assert twitch.fetchers[0].executor.shut_down
+        assert recompose_loops() == []
 
 
-class TestDaemonRelayWiring:
-    """Tests for slot store / relay integration."""
+def test_missing_ffmpeg_is_logged():
+    with (
+        patch("quadlink.daemon.shutil.which", return_value=None),
+        structlog.testing.capture_logs() as logs,
+    ):
+        Daemon()
+    assert events(logs, "relay ffmpeg not found, audio passes through")
 
-    @pytest.fixture
-    def mock_config(self):
-        """Create a mock config."""
-        config = MagicMock()
-        config.mode = "both"
-        config.credentials.username = "user"
-        config.credentials.secret = "secret"
-        config.webhook.enabled = False
-        config.webhook.url = ""
-        return config
 
-    def test_init_creates_store_and_relay(self):
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
-        assert daemon.slot_store is not None
-        assert daemon.slot_relay.store is daemon.slot_store
-
-    def test_init_gives_relay_a_segment_proxy(self):
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
-        assert daemon.slot_relay._segments is not None
-
-    @pytest.mark.asyncio
-    async def test_fetch_segment_returns_the_body_and_raises_on_error(self):
-        import httpx
-
+class TestFetchSegment:
+    async def test_returns_the_body_and_raises_on_error(self, make_daemon):
         def respond(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/gone.ts":
                 return httpx.Response(404)
             return httpx.Response(200, content=b"x" * 100_000)
 
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
+        daemon = make_daemon()
         await daemon._segment_client.aclose()
         daemon._segment_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        try:
-            assert await daemon._fetch_segment("http://cdn/a.ts") == b"x" * 100_000
-            with pytest.raises(httpx.HTTPStatusError):
-                await daemon._fetch_segment("http://cdn/gone.ts")
-        finally:
-            await daemon._segment_client.aclose()
+        assert await daemon._fetch_segment("http://cdn/a.ts") == b"x" * 100_000
+        with pytest.raises(httpx.HTTPStatusError):
+            await daemon._fetch_segment("http://cdn/gone.ts")
 
-    @pytest.mark.asyncio
-    async def test_fetch_segment_bounds_a_trickling_body(self):
-        import httpx
-
-        async def trickle():
+    async def test_bounds_a_trickling_body(self, make_daemon):
+        async def trickle() -> AsyncIterator[bytes]:
             while True:
                 yield b"x"
                 await asyncio.sleep(0.05)
@@ -761,669 +813,9 @@ class TestDaemonRelayWiring:
         def respond(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, content=trickle())
 
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                daemon = Daemon()
+        daemon = make_daemon()
         await daemon._segment_client.aclose()
         daemon._segment_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        try:
-            with patch("quadlink.daemon.SEGMENT_FETCH_WAIT", 0.3):
-                with pytest.raises(TimeoutError):
-                    await daemon._fetch_segment("http://cdn/slow.ts")
-        finally:
-            await daemon._segment_client.aclose()
-
-    @pytest.mark.asyncio
-    async def test_main_loop_writes_quad_to_slot_store(self, mock_config):
-        from quadlink.types import Quad
-
-        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-            with patch("quadlink.daemon.HealthServer"):
-                mock_loader = MagicMock()
-                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-                MockLoader.return_value = mock_loader
-
-                daemon = Daemon(one_shot=True)
-                daemon.running = True
-
-                quad = Quad(["u1", "u2", "u3", "u4"])
-
-                with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.compose") as MockCompose:
-                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                            proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
-                            MockProc.return_value = proc
-
-                            MockCompose.return_value = composed(
-                                quad.slots, ["c1", "c2", "c3", "c4"]
-                            )
-
-                            client = AsyncMock()
-                            client.login = AsyncMock(return_value=True)
-                            client.update_quad = AsyncMock(return_value=True)
-                            MockClient.return_value = client
-
-                            with patch("asyncio.sleep", new_callable=AsyncMock):
-                                await daemon._main_loop()
-
-        assert daemon.slot_store.get(0).url == "u1"
-        assert daemon.slot_store.get(0).identity == "c1"
-        assert daemon.slot_store.get(3).url == "u4"
-        assert daemon.slot_store.get(3).identity == "c4"
-
-    @pytest.mark.asyncio
-    async def test_local_mode_feeds_store_and_skips_quadstream(self, mock_config):
-
-        mock_config.mode = "local"
-
-        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-            with patch("quadlink.daemon.HealthServer"):
-                mock_loader = MagicMock()
-                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-                MockLoader.return_value = mock_loader
-
-                daemon = Daemon(one_shot=True)
-                daemon.running = True
-
-                with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.compose") as MockCompose:
-                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                            proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
-                            MockProc.return_value = proc
-
-                            MockCompose.return_value = composed(
-                                ["u1", "u2", "u3", "u4"], ["c1", "c2", "c3", "c4"]
-                            )
-
-                            with patch("asyncio.sleep", new_callable=AsyncMock):
-                                await daemon._main_loop()
-
-                            # local mode never touches quadstream
-                            MockClient.assert_not_called()
-
-        # but the relay store is still fed
-        assert daemon.slot_store.get(0).url == "u1"
-        assert daemon.quadstream_client is None
-
-    @pytest.mark.asyncio
-    async def test_remote_mode_pushes_quadstream_and_skips_store(self, mock_config):
-
-        mock_config.mode = "remote"
-
-        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-            with patch("quadlink.daemon.HealthServer"):
-                mock_loader = MagicMock()
-                mock_loader.load_or_cache = AsyncMock(return_value=mock_config)
-                MockLoader.return_value = mock_loader
-
-                daemon = Daemon(one_shot=True)
-                daemon.running = True
-
-                with patch("quadlink.daemon.StreamProcessor") as MockProc:
-                    with patch("quadlink.daemon.compose") as MockCompose:
-                        with patch("quadlink.daemon.QuadStreamClient") as MockClient:
-                            proc = MagicMock()
-                            proc.process_stream_groups = AsyncMock(return_value=[make_stream("c")])
-                            MockProc.return_value = proc
-
-                            MockCompose.return_value = composed(
-                                ["u1", "u2", "u3", "u4"], ["c1", "c2", "c3", "c4"]
-                            )
-
-                            client = AsyncMock()
-                            client.login = AsyncMock(return_value=True)
-                            client.update_quad = AsyncMock(return_value=True)
-                            MockClient.return_value = client
-
-                            with patch("asyncio.sleep", new_callable=AsyncMock):
-                                await daemon._main_loop()
-
-                            # remote mode pushes to quadstream
-                            client.update_quad.assert_awaited_once()
-
-        # but the relay store is not fed
-        assert daemon.slot_store.get(0) is None
-
-
-class TestDroppedFromPool:
-    """Tests for the dropped-channel diagnostic."""
-
-    def test_flags_missing_quad_channels(self):
-        prev = {"wallah": 1, "shroud": 0, "grad": 2}
-        candidates = [make_stream("shroud"), make_stream("grad")]
-        assert Daemon._dropped_from_pool(prev, candidates) == ["wallah"]
-
-    def test_empty_when_all_present_case_insensitive(self):
-        prev = {"shroud": 0, "grad": 1}
-        candidates = [make_stream("Shroud"), make_stream("grad")]
-        assert Daemon._dropped_from_pool(prev, candidates) == []
-
-    def test_empty_when_no_previous_quad(self):
-        assert Daemon._dropped_from_pool({}, [make_stream("shroud")]) == []
-
-
-class TestStillPlaying:
-    """Tests for keeping an on-screen channel whose lookup failed but video arrives."""
-
-    @pytest.fixture
-    def daemon(self):
-        with patch("quadlink.daemon.ConfigLoader"):
-            with patch("quadlink.daemon.HealthServer"):
-                d = Daemon()
-        d.processor = MagicMock()
-        d.processor.lookup_failed = MagicMock(return_value=True)
-        d.quad_state = composed(["bob", "", "alice"])
-        d._on_screen = {"alice": make_stream("alice"), "bob": make_stream("bob")}
-        d._refreshed_at = 10.0
-        d.slot_relay.video_arrived_since = MagicMock(return_value=True)
-        return d
-
-    def test_keeps_failed_lookup_with_video_arriving(self, daemon):
-        kept = daemon._still_playing([make_stream("bob")])
-        assert [k.stream.metadata.author for k in kept] == ["alice"]
-        daemon.slot_relay.video_arrived_since.assert_called_once_with(2, "alice", 10.0)
-        daemon.processor.lookup_failed.assert_called_once_with("alice")
-
-    def test_pool_is_keyed_by_login_not_display_name(self, daemon):
-        """A renamed display name does not drop the channel from the pool."""
-        renamed = make_stream("bob")
-        renamed.stream.metadata.author = "Bob The Streamer"
-        assert Daemon._dropped_from_pool({"alice": 2, "bob": 0}, [renamed]) == ["alice"]
-
-    def test_drops_channel_rejected_by_filter(self, daemon):
-        daemon.processor.lookup_failed.return_value = False
-        assert daemon._still_playing([make_stream("bob")]) == []
-
-    def test_drops_channel_without_new_video(self, daemon):
-        daemon.slot_relay.video_arrived_since.return_value = False
-        assert daemon._still_playing([make_stream("bob")]) == []
-
-    def test_nothing_kept_before_first_feed(self, daemon):
-        daemon._refreshed_at = None
-        assert daemon._still_playing([make_stream("bob")]) == []
-
-
-class TestDaemonCycleFixes:
-    """One-shot exits, heartbeat, credential reload and missing-config waits."""
-
-    @pytest.fixture
-    def config(self):
-        config = MagicMock()
-        config.mode = "both"
-        config.credentials.username = "user"
-        config.credentials.secret = "secret"
-        config.webhook.enabled = False
-        config.model_dump.return_value = {"same": True}
-        return config
-
-    @pytest.fixture
-    def daemon(self, config):
-        with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-            with patch("quadlink.daemon.HealthServer") as MockHealth:
-                MockLoader.return_value.load_or_cache = AsyncMock(return_value=config)
-                MockHealth.return_value = MagicMock()
-                daemon = Daemon(one_shot=True, enable_health_server=True)
-        daemon.running = True
-        return daemon
-
-    @staticmethod
-    def client(login: bool = True) -> AsyncMock:
-        client = AsyncMock()
-        client.login = AsyncMock(return_value=login)
-        client.update_quad = AsyncMock(return_value=True)
-        return client
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("outcome", ["no_candidates", "empty_quad", "login_failure"])
-    async def test_one_shot_exits_without_sleeping(self, daemon, outcome):
-        processor = MagicMock()
-        processor.process_stream_groups = AsyncMock(
-            return_value=[] if outcome == "no_candidates" else [make_stream("a")]
-        )
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.compose", return_value=QuadState()),
-            patch(
-                "quadlink.daemon.QuadStreamClient",
-                return_value=self.client(login=outcome != "login_failure"),
-            ),
-            patch("asyncio.sleep", new_callable=AsyncMock) as sleep,
-        ):
-            await asyncio.wait_for(daemon._main_loop(), 1)
-        assert daemon.running is False
-        sleep.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_completed_cycle_marks_heartbeat(self, daemon):
-        processor = MagicMock()
-        processor.process_stream_groups = AsyncMock(return_value=[])
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.compose"),
-            patch("quadlink.daemon.QuadStreamClient", return_value=self.client()),
-        ):
-            await daemon._main_loop()
-        daemon.health_server.mark_cycle.assert_called_once()
-
-    def test_heartbeat_window_is_three_intervals(self):
-        with patch("quadlink.daemon.ConfigLoader"), patch("quadlink.daemon.HealthServer") as MH:
-            Daemon(interval=20, enable_health_server=True)
-        MH.assert_called_once_with(max_age=60)
-
-    @pytest.mark.asyncio
-    async def test_credential_change_logs_in_again(self, daemon, config):
-        processor = MagicMock()
-        processor.process_stream_groups = AsyncMock(return_value=[make_stream("a")])
-        first, second = self.client(), self.client()
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor) as MP,
-            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/a"])),
-            patch("quadlink.daemon.QuadStreamClient", side_effect=[first, second]) as MC,
-        ):
-            await daemon._cycle()
-            await daemon._cycle()
-            assert MC.call_count == 1
-            config.credentials.secret = "rotated"
-            await daemon._cycle()
-        assert MC.call_count == 2
-        assert MC.call_args.kwargs == {"username": "user", "secret": "rotated"}
-        assert daemon.quadstream_client is second
-        # the new account gets the quad although it did not change
-        second.update_quad.assert_called_once()
-        # credentials are not part of the config hash: no pipeline rebuild
-        MP.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_reload_closes_old_processor(self, daemon, config):
-        old, new = MagicMock(), MagicMock()
-        for p in (old, new):
-            p.process_stream_groups = AsyncMock(return_value=[])
-        config.mode = "local"
-        with (
-            patch("quadlink.daemon.StreamProcessor", side_effect=[old, new]),
-            patch("quadlink.daemon.compose"),
-        ):
-            await daemon._cycle()
-            config.model_dump.return_value = {"same": False}
-            await daemon._cycle()
-        old.close.assert_called_once()
-        new.close.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_missing_config_waits_an_interval(self, daemon):
-        daemon.one_shot = False
-        daemon.config_loader.load_or_cache = AsyncMock(side_effect=ConfigNotFoundError("none"))
-        assert await daemon._cycle() == daemon.interval
-
-    @pytest.mark.asyncio
-    async def test_missing_config_fails_one_shot(self, daemon):
-        daemon.config_loader.load_or_cache = AsyncMock(side_effect=ConfigNotFoundError("none"))
-        with pytest.raises(ConfigNotFoundError):
-            await daemon._main_loop()
-
-    @pytest.mark.asyncio
-    async def test_unexpected_error_fails_one_shot(self, daemon):
-        daemon.config_loader.load_or_cache = AsyncMock(side_effect=RuntimeError("boom"))
-        with pytest.raises(RuntimeError):
-            await daemon._main_loop()
-
-    @pytest.mark.asyncio
-    async def test_webui_starts_without_a_config_file(self):
-        with (
-            patch("quadlink.daemon.ConfigLoader") as MockLoader,
-            patch("quadlink.daemon.WebUI") as MockWebUI,
-        ):
-            MockLoader.return_value.load_or_cache = AsyncMock(
-                side_effect=ConfigNotFoundError("none")
-            )
-            MockWebUI.return_value.start = AsyncMock()
-            daemon = Daemon(enable_webui=True)
-            daemon._main_loop = AsyncMock()
-            await daemon.start()
-        MockWebUI.return_value.start.assert_awaited_once()
-        assert MockWebUI.call_args.kwargs["slot_relay"] is daemon.slot_relay
-        daemon._main_loop.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_dropped_channels_log_at_info(self, daemon, config):
-        config.mode = "local"
-        processor = MagicMock()
-        processor.process_stream_groups = AsyncMock(return_value=[make_stream("b")])
-        daemon.quad_state = composed(["https://twitch.tv/a"])
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/b"])),
-            patch("quadlink.daemon.logger") as log,
-        ):
-            await daemon._cycle()
-        log.info.assert_any_call(
-            "quad channels dropped from live pool", dropped=["a"], candidates=1
-        )
-        log.warning.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_failed_push_is_retried_next_cycle(self, daemon):
-        """A push QuadStream did not accept is sent again although the lineup is unchanged."""
-        processor = MagicMock()
-        processor.process_stream_groups = AsyncMock(return_value=[make_stream("a")])
-        client = self.client()
-        client.update_quad = AsyncMock(side_effect=[False, True])
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.compose", return_value=composed(["https://twitch.tv/a"])),
-            patch("quadlink.daemon.QuadStreamClient", return_value=client),
-        ):
-            await daemon._cycle()
-            await daemon._cycle()
-            await daemon._cycle()
-        # failed, retried and accepted, then nothing new to send
-        assert client.update_quad.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_config_reload_keeps_slots():
-    """The same 4 channels keep their slots across a config change."""
-    from quadlink.config.models import Config
-
-    before = Config(mode="local", rulesets=[], priorities={})
-    after = Config(mode="local", rulesets=[], priorities={}, diversity_bonus=10)
-    channels = ["a", "b", "c", "d"]
-    processor = MagicMock()
-    processor.lookup_failed = MagicMock(return_value=False)
-    processor.process_stream_groups = AsyncMock(
-        side_effect=[
-            [make_stream(c) for c in channels],
-            [make_stream(c) for c in reversed(channels)],
-        ]
-    )
-    with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-        MockLoader.return_value.load_or_cache = AsyncMock(side_effect=[before, after])
-        daemon = Daemon()
-    with patch("quadlink.daemon.StreamProcessor", return_value=processor) as MP:
-        await daemon._cycle()
-        await daemon._cycle()
-    assert MP.call_count == 2
-    assert daemon.quad_state.channels == ("a", "b", "c", "d")
-    assert [daemon.slot_store.get(i).identity for i in range(4)] == channels
-    await daemon.slot_relay.aclose()
-    await daemon._segment_client.aclose()
-
-
-@pytest.mark.asyncio
-async def test_cycle_keeps_the_latest_channel_statuses():
-    """Each refresh replaces the status list and stamps its time."""
-    from quadlink.config.models import Config
-
-    config = Config(mode="local", rulesets=[], priorities={})
-    first = [ChannelStatus("a", ChannelState.OFFLINE, [100])]
-    second = [ChannelStatus("a", ChannelState.LOOKUP_FAILED, [100], reason="timed out")]
-    processor = MagicMock()
-    processor.lookup_failed = MagicMock(return_value=False)
-    processor.process_stream_groups = AsyncMock(return_value=[])
-    processor.statuses = MagicMock(side_effect=[first, second])
-    with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-        MockLoader.return_value.load_or_cache = AsyncMock(return_value=config)
-        daemon = Daemon()
-    assert daemon.channel_statuses == []
-    assert daemon.statuses_at is None
-    with (
-        patch("quadlink.daemon.StreamProcessor", return_value=processor),
-        patch("quadlink.daemon.time.time", side_effect=[1000.0, 1030.0]),
-    ):
-        await daemon._cycle()
-        assert daemon.channel_statuses is first
-        assert daemon.statuses_at == 1000.0
-        await daemon._cycle()
-    assert daemon.channel_statuses is second
-    assert daemon.statuses_at == 1030.0
-    await daemon.slot_relay.aclose()
-    await daemon._segment_client.aclose()
-
-
-class TestRefreshRecompose:
-    """The refresh loop looks channels up; the recompose loop composes and pushes."""
-
-    @staticmethod
-    def config(mode: str = "local", **kwargs):
-        from quadlink.config.models import Config, Credentials
-
-        credentials = Credentials(username="user", secret="secret") if mode != "local" else None
-        return Config(mode=mode, credentials=credentials, rulesets=[], priorities={}, **kwargs)
-
-    @staticmethod
-    def processor(channels=("a", "b", "c", "d")) -> MagicMock:
-        processor = MagicMock()
-        processor.lookup_failed = MagicMock(return_value=False)
-        processor.statuses = MagicMock(return_value=[])
-        processor.process_stream_groups = AsyncMock(
-            side_effect=lambda: [make_stream(c) for c in channels]
-        )
-        return processor
-
-    @pytest.fixture
-    async def make_daemon(self):
-        made = []
-
-        def make(config, one_shot: bool = False) -> Daemon:
-            with patch("quadlink.daemon.ConfigLoader") as MockLoader:
-                MockLoader.return_value.load_or_cache = AsyncMock(return_value=config)
-                daemon = Daemon(one_shot=one_shot)
-            daemon.running = True
-            made.append(daemon)
-            return daemon
-
-        yield make
-        for daemon in made:
-            await daemon.slot_relay.aclose()
-            await daemon._segment_client.aclose()
-
-    @staticmethod
-    def count_recomposes(daemon: Daemon) -> dict:
-        """Wrap daemon._recompose to count calls and the most running at once."""
-        counts = {"calls": 0, "running": 0, "peak": 0}
-        original = daemon._recompose
-
-        async def counted() -> None:
-            counts["calls"] += 1
-            counts["running"] += 1
-            counts["peak"] = max(counts["peak"], counts["running"])
-            try:
-                await original()
-            finally:
-                counts["running"] -= 1
-
-        daemon._recompose = counted
-        return counts
-
-    @staticmethod
-    async def settle() -> None:
-        for _ in range(10):
-            await asyncio.sleep(0)
-
-    @staticmethod
-    def recompose_loops() -> list[asyncio.Task]:
-        return [
-            t
-            for t in asyncio.all_tasks()
-            if t.get_coro().__qualname__ == "Daemon._recompose_loop" and not t.done()
-        ]
-
-    @pytest.mark.asyncio
-    async def test_refresh_triggers_exactly_one_recompose(self, make_daemon):
-        daemon = make_daemon(self.config())
-        counts = self.count_recomposes(daemon)
-        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
-            loop = asyncio.create_task(daemon._recompose_loop())
-            await daemon._refresh()
-            await self.settle()
-            loop.cancel()
-        assert counts["calls"] == 1
-        assert daemon.quad_state.channels == ("a", "b", "c", "d")
-        assert daemon.slot_store.get(0).identity == "a"
-
-    @pytest.mark.asyncio
-    async def test_request_recompose_composes_without_a_lookup(self, make_daemon):
-        from quadlink.quad import compose
-
-        daemon = make_daemon(self.config())
-        processor = self.processor()
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=processor),
-            patch("quadlink.daemon.compose", side_effect=compose) as composer,
-        ):
-            loop = asyncio.create_task(daemon._recompose_loop())
-            await daemon._refresh()
-            await self.settle()
-            daemon.request_recompose()
-            await self.settle()
-            loop.cancel()
-        assert composer.call_count == 2
-        assert processor.process_stream_groups.await_count == 1
-        # the cached pool fed the second composition
-        assert composer.call_args.args[0] is daemon._pool
-        assert daemon.quad_state.channels == ("a", "b", "c", "d")
-
-    @pytest.mark.asyncio
-    async def test_recompose_never_runs_concurrently_with_itself(self, make_daemon):
-        daemon = make_daemon(self.config("remote"))
-        counts = self.count_recomposes(daemon)
-        gate = asyncio.Event()
-        client = AsyncMock()
-        client.login = AsyncMock(return_value=True)
-
-        async def slow_push(quad):
-            await gate.wait()
-            return True
-
-        client.update_quad = AsyncMock(side_effect=slow_push)
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
-            patch("quadlink.daemon.QuadStreamClient", return_value=client),
-        ):
-            loop = asyncio.create_task(daemon._recompose_loop())
-            await daemon._refresh()
-            await self.settle()
-            assert counts["running"] == 1
-            # a refresh and two web actions while the push hangs
-            await daemon._refresh()
-            daemon.request_recompose()
-            daemon.request_recompose()
-            await self.settle()
-            gate.set()
-            await self.settle()
-            loop.cancel()
-        assert counts["peak"] == 1
-        # the requests made during the push are served by one more recompose
-        assert counts["calls"] == 2
-        # which found the lineup already accepted
-        assert client.update_quad.await_count == 1
-
-    @pytest.mark.asyncio
-    async def test_failed_push_is_retried_after_the_next_refresh(self, make_daemon):
-        daemon = make_daemon(self.config("remote"))
-        client = AsyncMock()
-        client.login = AsyncMock(return_value=True)
-        client.update_quad = AsyncMock(side_effect=[False, True])
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
-            patch("quadlink.daemon.QuadStreamClient", return_value=client),
-        ):
-            loop = asyncio.create_task(daemon._recompose_loop())
-            for _ in range(3):
-                await daemon._refresh()
-                await self.settle()
-            loop.cancel()
-        # failed, sent again after the next refresh and accepted, then nothing new
-        assert client.update_quad.await_count == 2
-        assert daemon._pushed == ("a", "b", "c", "d")
-
-    @pytest.mark.asyncio
-    async def test_one_shot_refreshes_and_recomposes_once(self, make_daemon):
-        daemon = make_daemon(self.config(), one_shot=True)
-        processor = self.processor()
-        counts = self.count_recomposes(daemon)
-        with patch("quadlink.daemon.StreamProcessor", return_value=processor):
-            await asyncio.wait_for(daemon._main_loop(), 1)
-        assert daemon.running is False
-        assert processor.process_stream_groups.await_count == 1
-        assert counts["calls"] == 1
-        assert daemon.slot_store.get(3).identity == "d"
-        assert self.recompose_loops() == []
-
-    @pytest.mark.asyncio
-    async def test_config_change_during_a_refresh_applies_on_the_next(self, make_daemon):
-        before = self.config()
-        after = self.config(diversity_bonus=10)
-        daemon = make_daemon(before)
-        gate = asyncio.Event()
-        first = self.processor()
-        lookup = first.process_stream_groups.side_effect
-
-        async def slow_lookup():
-            await gate.wait()
-            return lookup()
-
-        first.process_stream_groups = AsyncMock(side_effect=slow_lookup)
-        second = self.processor(channels=("d", "c", "b", "a"))
-        with patch("quadlink.daemon.StreamProcessor", side_effect=[first, second]) as MP:
-            refresh = asyncio.create_task(daemon._cycle())
-            await self.settle()
-            daemon.config_loader.load_or_cache = AsyncMock(return_value=after)
-            gate.set()
-            await refresh
-            # the refresh in progress finished with the config it started with
-            assert daemon._config is before
-            assert MP.call_count == 1
-            await daemon._cycle()
-        assert daemon._config is after
-        assert MP.call_count == 2
-        first.close.assert_called_once()
-        # the reload kept every channel in its slot
-        assert daemon.quad_state.channels == ("a", "b", "c", "d")
-
-    @pytest.mark.asyncio
-    async def test_cancel_stops_both_loops(self, make_daemon):
-        daemon = make_daemon(self.config())
-        daemon.interval = 0.01
-        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
-            task = asyncio.create_task(daemon._main_loop())
-            while daemon.slot_store.get(0) is None:
-                await asyncio.sleep(0.005)
-            assert len(self.recompose_loops()) == 1
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        assert task.done()
-        assert self.recompose_loops() == []
-
-    @pytest.mark.asyncio
-    async def test_stopping_ends_both_loops(self, make_daemon):
-        daemon = make_daemon(self.config())
-        daemon.interval = 0.01
-        with patch("quadlink.daemon.StreamProcessor", return_value=self.processor()):
-            task = asyncio.create_task(daemon._main_loop())
-            while daemon.slot_store.get(0) is None:
-                await asyncio.sleep(0.005)
-            daemon.running = False
-            await asyncio.wait_for(task, 1)
-        assert self.recompose_loops() == []
-
-    @pytest.mark.asyncio
-    async def test_recompose_error_keeps_the_loop_running(self, make_daemon):
-        daemon = make_daemon(self.config())
-        with (
-            patch("quadlink.daemon.StreamProcessor", return_value=self.processor()),
-            patch("quadlink.daemon.compose", side_effect=[RuntimeError("boom"), QuadState()]),
-        ):
-            loop = asyncio.create_task(daemon._recompose_loop())
-            await daemon._refresh()
-            await self.settle()
-            daemon.request_recompose()
-            await self.settle()
-            assert not loop.done()
-            loop.cancel()
-        assert daemon.quad_state == QuadState()
+        with patch("quadlink.daemon.SEGMENT_FETCH_WAIT", 0.3):
+            with pytest.raises(TimeoutError):
+                await daemon._fetch_segment("http://cdn/slow.ts")
