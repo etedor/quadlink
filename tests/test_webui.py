@@ -89,6 +89,16 @@ class TestPage:
 
 
 class TestGuards:
+    async def test_removed_keys_validate_and_are_dropped_on_save(
+        self, client: TestClient, webui: WebUI, config_file: Path
+    ) -> None:
+        page = PAGE_YAML + "skip_hosted: true\nhosted_offset: 5\n"
+        resp = await client.post("/api/validate", json={"yaml": page}, headers=_auth(webui))
+        assert (await resp.json())["valid"] is True
+        resp = await client.post("/api/config", json={"yaml": page}, headers=_auth(webui))
+        assert resp.status == 200
+        assert "skip_hosted" not in config_file.read_text()
+
     async def test_token_and_same_origin_json_pass(self, client: TestClient, webui: WebUI) -> None:
         origin = f"http://{client.host}:{client.port}"
         headers = _auth(webui, Origin=origin, **{"Sec-Fetch-Site": "same-origin"})

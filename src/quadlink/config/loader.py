@@ -19,7 +19,7 @@ _REMOVED_WEBHOOK_KEYS = ("timeout",)
 _REMOVED_GROUP_KEYS = ("limit",)
 
 
-def _strip_removed_keys(data: dict[str, Any]) -> None:
+def strip_removed_keys(data: dict[str, Any]) -> None:
     """Warn about and drop each removed config key, in place, so Config keeps rejecting typos.
 
     Config itself has no `extra="ignore"`: a stray top-level key (a typo like
@@ -130,7 +130,7 @@ class ConfigLoader:
                 with open(path) as f:
                     data = yaml.load(f)
 
-                _strip_removed_keys(data)
+                strip_removed_keys(data)
                 config = Config(**data)
 
                 if "stability_bonus" in data and "diversity_bonus" in data:
