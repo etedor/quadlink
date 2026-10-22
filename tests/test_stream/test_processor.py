@@ -5,8 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from quadlink.config.models import Config, Credentials, Filters, Ruleset, StreamGroup
+from quadlink.stream.fetcher import LookupFailed
 from quadlink.stream.processor import StreamProcessor
-from quadlink.types import Metadata, PrioritizedStream, Stream
+from quadlink.types import ChannelState, Metadata, PrioritizedStream, Stream, channel_login
 
 
 def make_stream(author: str, category: str, url: str = None) -> Stream:
@@ -448,3 +449,114 @@ def test_close_shuts_down_the_lookup_executor():
     processor.close()
     with pytest.raises(RuntimeError):
         processor.fetcher.executor.submit(lambda: None)
+
+
+class TestStatuses:
+    """Tests for the per-channel status report."""
+
+    @pytest.fixture
+    def mock_fetcher(self):
+        with patch("quadlink.stream.processor.StreamlinkFetcher") as MockFetcher:
+            mock_instance = MagicMock()
+            mock_instance.fetch_stream_info = AsyncMock()
+            MockFetcher.return_value = mock_instance
+            yield mock_instance
+
+    @staticmethod
+    def config() -> Config:
+        return make_config(
+            priorities={
+                100: [StreamGroup(urls=["https://twitch.tv/Foo", "bar"], rulesets=["only-x"])],
+                50: [StreamGroup(urls=["foo", "baz", "qux", "quux"], rulesets=["no-y"])],
+            },
+            rulesets=[
+                Ruleset(name="only-x", filters=Filters(allow_categories=["^X$"])),
+                Ruleset(name="no-y", filters=Filters(block_categories=["^Y$"])),
+            ],
+        )
+
+    async def run(self, mock_fetcher, outcomes: dict) -> StreamProcessor:
+        async def fetch(url):
+            outcome = outcomes.get(channel_login(url))
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        mock_fetcher.fetch_stream_info.side_effect = fetch
+        processor = StreamProcessor(self.config())
+        processor.fetcher = mock_fetcher
+        await processor.process_stream_groups()
+        return processor
+
+    @pytest.mark.asyncio
+    async def test_every_status_kind(self, mock_fetcher):
+        """Each configured channel gets one row, in config order."""
+        silent = make_stream("Qux", "X")
+        silent.has_video = False
+        processor = await self.run(
+            mock_fetcher,
+            {
+                "foo": make_stream("Foo", "X"),
+                "bar": make_stream("Bar", "Y"),
+                "baz": None,
+                "qux": silent,
+                "quux": LookupFailed("timed out after 30s"),
+            },
+        )
+
+        rows = {r.channel: r for r in processor.statuses()}
+
+        assert list(rows) == ["foo", "bar", "baz", "qux", "quux"]
+        assert rows["foo"].state is ChannelState.LIVE
+        assert rows["bar"].state is ChannelState.REJECTED
+        assert rows["bar"].reason
+        assert rows["baz"].state is ChannelState.OFFLINE
+        assert rows["baz"].stream is None
+        assert rows["qux"].state is ChannelState.NO_VIDEO
+        assert rows["qux"].stream is silent
+        assert rows["quux"].state is ChannelState.LOOKUP_FAILED
+        assert rows["quux"].reason == "timed out after 30s"
+        assert processor.lookup_failed("quux")
+
+    @pytest.mark.asyncio
+    async def test_live_row_carries_stream_and_thumbnail(self, mock_fetcher):
+        stream = Stream(
+            url="https://twitch.tv/foo",
+            metadata=Metadata(author="Foo", category="X", title="hello"),
+            master_url="https://example.com/foo.m3u8",
+        )
+        processor = await self.run(mock_fetcher, {"foo": stream})
+
+        (row,) = [r for r in processor.statuses() if r.state is ChannelState.LIVE]
+
+        assert row.stream is stream
+        assert row.stream.metadata.title == "hello"
+        assert row.stream.master_url == "https://example.com/foo.m3u8"
+        assert row.thumbnail_url == (
+            "https://static-cdn.jtvnw.net/previews-ttv/live_user_foo-320x180.jpg"
+        )
+
+    @pytest.mark.parametrize(("category", "priority"), [("X", 100), ("Z", 50)])
+    @pytest.mark.asyncio
+    async def test_multi_entry_channel_is_one_row_with_its_winning_entry(
+        self, mock_fetcher, category, priority
+    ):
+        processor = await self.run(mock_fetcher, {"foo": make_stream("Foo", category)})
+
+        rows = [r for r in processor.statuses() if r.channel == "foo"]
+
+        assert len(rows) == 1
+        assert rows[0].state is ChannelState.LIVE
+        assert rows[0].priority == priority
+        assert rows[0].priorities == [100, 50]
+
+    @pytest.mark.asyncio
+    async def test_rejection_reason_is_the_highest_priority_entrys(self, mock_fetcher):
+        processor = await self.run(mock_fetcher, {"foo": make_stream("Foo", "Y")})
+
+        (row,) = [r for r in processor.statuses() if r.channel == "foo"]
+
+        assert row.state is ChannelState.REJECTED
+        assert row.reason == processor.filter.apply_filters(make_stream("Foo", "Y"), ["only-x"])[1]
+        assert row.reason != processor.filter.apply_filters(make_stream("Foo", "Y"), ["no-y"])[1]
+        assert row.thumbnail_url is None

@@ -1,6 +1,7 @@
 """Core data types for QuadLink."""
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -118,6 +119,47 @@ class PrioritizedStream:
     priority: int
     tiebreaker: float
     position: int | None = None
+
+
+class ChannelState(StrEnum):
+    """What the last lookup found for a configured channel."""
+
+    LIVE = "live"
+    OFFLINE = "offline"
+    NO_VIDEO = "no video"
+    REJECTED = "rejected"
+    LOOKUP_FAILED = "lookup failed"
+
+
+@dataclass
+class ChannelStatus:
+    """The last lookup's outcome for one configured channel.
+
+    Attributes:
+        channel: Channel key of the configured entries.
+        state: What the lookup found.
+        priorities: Priority of every configured entry of the channel, highest first.
+        stream: The resolved stream; set for live, no video and rejected.
+        priority: Priority of the entry that put the channel in the live pool.
+        reason: Why the channel is rejected (from its highest-priority entry) or
+            why its lookup failed.
+    """
+
+    channel: str
+    state: ChannelState
+    priorities: list[int]
+    stream: Stream | None = None
+    priority: int | None = None
+    reason: str | None = None
+
+    @property
+    def thumbnail_url(self) -> str | None:
+        """Twitch's live preview image, for a live channel."""
+        if self.state is not ChannelState.LIVE or self.stream is None:
+            return None
+        return (
+            f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{self.stream.channel}-320x180.jpg"
+        )
 
 
 @dataclass

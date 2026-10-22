@@ -24,6 +24,10 @@ logger = structlog.get_logger()
 logging.getLogger("streamlink").setLevel(logging.CRITICAL)
 
 
+class LookupFailed(Exception):
+    """A lookup that ended without telling whether the channel is live."""
+
+
 _VIDEO_CODECS = ("avc1", "avc3", "hvc1", "hev1", "av01", "vp09")
 
 
@@ -93,8 +97,10 @@ class StreamlinkFetcher:
             url: Twitch stream URL (e.g., https://twitch.tv/streamer or just 'streamer')
 
         Returns:
-            Stream object with metadata, or None if stream is offline/unavailable
-            or the lookup outlived the timeout
+            Stream object with metadata, or None if the channel is offline
+
+        Raises:
+            LookupFailed: The lookup errored or outlived the timeout.
         """
         url = channel_url(url)
 
@@ -109,7 +115,7 @@ class StreamlinkFetcher:
             # result is discarded. the caller stops waiting, so one hung lookup
             # can't stall the whole cycle.
             logger.warning("stream lookup timed out", url=url, timeout=self.timeout)
-            return None
+            raise LookupFailed(f"timed out after {self.timeout:g}s") from None
 
     def _get_session(self) -> Streamlink:
         """
@@ -137,7 +143,10 @@ class StreamlinkFetcher:
             url: Normalized Twitch stream URL
 
         Returns:
-            Stream object with metadata, or None if stream is offline/unavailable
+            Stream object with metadata, or None if the channel is offline
+
+        Raises:
+            LookupFailed: The lookup errored or gave no usable stream.
         """
         try:
             session = self._get_session()
@@ -166,7 +175,7 @@ class StreamlinkFetcher:
                     logger.debug(
                         "no 'best' stream available", url=url, available=list(streams.keys())
                     )
-                    return None
+                    raise LookupFailed("no 'best' rendition")
 
                 stream = streams["best"]
                 # Twitch lists only an audio rendition while a broadcast starts or
@@ -177,7 +186,7 @@ class StreamlinkFetcher:
 
                 if not metadata:
                     logger.warning("could not extract metadata", url=url)
-                    return None
+                    raise LookupFailed("no stream metadata")
 
                 master_url = stream.url if hasattr(stream, "url") else None
 
@@ -196,9 +205,11 @@ class StreamlinkFetcher:
             finally:
                 _release_plugin_cache(plugin)
 
+        except LookupFailed:
+            raise
         except NoPluginError:
             logger.debug("no plugin for url", url=url)
-            return None
+            raise LookupFailed("no plugin for this URL") from None
         except PluginError as e:
             error_msg = str(e).lower()
             if any(
@@ -214,13 +225,13 @@ class StreamlinkFetcher:
                 logger.debug("stream unavailable", url=url, reason=str(e))
                 return None
             logger.warning("streamlink plugin error", url=url, error=str(e))
-            return None
+            raise LookupFailed(str(e)) from e
         except StreamlinkError as e:
             logger.warning("streamlink error", url=url, error=str(e))
-            return None
+            raise LookupFailed(str(e)) from e
         except Exception as e:
             logger.error("unexpected error fetching stream", url=url, error=str(e))
-            return None
+            raise LookupFailed(str(e)) from e
 
     def _extract_metadata(self, plugin: Any, url: str) -> Metadata | None:
         """

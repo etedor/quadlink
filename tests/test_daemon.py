@@ -8,7 +8,15 @@ import pytest
 from quadlink.config.loader import ConfigNotFoundError
 from quadlink.daemon import Daemon, run_daemon
 from quadlink.quad import QuadState
-from quadlink.types import Metadata, PrioritizedStream, Quad, Stream, channel_login
+from quadlink.types import (
+    ChannelState,
+    ChannelStatus,
+    Metadata,
+    PrioritizedStream,
+    Quad,
+    Stream,
+    channel_login,
+)
 
 
 def make_stream(author: str) -> PrioritizedStream:
@@ -1151,5 +1159,36 @@ async def test_config_reload_keeps_slots():
     assert MP.call_count == 2
     assert daemon.quad_state.channels == ("a", "b", "c", "d")
     assert [daemon.slot_store.get(i).identity for i in range(4)] == channels
+    await daemon.slot_relay.aclose()
+    await daemon._segment_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cycle_keeps_the_latest_channel_statuses():
+    """Each refresh replaces the status list and stamps its time."""
+    from quadlink.config.models import Config
+
+    config = Config(mode="local", rulesets=[], priorities={})
+    first = [ChannelStatus("a", ChannelState.OFFLINE, [100])]
+    second = [ChannelStatus("a", ChannelState.LOOKUP_FAILED, [100], reason="timed out")]
+    processor = MagicMock()
+    processor.lookup_failed = MagicMock(return_value=False)
+    processor.process_stream_groups = AsyncMock(return_value=[])
+    processor.statuses = MagicMock(side_effect=[first, second])
+    with patch("quadlink.daemon.ConfigLoader") as MockLoader:
+        MockLoader.return_value.load_or_cache = AsyncMock(return_value=config)
+        daemon = Daemon()
+    assert daemon.channel_statuses == []
+    assert daemon.statuses_at is None
+    with (
+        patch("quadlink.daemon.StreamProcessor", return_value=processor),
+        patch("quadlink.daemon.time.time", side_effect=[1000.0, 1030.0]),
+    ):
+        await daemon._cycle()
+        assert daemon.channel_statuses is first
+        assert daemon.statuses_at == 1000.0
+        await daemon._cycle()
+    assert daemon.channel_statuses is second
+    assert daemon.statuses_at == 1030.0
     await daemon.slot_relay.aclose()
     await daemon._segment_client.aclose()

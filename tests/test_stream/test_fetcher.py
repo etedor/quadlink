@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from streamlink.exceptions import NoPluginError, PluginError, StreamlinkError
 
-from quadlink.stream.fetcher import StreamlinkFetcher, _release_plugin_cache
+from quadlink.stream.fetcher import LookupFailed, StreamlinkFetcher, _release_plugin_cache
 from quadlink.types import channel_login, channel_url
 
 
@@ -216,7 +216,7 @@ class TestFetchStreamInfoSync:
         assert result is None
 
     def test_no_best_stream(self):
-        """Should return None when 'best' quality not available."""
+        """Should fail the lookup when 'best' quality not available."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
@@ -232,21 +232,19 @@ class TestFetchStreamInfoSync:
         )
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
-            result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
-
-        assert result is None
+            with pytest.raises(LookupFailed):
+                fetcher._fetch_stream_info_sync("https://twitch.tv/test")
 
     def test_no_plugin_error(self):
-        """Should return None on NoPluginError."""
+        """Should fail the lookup on NoPluginError."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
         mock_session.resolve_url.side_effect = NoPluginError()
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
-            result = fetcher._fetch_stream_info_sync("https://invalid.url/test")
-
-        assert result is None
+            with pytest.raises(LookupFailed):
+                fetcher._fetch_stream_info_sync("https://invalid.url/test")
 
     def test_plugin_error_offline(self):
         """Should return None on PluginError with offline message."""
@@ -309,43 +307,40 @@ class TestFetchStreamInfoSync:
         assert result is None
 
     def test_plugin_error_other(self):
-        """Should return None on other PluginError."""
+        """Should fail the lookup on other PluginError."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
         mock_session.resolve_url.side_effect = PluginError("Some other error")
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
-            result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
-
-        assert result is None
+            with pytest.raises(LookupFailed):
+                fetcher._fetch_stream_info_sync("https://twitch.tv/test")
 
     def test_streamlink_error(self):
-        """Should return None on StreamlinkError."""
+        """Should fail the lookup on StreamlinkError."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
         mock_session.resolve_url.side_effect = StreamlinkError("Connection failed")
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
-            result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
-
-        assert result is None
+            with pytest.raises(LookupFailed):
+                fetcher._fetch_stream_info_sync("https://twitch.tv/test")
 
     def test_unexpected_exception(self):
-        """Should return None on unexpected exception."""
+        """Should fail the lookup on unexpected exception."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
         mock_session.resolve_url.side_effect = RuntimeError("Unexpected!")
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
-            result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
+            with pytest.raises(LookupFailed):
+                fetcher._fetch_stream_info_sync("https://twitch.tv/test")
 
-        assert result is None
-
-    def test_no_metadata_returns_none(self):
-        """Should return None when metadata extraction fails."""
+    def test_no_metadata_fails_the_lookup(self):
+        """Should fail the lookup when metadata extraction fails."""
         fetcher = StreamlinkFetcher()
 
         mock_session = MagicMock()
@@ -360,9 +355,8 @@ class TestFetchStreamInfoSync:
 
         with patch.object(fetcher, "_get_session", return_value=mock_session):
             with patch.object(fetcher, "_extract_metadata", return_value=None):
-                result = fetcher._fetch_stream_info_sync("https://twitch.tv/test")
-
-        assert result is None
+                with pytest.raises(LookupFailed):
+                    fetcher._fetch_stream_info_sync("https://twitch.tv/test")
 
     def test_stream_without_url_attribute(self):
         """Should handle stream without url attribute."""
@@ -594,10 +588,10 @@ async def test_fetch_stream_info_gives_up_after_timeout():
         return None
 
     with patch.object(fetcher, "_fetch_stream_info_sync", side_effect=hung_lookup):
-        result = await asyncio.wait_for(fetcher.fetch_stream_info("streamer"), 2)
+        with pytest.raises(LookupFailed, match="timed out"):
+            await asyncio.wait_for(fetcher.fetch_stream_info("streamer"), 2)
     release.set()
     fetcher.executor.shutdown(wait=True)
-    assert result is None
 
 
 @pytest.mark.parametrize(

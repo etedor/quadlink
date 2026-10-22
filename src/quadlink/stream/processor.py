@@ -6,9 +6,15 @@ import random
 import structlog
 
 from quadlink.config.models import Config, StreamGroup
-from quadlink.stream.fetcher import StreamlinkFetcher
+from quadlink.stream.fetcher import LookupFailed, StreamlinkFetcher
 from quadlink.stream.filters import StreamFilter
-from quadlink.types import PrioritizedStream, Stream, channel_login
+from quadlink.types import (
+    ChannelState,
+    ChannelStatus,
+    PrioritizedStream,
+    Stream,
+    channel_login,
+)
 
 logger = structlog.get_logger()
 
@@ -50,6 +56,12 @@ class StreamProcessor:
         # channels whose lookup returned nothing this run; filter rejections are
         # absent, since those channels are known live and deliberately excluded
         self._unresolved: set[str] = set()
+        # channel key -> this run's resolved stream
+        self._streams: dict[str, Stream] = {}
+        # channel key -> why this run's lookup failed
+        self._failures: dict[str, str] = {}
+        # channel key -> priority of the entry that put it in the live pool
+        self._accepted: dict[str, int] = {}
 
     def close(self) -> None:
         """Release the lookup threads; a lookup still running finishes on its own."""
@@ -69,9 +81,53 @@ class StreamProcessor:
         None when the channel was accepted or its lookup failed.
         """
         channel = channel_login(url)
-        if channel in self._seen:
+        if channel in self._accepted:
             return None
         return self._rejections.get(channel)
+
+    def statuses(self) -> list[ChannelStatus]:
+        """Every configured channel's outcome in the last run, one row per channel.
+
+        Rows follow config order, highest priority first.
+        """
+        priorities: dict[str, list[int]] = {}
+        for priority in sorted(self.config.priorities, reverse=True):
+            for group in self.config.priorities[priority]:
+                for url in group.urls:
+                    priorities.setdefault(channel_login(url), []).append(priority)
+
+        rows = []
+        for channel, entries in priorities.items():
+            stream = self._streams.get(channel)
+            if channel in self._failures:
+                row = ChannelStatus(
+                    channel,
+                    ChannelState.LOOKUP_FAILED,
+                    entries,
+                    reason=self._failures[channel],
+                )
+            elif stream is None:
+                row = ChannelStatus(channel, ChannelState.OFFLINE, entries)
+            elif channel in self._accepted:
+                row = ChannelStatus(
+                    channel,
+                    ChannelState.LIVE,
+                    entries,
+                    stream=stream,
+                    priority=self._accepted[channel],
+                )
+            elif not stream.has_video:
+                row = ChannelStatus(channel, ChannelState.NO_VIDEO, entries, stream=stream)
+            else:
+                row = ChannelStatus(
+                    channel,
+                    ChannelState.REJECTED,
+                    entries,
+                    stream=stream,
+                    reason=self._rejections.get(channel),
+                )
+            rows.append(row)
+        return rows
 
     async def process_stream_groups(self) -> list[PrioritizedStream]:
         """
@@ -85,6 +141,9 @@ class StreamProcessor:
         self._seen.clear()
         self._rejections.clear()
         self._unresolved.clear()
+        self._streams.clear()
+        self._failures.clear()
+        self._accepted.clear()
 
         sorted_priorities = sorted(self.config.priorities.keys(), reverse=True)
 
@@ -159,18 +218,27 @@ class StreamProcessor:
         Returns:
             PrioritizedStream if successful and passes filters, None otherwise
         """
+        channel = channel_login(url)
         try:
             stream = await self._lookup(url)
+        except Exception as e:
+            if not isinstance(e, LookupFailed):
+                logger.error("error looking up stream", url=url, error=str(e))
+            self._unresolved.add(channel)
+            self._failures[channel] = str(e)
+            return None
 
+        try:
             if not stream:
-                self._unresolved.add(channel_login(url))
+                self._unresolved.add(channel)
                 return None
+            self._streams[channel] = stream
 
             # kept out of _unresolved: a failed lookup keeps a channel whose
             # segments still arrive, and audio-only segments do arrive
             if not stream.has_video:
                 logger.debug("stream rejected", author=stream.metadata.author, reason="no video")
-                self._rejections.setdefault(stream.channel, "no video")
+                self._rejections.setdefault(channel, "no video")
                 return None
 
             passed, reason, ruleset = self.filter.apply_filters(stream, rulesets)
@@ -181,14 +249,16 @@ class StreamProcessor:
                     reason=reason,
                     ruleset=ruleset,
                 )
-                self._rejections.setdefault(stream.channel, reason)
+                self._rejections.setdefault(channel, reason)
                 return None
 
             if stream.channel in self._seen:
                 logger.debug("duplicate stream (already seen)", channel=stream.channel)
+                self._rejections.setdefault(channel, "duplicate of another configured channel")
                 return None
 
             self._seen.add(stream.channel)
+            self._accepted[channel] = priority
 
             prioritized = PrioritizedStream(
                 stream=stream,
@@ -211,7 +281,8 @@ class StreamProcessor:
                 url=url,
                 error=str(e),
             )
-            self._unresolved.add(channel_login(url))
+            self._unresolved.add(channel)
+            self._failures.setdefault(channel, str(e))
             return None
 
     async def _lookup(self, url: str) -> Stream | None:

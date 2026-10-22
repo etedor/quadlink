@@ -3,6 +3,7 @@
 import asyncio
 import shutil
 import signal
+import time
 from collections.abc import Callable
 
 import httpx
@@ -17,7 +18,7 @@ from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.stream.processor import StreamProcessor
-from quadlink.types import PrioritizedStream
+from quadlink.types import ChannelStatus, PrioritizedStream
 from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
@@ -98,6 +99,10 @@ class Daemon:
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock when the slot store was last fed
         self._fed_at: float | None = None
+        # every configured channel's outcome in the last refresh
+        self.channel_statuses: list[ChannelStatus] = []
+        # wall-clock time (epoch seconds) of that refresh; None before the first
+        self.statuses_at: float | None = None
 
     async def _fetch_segment(self, uri: str) -> bytes:
         """Fetch one relay segment from its origin URI."""
@@ -245,6 +250,8 @@ class Daemon:
             self._pushed = None
 
         candidates = await self.processor.process_stream_groups()
+        self.channel_statuses = self.processor.statuses()
+        self.statuses_at = time.time()
         if serve_local:
             candidates += self._still_playing(candidates)
 
