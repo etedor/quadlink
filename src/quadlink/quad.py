@@ -47,28 +47,14 @@ def compose(
 ) -> QuadState:
     """Compose the next quad from the live pool and the previous state.
 
-    Algorithm:
-    1. Find channels of the previous quad still in the pool, with their slots
-    2. Apply stability bonus to them
-    3. Apply category saturation penalty
-    4. Apply diversity bonus to new categories
-    5. Apply continuity bonus to categories that left the quad
-    6. Select top 4 unique channels
-    7. Keep slots of channels already on screen; newcomers take freed slots
-       lowest-first in priority order
-
-    Args:
-        pool: Live candidates, best first.
-        state: The previous composition; not modified.
-        overrides: Operator adjustments.
-        config: Bonus and penalty settings.
-
-    Returns:
-        The new composition.
+    The pool is ordered best first. Channels already on screen keep their slots;
+    newcomers take freed slots lowest-first in priority order. The input state
+    is not modified, and an empty pool returns it as is, so slots and categories
+    survive a cycle in which every lookup failed.
     """
     if not pool:
         logger.info("no stream candidates available")
-        return QuadState()
+        return state
 
     # reversed: candidates arrive best first, and the first of a duplicate channel wins
     candidate_map = {s.stream.channel: s for s in reversed(pool)}
@@ -130,18 +116,7 @@ def _apply_adjustments(
     existing_streams: list[PrioritizedStream],
     departed_categories: set[str],
 ) -> list[PrioritizedStream]:
-    """Apply stability bonus, saturation penalty, diversity bonus, and continuity bonus.
-
-    Args:
-        config: Bonus and penalty settings.
-        candidates: All stream candidates
-        existing_channels: Set of channels currently in quad
-        existing_streams: List of existing streams with positions
-        departed_categories: Categories that lost their streams
-
-    Returns:
-        New list of candidates with adjusted priorities
-    """
+    """Copies of the candidates with stability, saturation, diversity and continuity applied."""
     category_counts: dict[str, int] = {}
     for stream in existing_streams:
         category = stream.stream.metadata.category

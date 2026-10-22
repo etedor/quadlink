@@ -49,8 +49,8 @@ def make_stream(author: str, category: str, priority: int) -> PrioritizedStream:
     )
 
 
-class TestQuadBuilderBasic:
-    """Test basic quad building."""
+class TestComposeBasic:
+    """Test basic quad composition."""
 
     def test_empty_candidates(self, builder):
         """Should return empty quad when no candidates."""
@@ -472,6 +472,7 @@ def test_compose_leaves_the_previous_state_unchanged(minimal_config):
         minimal_config,
     )
     assert first.channels == ("a", "", "", "")
+    assert first.quad == Quad(["https://twitch.tv/a"])
     assert first.categories == {"a": "Games"}
     assert second.channels == ("a", "b", "", "")
 
@@ -485,8 +486,10 @@ def test_state_carries_slot_identities_with_playlist_urls(minimal_config):
     assert state.channels == ("a", "", "", "")
 
 
-def test_empty_pool_composes_an_empty_quad(minimal_config):
+def test_empty_pool_keeps_the_state(minimal_config):
+    """A cycle with no live candidates keeps slots and categories for the next one."""
     previous = compose([make_stream("a", "Games", 100)], QuadState(), Overrides(), minimal_config)
     state = compose([], previous, Overrides(), minimal_config)
-    assert state.quad.is_empty()
-    assert state.positions == {}
+    assert state == previous
+    assert state.positions == {"a": 0}
+    assert state.categories == {"a": "Games"}
