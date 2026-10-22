@@ -432,12 +432,18 @@ class TestRefreshAndRecompose:
             await loops.refresh()
         assert quadstream.webhooks == [("https://hooks.example/q", CHANNELS)]
 
-    async def test_local_mode_feeds_the_relay_only(self, make_daemon, config_path, quadstream):
+    async def test_local_mode_feeds_the_relay_only(
+        self, make_daemon, config_path, quadstream, twitch
+    ):
         write_config(config_path, mode="local")
         daemon = make_daemon()
         async with stepped(daemon) as loops:
             await loops.refresh()
-        assert store_channels(daemon) == list(CHANNELS)
+            twitch.go_offline("b")
+            twitch.go_live("e")
+            await loops.refresh()
+            await loops.recompose()
+        assert store_channels(daemon) == ["a", "e", "c", "d"]
         assert quadstream.clients == []
 
     async def test_remote_mode_pushes_only(self, make_daemon, config_path, quadstream):
@@ -630,8 +636,8 @@ class TestConfigReload:
             # the config has the new secret before the account does
             write_config(config_path, secret="rotated")
             with structlog.testing.capture_logs() as logs:
-                assert await loops.refresh() == 30
-            assert events(logs, "quadstream login failed, retrying in 30s")
+                assert await loops.refresh() == daemon.interval
+            assert events(logs, "quadstream login failed, retrying after each refresh")
             assert daemon.quadstream_client is None
             quadstream.accounts["user"] = "rotated"
             await loops.refresh()
@@ -640,8 +646,83 @@ class TestConfigReload:
         assert quadstream.pushes == [("secret", CHANNELS), ("rotated", CHANNELS)]
 
 
+class TestQuadStreamDown:
+    """While quadstream.tv refuses the login, the relay keeps following the pool."""
+
+    async def test_local_tiles_follow_the_pool_and_the_login_recovers(
+        self, make_daemon, quadstream, twitch
+    ):
+        daemon = make_daemon()
+        quadstream.accounts["user"] = "other"
+        async with stepped(daemon) as loops:
+            with structlog.testing.capture_logs() as down:
+                await loops.refresh()
+                assert store_channels(daemon) == list(CHANNELS)
+                twitch.go_offline("b")
+                twitch.go_live("e")
+                await loops.refresh()
+                assert store_channels(daemon) == ["a", "e", "c", "d"]
+                await loops.refresh()
+            quadstream.accounts["user"] = "secret"
+            with structlog.testing.capture_logs() as up:
+                await loops.refresh()
+                await loops.refresh()
+        assert twitch.lookups == 5 * len(CONFIGURED)
+        (warning,) = events(down, "quadstream login failed, retrying after each refresh")
+        assert warning["log_level"] == "warning"
+        (recovered,) = events(up, "quadstream login recovered")
+        assert recovered["log_level"] == "info"
+        # the quad on screen at recovery, pushed once
+        assert quadstream.pushes == [("secret", ("a", "e", "c", "d"))]
+        assert len(quadstream.clients) == 4
+
+    async def test_one_login_attempt_per_refresh(self, make_daemon, quadstream):
+        daemon = make_daemon()
+        quadstream.accounts["user"] = "other"
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            # web actions recompose without a refresh
+            await loops.recompose()
+            await loops.recompose()
+            assert len(quadstream.clients) == 1
+            await loops.refresh()
+        assert len(quadstream.clients) == 2
+        assert quadstream.pushes == []
+
+    async def test_failed_push_after_recovery_is_retried(self, make_daemon, quadstream):
+        daemon = make_daemon()
+        quadstream.accounts["user"] = "other"
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            quadstream.accounts["user"] = "secret"
+            quadstream.refuse_pushes = 1
+            await loops.refresh()
+            assert quadstream.pushes == []
+            await loops.refresh()
+        # logged in once; the second push needs no new login
+        assert len(quadstream.clients) == 2
+        assert quadstream.pushes == [("secret", CHANNELS)]
+
+    async def test_remote_mode_keeps_looking_up_while_down(
+        self, make_daemon, config_path, quadstream, twitch
+    ):
+        write_config(config_path, mode="remote")
+        daemon = make_daemon()
+        quadstream.accounts["user"] = "other"
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_offline("b")
+            twitch.go_live("e")
+            await loops.refresh()
+            quadstream.accounts["user"] = "secret"
+            await loops.refresh()
+        assert twitch.lookups == 3 * len(CONFIGURED)
+        assert quadstream.pushes == [("secret", ("a", "e", "c", "d"))]
+        assert store_channels(daemon) == [None] * 4
+
+
 class TestLoginAndReadiness:
-    """/ready turns green only once a refresh completes."""
+    """/ready turns green once a refresh completes, whatever quadstream.tv does."""
 
     async def test_ready_after_a_completed_refresh(self, make_daemon):
         daemon = make_daemon(enable_health_server=True, interval=20)
@@ -652,13 +733,13 @@ class TestLoginAndReadiness:
             await loops.refresh()
         assert daemon.health_server.is_ready()
 
-    async def test_failed_login_is_not_ready_and_retries(self, make_daemon, quadstream, twitch):
+    async def test_failed_login_is_ready_and_retries(self, make_daemon, quadstream, twitch):
         daemon = make_daemon(enable_health_server=True)
         quadstream.accounts["user"] = "other"
         async with stepped(daemon) as loops:
-            assert await loops.refresh() == 30
-            assert not daemon.health_server.is_ready()
-            assert twitch.lookups == 0
+            assert await loops.refresh() == daemon.interval
+            assert daemon.health_server.is_ready()
+            assert twitch.lookups == len(CONFIGURED)
             quadstream.accounts["user"] = "secret"
             assert await loops.refresh() == daemon.interval
         assert daemon.health_server.is_ready()
@@ -794,6 +875,7 @@ class TestOneShot:
         assert twitch.lookups == 0
 
     def test_failed_login_exits_one_without_retrying(self, config_path, quadstream, twitch):
+        """The login follows the lookups, as in the daemon; the exit code still fails."""
         quadstream.accounts["user"] = "other"
         started = time.monotonic()
         with structlog.testing.capture_logs() as logs:
@@ -802,7 +884,9 @@ class TestOneShot:
         assert not [e for e in logs if "retrying" in e["event"]]
         (failed,) = events(logs, "daemon failed")
         assert "login" in failed["error"]
-        assert twitch.lookups == 0
+        assert twitch.lookups == len(CONFIGURED)
+        assert len(quadstream.clients) == 1
+        assert quadstream.pushes == []
 
     def test_unexpected_error_exits_one(self, config_path):
         with (

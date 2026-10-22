@@ -116,7 +116,7 @@ export QL_ENABLE_HEALTH_SERVER=true  # enable health checks (off by default)
 HTTP endpoints on port 8080 (disabled by default, enable with `QL_ENABLE_HEALTH_SERVER=true`):
 
 - `GET /health`: Always returns `200 OK` if process is running
-- `GET /ready`: Returns `200 OK` if config loaded, `503` otherwise
+- `GET /ready`: Returns `200 OK` if a refresh completed in the last 3 intervals, `503` otherwise. A refresh completes when QuadStream does not accept the login.
 
 **Note**: Health checks are intended for containerized deployments. For systemd deployments, leave disabled as systemd monitors the process directly.
 

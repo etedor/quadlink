@@ -34,8 +34,10 @@ class Daemon:
 
     Two loops share the event loop. Refresh (every interval) reloads the config,
     looks up every channel and caches the live pool. Recompose (on request)
-    composes the quad from that pool, feeds the relay and pushes to QuadStream.
-    A refresh requests a recompose; so can anything else, via request_recompose().
+    composes the quad from that pool, feeds the relay, then logs in to QuadStream
+    if needed and pushes. A refresh requests a recompose; so can anything else,
+    via request_recompose(). Neither loop waits on quadstream.tv: while it refuses
+    the login, the relay keeps following the pool.
 
     Attributes:
         interval: Seconds between refreshes.
@@ -98,6 +100,11 @@ class Daemon:
         self._config_hash: int | None = None
         # (username, secret) the current QuadStream client logged in with
         self._credentials: tuple[str | None, str | None] | None = None
+        # one login attempt per refresh, so web-requested recomposes do not hammer
+        # quadstream.tv while it refuses the login
+        self._login_due = False
+        # the last login attempt failed; the warning is logged once per streak
+        self._login_failing = False
         # channel -> its last-cycle candidate (raw priority), for channels on screen
         self._on_screen: dict[str, PrioritizedStream] = {}
         # relay clock at the end of the last refresh; the next refresh keeps an
@@ -264,34 +271,12 @@ class Daemon:
 
         assert self.processor is not None
 
-        push_remote = config.mode in ("both", "remote")
         serve_local = config.mode in ("both", "local")
         self.slot_relay.proxy_segments = config.relay_segments
 
-        credentials = (
-            (config.credentials.username, config.credentials.secret) if config.credentials else None
-        )
-        if self.quadstream_client and credentials != self._credentials:
+        if self.quadstream_client and self._credentials_of(config) != self._credentials:
             logger.info("quadstream credentials changed, logging in again")
             self.quadstream_client = None
-
-        # log in to QuadStream only when we push to it (skipped in local)
-        if push_remote and not self.quadstream_client:
-            assert credentials is not None
-            username, secret = credentials
-            assert username is not None
-            assert secret is not None
-            client = QuadStreamClient(username=username, secret=secret)
-            if not await client.login():
-                if self.one_shot:
-                    raise RuntimeError("QuadStream did not accept the login")
-                logger.error("quadstream login failed, retrying in 30s")
-                return 30
-            self.quadstream_client = client
-            self._credentials = credentials
-            # a new login may be another account, which has not seen any quad
-            self._pushed = None
-
         candidates = await self.processor.process_stream_groups()
         self.channel_statuses = self.processor.statuses()
         self.statuses_at = time.time()
@@ -314,6 +299,8 @@ class Daemon:
 
         self._config = config
         self._pool = candidates
+        # set with the config, so the login uses this refresh's credentials
+        self._login_due = config.mode in ("both", "remote")
         self.request_recompose()
         self._mark_cycle()
         return self.interval
@@ -342,11 +329,13 @@ class Daemon:
             logger.info("quad is empty, skipping update")
             return
 
-        # push until QuadStream holds this lineup (both/remote modes); compared by
-        # channel, since every refresh re-mints the playlist URLs. A failed push is
-        # sent again by the next recompose, at the latest after the next refresh.
-        client = self.quadstream_client
-        if config.mode in ("both", "remote") and client and state.channels != self._pushed:
+        if config.mode not in ("both", "remote"):
+            return
+        client = self.quadstream_client or await self._login(config)
+        # push until QuadStream holds this lineup; compared by channel, since every
+        # refresh re-mints the playlist URLs. A failed push is sent again by the next
+        # recompose, at the latest after the next refresh.
+        if client and state.channels != self._pushed:
             if not await client.update_quad(quad):
                 logger.error("quadstream update failed")
                 return
@@ -356,6 +345,40 @@ class Daemon:
                 self._pushed = state.channels
             if config.webhook.enabled and config.webhook.url:
                 await client.send_webhook(config.webhook.url, quad)
+
+    @staticmethod
+    def _credentials_of(config: Config) -> tuple[str | None, str | None] | None:
+        if config.credentials is None:
+            return None
+        return config.credentials.username, config.credentials.secret
+
+    async def _login(self, config: Config) -> QuadStreamClient | None:
+        """Log in to QuadStream, at most once per refresh; return the client or None."""
+        if not self._login_due:
+            return None
+        self._login_due = False
+        credentials = self._credentials_of(config)
+        assert credentials is not None
+        username, secret = credentials
+        assert username is not None
+        assert secret is not None
+        client = QuadStreamClient(username=username, secret=secret)
+        if not await client.login():
+            # one-shot has no later refresh to try again; it exits 1 after the local work
+            if self.one_shot:
+                raise RuntimeError("QuadStream did not accept the login")
+            if not self._login_failing:
+                logger.warning("quadstream login failed, retrying after each refresh")
+                self._login_failing = True
+            return None
+        if self._login_failing:
+            logger.info("quadstream login recovered")
+            self._login_failing = False
+        self.quadstream_client = client
+        self._credentials = credentials
+        # a new login may be another account, which has not seen any quad
+        self._pushed = None
+        return client
 
     def _mark_cycle(self) -> None:
         if self.health_server:
