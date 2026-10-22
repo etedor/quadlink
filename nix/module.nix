@@ -64,6 +64,17 @@ in {
       description = "Port for the web UI";
     };
 
+    webuiAllowedHosts = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      description = ''
+        Host names that the web UI page and config API accept, such as the name of a
+        reverse proxy in front of the web UI. localhost, 127.0.0.1 and ::1 are always
+        allowed.
+      '';
+      example = [ "quadlink.example.net" ];
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = false;
@@ -111,7 +122,8 @@ in {
             ${optionalString (cfg.configFile != null) "--config ${cfg.configFile}"} \
             --interval ${toString cfg.interval} \
             --log-level ${cfg.logLevel} \
-            ${optionalString cfg.enableWebui "--webui --webui-host ${cfg.webuiHost} --webui-port ${toString cfg.webuiPort}"}
+            ${optionalString cfg.enableWebui "--webui --webui-host ${cfg.webuiHost} --webui-port ${toString cfg.webuiPort}"} \
+            ${optionalString cfg.enableWebui (concatMapStringsSep " " (h: "--webui-allowed-host ${escapeShellArg h}") cfg.webuiAllowedHosts)}
         '';
 
         Environment = [

@@ -1,7 +1,14 @@
 """Web UI for configuration editing."""
 
+import os
+import secrets
+import stat
+import tempfile
+from collections.abc import Awaitable, Callable, Iterable
+from io import StringIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 from aiohttp import web
@@ -14,6 +21,54 @@ from quadlink.config.models import Config
 from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
+
+TOKEN_HEADER = "X-QuadLink-Token"
+TOKEN_PLACEHOLDER = "__QUADLINK_TOKEN__"
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _hostname(netloc: str) -> str | None:
+    """Return the lowercase host name of a Host header value, without the port."""
+    try:
+        return urlsplit(f"//{netloc}").hostname
+    except ValueError:
+        return None
+
+
+def _deny(status: int, message: str) -> web.Response:
+    return web.json_response({"error": message}, status=status)
+
+
+def _yaml_writer() -> YAML:
+    writer = YAML()
+    writer.default_flow_style = False
+    writer.width = 120
+    writer.indent(mapping=2, sequence=4, offset=2)
+    return writer
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace path with text so readers see the old or the new file, never a partial one."""
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = 0o600
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    dir_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _format_error(e: Exception) -> str:
@@ -48,11 +103,18 @@ def _strip_empty(obj: Any) -> Any:
 class WebUI:
     """Web server for viewing and editing QuadLink configuration.
 
+    The page and the config API answer only requests whose Host header names an
+    allowed host (against DNS rebinding). The API also requires same-origin JSON
+    requests that carry the per-process token embedded in the page (against
+    cross-site request forgery). The relay /streams routes take no such checks.
+
     Attributes:
         host: Host address to bind to.
         port: Port number to listen on.
         config_loader: ConfigLoader instance for reading config.
         config_path: Path to the config file being edited.
+        allowed_hosts: Host names the page and API answer to.
+        token: Per-process token the page sends in the X-QuadLink-Token header.
     """
 
     def __init__(
@@ -61,6 +123,7 @@ class WebUI:
         host: str = "0.0.0.0",
         port: int = 8081,
         slot_relay: SlotRelay | None = None,
+        allowed_hosts: Iterable[str] = (),
     ):
         """Initialize web UI server.
 
@@ -69,14 +132,54 @@ class WebUI:
             host: Host address to bind to.
             port: Port number to listen on.
             slot_relay: Optional slot relay whose /streams routes are registered.
+            allowed_hosts: Host names beyond the loopback names that may reach the page
+                and API, such as the name a reverse proxy serves the web UI under.
         """
         self.host = host
         self.port = port
         self.config_loader = config_loader
         self.slot_relay = slot_relay
         self.config_path = self._find_config_path()
-        self.app = web.Application()
+        self.allowed_hosts = LOOPBACK_HOSTS | {h.strip().lower() for h in allowed_hosts}
+        self.token = secrets.token_urlsafe(32)
+        self.app = web.Application(middlewares=[self._guard])
         self._setup_routes()
+
+    @web.middleware
+    async def _guard(
+        self,
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        path = request.path
+        is_api = path.startswith("/api/")
+        if not (is_api or path == "/"):
+            return await handler(request)
+
+        # the page holds the token, so it needs the host check too
+        if _hostname(request.host) not in self.allowed_hosts:
+            logger.warning("webui request for unknown host refused", host=request.host)
+            return _deny(403, "the server does not accept requests for this host name")
+        if not is_api:
+            return await handler(request)
+
+        fetch_site = request.headers.get("Sec-Fetch-Site")
+        origin = request.headers.get("Origin")
+        cross_site = fetch_site is not None and fetch_site not in ("same-origin", "none")
+        if origin is not None and urlsplit(origin).netloc.lower() != request.host.lower():
+            cross_site = True
+        if cross_site:
+            logger.warning("webui cross-site request refused", origin=origin, site=fetch_site)
+            return _deny(403, "the request does not come from the quadlink page")
+        # request.json() ignores the content type; requiring JSON forces a CORS
+        # preflight, which fails because the server sends no CORS headers
+        if request.method == "POST" and request.content_type != "application/json":
+            return _deny(415, "the request body must be JSON (application/json)")
+        sent = request.headers.get(TOKEN_HEADER, "")
+        if not secrets.compare_digest(sent.encode(), self.token.encode()):
+            return _deny(403, "the page token is missing or incorrect; reload the page")
+
+        return await handler(request)
 
     def _find_config_path(self) -> Path | None:
         """Find the config file path being used."""
@@ -95,7 +198,22 @@ class WebUI:
 
     async def _handle_index(self, request: web.Request) -> web.Response:
         """Serve the main config editor page."""
-        return web.Response(text=HTML_TEMPLATE, content_type="text/html")
+        return web.Response(
+            text=HTML_TEMPLATE.replace(TOKEN_PLACEHOLDER, self.token),
+            content_type="text/html",
+            headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
+        )
+
+    def _read_file_config(self) -> dict[str, Any]:
+        """Return the config file as written, without env overrides or defaults."""
+        if self.config_path is None or not self.config_path.exists():
+            return {}
+        data = YAML(typ="safe").load(self.config_path.read_text())
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise ValueError("the config file does not contain a YAML mapping")
+        return data
 
     def _add_yaml_spacing(self, yaml_str: str) -> str:
         """Add blank lines between priority levels and ruleset entries."""
@@ -112,9 +230,10 @@ class WebUI:
     async def _handle_get_config(self, request: web.Request) -> web.Response:
         """Return current config as formatted YAML."""
         try:
-            config = await self.config_loader.load_or_cache()
-            # convert to dict, excluding credentials for security
-            config_dict = config.model_dump(exclude={"credentials"})
+            # the file, not the merged config: a save writes back what the page shows,
+            # and env overrides or defaults must not end up in the file
+            config_dict = self._read_file_config()
+            config_dict.pop("credentials", None)
             config_dict = _strip_empty(config_dict)
 
             # sort priorities if requested
@@ -126,16 +245,8 @@ class WebUI:
                     sorted(priorities.items(), key=lambda x: int(x[0]), reverse=reverse)
                 )
 
-            # format as pretty YAML
-            from io import StringIO
-
-            yaml_writer = YAML()
-            yaml_writer.default_flow_style = False
-            yaml_writer.width = 120
-            yaml_writer.indent(mapping=2, sequence=4, offset=2)
-
             stream = StringIO()
-            yaml_writer.dump(config_dict, stream)
+            _yaml_writer().dump(config_dict, stream)
             yaml_str = self._add_yaml_spacing(stream.getvalue())
 
             return web.json_response(
@@ -182,8 +293,6 @@ class WebUI:
             data = await request.json()
             yaml_content = data.get("yaml", "")
 
-            from io import StringIO
-
             yaml = YAML(typ="safe")
             parsed = yaml.load(StringIO(yaml_content))
             parsed = self._clean_parsed_yaml(parsed)
@@ -199,7 +308,7 @@ class WebUI:
             return web.json_response({"valid": False, "error": _format_error(e)})
 
     async def _handle_post_config(self, request: web.Request) -> web.Response:
-        """Save updated config (YAML content only, preserves credentials)."""
+        """Save the page's config, keeping the file's credentials mapping as written."""
         if not self.config_path:
             return web.json_response({"error": "No config file path found"}, status=400)
 
@@ -207,29 +316,26 @@ class WebUI:
             data = await request.json()
             yaml_content = data.get("yaml", "")
 
-            # parse and validate
-            from io import StringIO
-
             yaml = YAML(typ="safe")
-            parsed = yaml.load(StringIO(yaml_content))
+            parsed = yaml.load(StringIO(yaml_content)) or {}
+            if not isinstance(parsed, dict):
+                raise ValueError("the config must be a YAML mapping")
             parsed = self._clean_parsed_yaml(parsed)
 
-            # merge with existing credentials (absent in local mode)
-            existing_config = await self.config_loader.load_or_cache()
-            if existing_config.credentials is not None:
-                parsed["credentials"] = existing_config.credentials.model_dump()
+            # the page never sees credentials, and values resolved from
+            # credentials.file or QL_* env must never be written inline
+            parsed.pop("credentials", None)
+            on_disk = self._read_file_config()
+            if "credentials" in on_disk:
+                parsed["credentials"] = on_disk["credentials"]
 
-            # validate full config
-            config = Config(**parsed)
+            Config(**parsed)
 
-            # write with pretty formatting, using model_dump for plain types
-            yaml_writer = YAML()
-            yaml_writer.default_flow_style = False
-            yaml_writer.width = 120
-            yaml_writer.indent(mapping=2, sequence=4, offset=2)
-
-            with open(self.config_path, "w") as f:
-                yaml_writer.dump(config.model_dump(), f)
+            # write the page's values, not a model dump: that adds every default and
+            # every QL_* env override to the file
+            stream = StringIO()
+            _yaml_writer().dump(parsed, stream)
+            _write_atomic(self.config_path, stream.getvalue())
 
             logger.info("config saved via webui", path=str(self.config_path))
             return web.json_response({"success": True})
@@ -256,6 +362,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light dark">
+    <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
     <title>quadlink</title>
     <style>
         body {
@@ -342,6 +449,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         const configPath = document.getElementById('config-path');
         const versionEl = document.getElementById('version');
         let initialized = false;
+        const token = document.querySelector('meta[name="quadlink-token"]').content;
+
+        function api(url, options = {}) {
+            const headers = {'X-QuadLink-Token': token};
+            if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+            return fetch(url, {...options, headers, cache: 'no-store'});
+        }
 
         const sections = {
             priorities: ['priorities'],
@@ -422,9 +536,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function loadConfig() {
             try {
                 const sortOrder = document.getElementById('sort-order').value;
-                const res = await fetch(`/api/config?t=${Date.now()}&sort=${sortOrder}`, {
-                    cache: 'no-store'
-                });
+                const res = await api(`/api/config?t=${Date.now()}&sort=${sortOrder}`);
                 const data = await res.json();
                 if (data.error) throw new Error(data.error);
 
@@ -446,9 +558,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function validateConfig() {
             try {
                 const yaml = mergeYamlSections();
-                const res = await fetch('/api/validate', {
+                const res = await api('/api/validate', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({yaml})
                 });
                 const data = await res.json();
@@ -465,9 +576,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         async function saveConfig() {
             try {
                 const yaml = mergeYamlSections();
-                const res = await fetch('/api/config', {
+                const res = await api('/api/config', {
                     method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({yaml})
                 });
                 const data = await res.json();

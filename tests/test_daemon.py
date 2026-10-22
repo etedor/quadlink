@@ -564,6 +564,7 @@ class TestRunDaemon:
                     enable_webui=False,
                     webui_host="0.0.0.0",
                     webui_port=8081,
+                    webui_allowed_hosts=None,
                 )
 
     @pytest.mark.asyncio

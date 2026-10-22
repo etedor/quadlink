@@ -137,6 +137,31 @@ HTTP endpoints on port 8080 (disabled by default, enable with `QL_ENABLE_HEALTH_
 
 **Note**: Health checks are intended for containerized deployments (Docker, Kubernetes). For systemd deployments, leave disabled as systemd monitors the process directly.
 
+### Web UI
+
+Start the daemon with `--webui` to edit the config in a browser (default port 8081).
+The NixOS option is `enableWebui`.
+
+The page and its `/api/*` routes accept a request only when the `Host` header names an allowed host.
+The allowed hosts are `localhost`, `127.0.0.1`, `::1`, and each name that you give with `--webui-allowed-host`.
+If a reverse proxy serves the web UI under a different name, add that name:
+
+```nix
+services.quadlink.webuiAllowedHosts = [ "quadlink.example.net" ];
+```
+
+The reverse proxy must send the original `Host` header (for nginx: `proxy_set_header Host $host`).
+If you open the web UI by an IP address, add that address too.
+The relay routes at `/streams/` accept all host names.
+
+The config API accepts only JSON requests from the web UI page.
+Each request must carry the page token that the server puts in the page.
+The token changes when the daemon restarts. After a restart, reload the page.
+
+When you save, the web UI writes only the values on the page to the config file.
+It keeps the `credentials` section of the file as written.
+It does not write default values, `QL_*` environment overrides, or credentials read from a file.
+
 ### Webhooks
 
 Trigger external automations when quad updates:

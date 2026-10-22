@@ -122,6 +122,17 @@ def parse_args() -> argparse.Namespace:
         default=8081,
         help="Port for web UI (default: 8081)",
     )
+    parser.add_argument(
+        "--webui-allowed-host",
+        action="append",
+        default=[],
+        metavar="HOST",
+        dest="webui_allowed_hosts",
+        help=(
+            "Host name the web UI page and API answer to, in addition to localhost, "
+            "127.0.0.1 and ::1 (repeatable)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -151,6 +162,7 @@ def main() -> None:
                 enable_webui=args.webui,
                 webui_host=args.webui_host,
                 webui_port=args.webui_port,
+                webui_allowed_hosts=args.webui_allowed_hosts,
             )
         )
     except KeyboardInterrupt:

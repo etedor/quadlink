@@ -47,6 +47,7 @@ class Daemon:
         enable_webui: bool = False,
         webui_host: str = "0.0.0.0",
         webui_port: int = 8081,
+        webui_allowed_hosts: list[str] | None = None,
     ):
         """Initialize daemon.
 
@@ -58,6 +59,7 @@ class Daemon:
             enable_webui: If True, start web UI for config editing.
             webui_host: Host address for web UI server.
             webui_port: Port for web UI server.
+            webui_allowed_hosts: Host names beyond loopback the web UI answers to.
         """
         self.interval = interval
         self.one_shot = one_shot
@@ -65,6 +67,7 @@ class Daemon:
         self.enable_webui = enable_webui
         self.webui_host = webui_host
         self.webui_port = webui_port
+        self.webui_allowed_hosts = webui_allowed_hosts or []
         self.config_loader = ConfigLoader(explicit_path=config_path)
         self.health_server = HealthServer() if enable_health_server else None
         self.slot_store = SlotStore()
@@ -112,6 +115,7 @@ class Daemon:
                 self.config_loader,
                 host=self.webui_host,
                 port=self.webui_port,
+                allowed_hosts=self.webui_allowed_hosts,
                 slot_relay=self.slot_relay if mode in ("both", "local") else None,
             )
             self.webui_runner = await self.webui.start()
@@ -280,6 +284,7 @@ async def run_daemon(
     enable_webui: bool = False,
     webui_host: str = "0.0.0.0",
     webui_port: int = 8081,
+    webui_allowed_hosts: list[str] | None = None,
 ) -> None:
     """Entry point for running the daemon.
 
@@ -293,6 +298,7 @@ async def run_daemon(
         enable_webui: If True, start web UI for config editing.
         webui_host: Host address for web UI server.
         webui_port: Port for web UI server.
+        webui_allowed_hosts: Host names beyond loopback the web UI answers to.
     """
     daemon = Daemon(
         interval=interval,
@@ -302,6 +308,7 @@ async def run_daemon(
         enable_webui=enable_webui,
         webui_host=webui_host,
         webui_port=webui_port,
+        webui_allowed_hosts=webui_allowed_hosts,
     )
     task = asyncio.create_task(daemon.start())
 
