@@ -11,7 +11,7 @@ A fake fetcher stands in for streamlink. Each lookup takes 0.5-3 s (90%), 3-10 s
 Channels spread evenly over the priority levels. Three ways to run the lookups,
 all bounded by the processor's concurrency limit (4):
 
-- sequential: one priority level after another, as the processor once did.
+- sequential: one priority level after another, each waiting for the last.
 - concurrent: every level at once, started in priority order.
 - processor: StreamProcessor.process_stream_groups() with the fake fetcher, so
   the number follows whatever the processor does now.
