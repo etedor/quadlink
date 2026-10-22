@@ -168,6 +168,8 @@ ruff check src/ tests/ # lint
 mypy src/ # type check
 ```
 
+`nix flake check` builds the package, runs the tests, and checks formatting, lint and types. CI (`.github/workflows/ci.yml`) runs the same command on each push and on each pull request.
+
 ## License
 
 MIT

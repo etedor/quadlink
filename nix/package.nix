@@ -46,7 +46,24 @@ python3Packages.buildPythonApplication {
     cp ${ttvlolPlugin} $out/${python3Packages.python.sitePackages}/quadlink/plugins/twitch.py
   '';
 
-  doCheck = false;
+  doCheck = true;
+
+  # ffmpeg for the relay's real-ffmpeg tests; the ttvlol plugin isn't installed yet at
+  # check time, but fetcher.py falls back to streamlink's built-in (mocked in tests) plugin
+  nativeCheckInputs =
+    (with python3Packages; [
+      pytestCheckHook
+      pytest-asyncio
+      pytest-cov
+    ])
+    ++ [ pkgs.ffmpeg-headless ];
+
+  disabledTests = [
+    # shells out to /bin/ps for RSS; the build sandbox denies that exec
+    "test_long_fmp4_run_keeps_the_converter_memory_flat"
+    # margins (0.1/0.2/0.3s) are too tight under the sandboxed build's CPU contention
+    "test_slow_channel_resolves_on_the_next_lookup"
+  ];
 
   meta = with lib; {
     description = "Companion to QuadStream for Apple tvOS";
