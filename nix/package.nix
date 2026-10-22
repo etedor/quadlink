@@ -61,8 +61,6 @@ python3Packages.buildPythonApplication {
   disabledTests = [
     # shells out to /bin/ps for RSS; the build sandbox denies that exec
     "test_long_fmp4_run_keeps_the_converter_memory_flat"
-    # margins (0.1/0.2/0.3s) are too tight under the sandboxed build's CPU contention
-    "test_slow_channel_resolves_on_the_next_lookup"
   ];
 
   meta = with lib; {
