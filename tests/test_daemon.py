@@ -22,16 +22,18 @@ from unittest.mock import patch
 import httpx
 import pytest
 import structlog
+from aiohttp.test_utils import TestClient, TestServer
 
 from quadlink import __main__ as cli
 from quadlink import logconfig
 from quadlink.daemon import Daemon, run_daemon
-from quadlink.dashboard import DashboardState
+from quadlink.dashboard import DashboardState, QuadStreamLogin
 from quadlink.health import HealthServer
 from quadlink.overrides import GRACE_REFRESHES, OverrideError
 from quadlink.quad import Overrides, compose
 from quadlink.stream.fetcher import LookupFailed
 from quadlink.types import ChannelState, Metadata, Quad, Stream, channel_login
+from quadlink.webui import TOKEN_HEADER, WebUI
 
 CHANNELS = ("a", "b", "c", "d")
 # "e" is configured but offline until a test brings it live
@@ -758,6 +760,78 @@ class TestOperatorActions:
         snap = make_daemon().snapshot()
         assert [s.channel for s in snap.slots] == [""] * 4
         assert snap.channels == []
+
+
+class TestDashboardFeed:
+    """What the dashboard API reads: change notices, login state, the API itself."""
+
+    async def test_refresh_recompose_and_actions_notify_watchers(self, make_daemon):
+        daemon = make_daemon()
+        notices = 0
+
+        def count() -> None:
+            nonlocal notices
+            notices += 1
+
+        daemon.watch(count)
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            # the refresh, then the recompose it requested
+            assert notices == 2
+            await daemon.bench("e")
+            assert notices == 3
+            await settle()
+            assert notices == 4
+
+    async def test_snapshot_shows_the_quadstream_login(self, make_daemon, config_path, quadstream):
+        daemon = make_daemon()
+        assert daemon.snapshot().quadstream == QuadStreamLogin.OFF
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert daemon.snapshot().quadstream == QuadStreamLogin.LOGGED_IN
+            write_config(config_path, secret="wrong")
+            await loops.refresh()
+            assert daemon.snapshot().quadstream == QuadStreamLogin.FAILED
+            write_config(config_path, mode="local")
+            await loops.refresh()
+            assert daemon.snapshot().quadstream == QuadStreamLogin.OFF
+
+    async def test_snapshot_marks_benched_channels(self, make_daemon):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.bench("a")
+            await settle()
+        benched = {c.channel: c.benched for c in daemon.snapshot().channels}
+        assert benched == {"a": True, "b": False, "c": False, "d": False, "e": False}
+
+    async def test_api_drives_the_daemon(self, make_daemon):
+        daemon = make_daemon()
+        webui = WebUI(daemon.config_loader, dashboard=daemon)
+        headers = {TOKEN_HEADER: webui.token}
+        async with stepped(daemon) as loops, TestClient(TestServer(webui.app)) as client:
+            await loops.refresh()
+            resp = await client.post(
+                "/api/actions", json={"action": "pin", "slot": 2}, headers=headers
+            )
+            assert resp.status == 200
+            assert (await resp.json())["slots"][2]["pinned"] is True
+            resp = await client.post(
+                "/api/actions",
+                json={"action": "place", "channel": "zz", "slot": 0},
+                headers=headers,
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "channel 'zz' is not in the config"
+            events = await client.get(f"/api/events?token={webui.token}")
+            first = await events.content.readuntil(b"\n\n")
+            assert json.loads(first[len(b"data: ") :])["slots"][0]["channel"] == "a"
+            await daemon.swap(0, 1)
+            await settle()
+            moved = await events.content.readuntil(b"\n\n")
+            assert json.loads(moved[len(b"data: ") :])["slots"][0]["channel"] == "b"
+            events.close()
+        assert daemon.overrides.pins == {"c": 2}
 
 
 class TestConfigReload:

@@ -15,7 +15,7 @@ from aiohttp import web
 from quadlink import overrides as actions
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.config.models import Config
-from quadlink.dashboard import Snapshot, snapshot
+from quadlink.dashboard import QuadStreamLogin, Snapshot, snapshot
 from quadlink.health import HealthServer
 from quadlink.logconfig import apply_config_level
 from quadlink.overrides import OverrideError
@@ -87,15 +87,13 @@ class Daemon:
         self.config_loader = ConfigLoader(explicit_path=config_path)
         self.health_server = HealthServer(max_age=3 * interval) if enable_health_server else None
         self.slot_store = SlotStore()
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg is None:
+        self.ffmpeg = shutil.which("ffmpeg")
+        if self.ffmpeg is None:
             logger.warning("relay ffmpeg not found, audio passes through")
         # a hung fetch holds the slot's serial fetch queue; segments arrive every 2s
         self._segment_client = httpx.AsyncClient(timeout=5)
-        self.slot_relay = SlotRelay(
-            self.slot_store,
-            segments=SegmentProxy(self._fetch_segment, ffmpeg),
-        )
+        self.segments = SegmentProxy(self._fetch_segment, self.ffmpeg)
+        self.slot_relay = SlotRelay(self.slot_store, segments=self.segments)
         self.webui: WebUI | None = None
         self.webui_runner: web.AppRunner | None = None
         self.running = False
@@ -130,6 +128,8 @@ class Daemon:
         self.channel_statuses: list[ChannelStatus] = []
         # wall-clock time (epoch seconds) of that refresh; None before the first
         self.statuses_at: float | None = None
+        # called after anything the snapshot shows may have changed
+        self._watchers: list[Callable[[], None]] = []
 
     async def _fetch_segment(self, uri: str) -> bytes:
         """Fetch one relay segment from its origin URI."""
@@ -159,6 +159,7 @@ class Daemon:
                 port=self.webui_port,
                 allowed_hosts=self.webui_allowed_hosts,
                 slot_relay=self.slot_relay if mode in ("both", "local") else None,
+                dashboard=self,
             )
             self.webui_runner = await self.webui.start()
         self.running = True
@@ -251,6 +252,7 @@ class Daemon:
                 await self._recompose()
             except Exception as e:
                 logger.error("unexpected error in recompose", error=str(e), exc_info=True)
+            self._notify()
 
     async def _cycle(self) -> float:
         """Run one refresh and the recompose it requests; return the seconds to wait."""
@@ -329,6 +331,7 @@ class Daemon:
         self._login_due = config.mode in ("both", "remote")
         self.request_recompose()
         self._mark_cycle()
+        self._notify()
         return self.interval
 
     async def _recompose(self) -> None:
@@ -416,8 +419,30 @@ class Daemon:
         if self._config is not None:
             pending = waiting(self._pool, self.quad_state, self.overrides, self._config)
         return snapshot(
-            self.channel_statuses, self.quad_state, self.overrides, pending, self.statuses_at
+            self.channel_statuses,
+            self.quad_state,
+            self.overrides,
+            pending,
+            self.statuses_at,
+            self._quadstream_login(),
         )
+
+    def watch(self, callback: Callable[[], None]) -> None:
+        """Call callback (on the event loop) whenever the snapshot may have changed."""
+        self._watchers.append(callback)
+
+    def _notify(self) -> None:
+        for callback in self._watchers:
+            callback()
+
+    def _quadstream_login(self) -> QuadStreamLogin:
+        if self._config is None or self._config.mode not in ("both", "remote"):
+            return QuadStreamLogin.OFF
+        if self.quadstream_client is not None:
+            return QuadStreamLogin.LOGGED_IN
+        if self._login_failing:
+            return QuadStreamLogin.FAILED
+        return QuadStreamLogin.PENDING
 
     def _configured(self) -> set[str]:
         if self._config is None:
@@ -431,6 +456,7 @@ class Daemon:
         self.overrides = overrides
         self._save_state()
         self.request_recompose()
+        self._notify()
 
     def _save_state(self) -> None:
         self.state_store.save(self.overrides, self.quad_state)

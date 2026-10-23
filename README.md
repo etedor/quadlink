@@ -152,6 +152,47 @@ When you save, the web UI writes only the values on the page to the config file.
 It keeps the `credentials` section of the file as written.
 It does not write default values, `QL_*` environment overrides, or credentials read from a file.
 
+### Dashboard API
+
+The web UI also serves an API for the dashboard and for scripts.
+Slots are numbered 0 to 3 (the relay serves them at `/streams/1` to `/streams/4`).
+The API uses the same checks as the config API: an allowed `Host`, a same-origin request, and the page token in the `X-QuadLink-Token` header.
+Two routes are different, because a browser cannot send headers for them:
+
+- `/api/events` also accepts the token as the `token` query parameter.
+- `/api/slots/{slot}/still.jpg` does not need the token. It refuses requests from other sites.
+
+| Route | Result |
+|---|---|
+| `GET /api/state` | The snapshot as JSON. |
+| `GET /api/events` | Server-Sent Events. The server sends the snapshot when you connect and each time it changes (at most 4 times each second). It sends a comment line after 15 seconds without an event. |
+| `POST /api/actions` | Applies one operator action. If the action succeeds, the server sends `200` and the new snapshot. If the action is not valid, the server sends `400` and `{"error": "..."}`. |
+| `GET /api/slots/{slot}/still.jpg` | A JPEG (480 pixels wide) of the picture in the slot, at most 5 seconds old. If no client plays the slot, or ffmpeg cannot decode a frame, the server redirects to the Twitch preview image of the channel. For an empty slot, the server sends `404`. |
+
+The snapshot has `"v": 1`. The version changes when the shape changes. The snapshot contains:
+
+- `refreshed_at`: the time of the last channel lookup (seconds since the epoch), or `null`.
+- `quadstream`: the QuadStream login (`off`, `pending`, `logged in` or `failed`).
+- `slots`: for each slot, `channel`, `display_name`, `title`, `category`, `pinned`, `reserved_for` and `still` (the still URL). An empty slot has `null` values.
+- `channels`: for each configured channel, `channel`, `display_name`, `title`, `category`, `state`, `slot`, `pin_slot`, `benched`, `priorities`, `priority`, `reason` and `thumbnail`.
+
+The body of an action is a JSON object with an `action` and its parameters, and no other keys:
+
+| Action | Parameters |
+|---|---|
+| `place` | `channel` (login), `slot` |
+| `swap` | `a`, `b` (slots) |
+| `pin`, `unpin` | `slot` |
+| `bench`, `unbench` | `channel` |
+| `reset` | none |
+
+Example (the token is in the `quadlink-token` meta tag of the page):
+
+```bash
+curl -s -H "X-QuadLink-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"action": "pin", "slot": 2}' http://localhost:8081/api/actions
+```
+
 ### Webhooks
 
 Trigger external automations when quad updates:

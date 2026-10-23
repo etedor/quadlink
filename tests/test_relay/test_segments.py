@@ -1040,3 +1040,56 @@ async def test_late_fmp4_conversion_and_remux_fit_convert_wait(monkeypatch):
     # the remux, then CONVERT_WAIT less the REMUX_WAIT it may take
     assert loop.time() - start == pytest.approx(0.5, abs=0.1)
     await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_latest_is_the_newest_fetched_segment(ts_run):
+    segs = ts_run(48000, 2)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, None)
+    assert proxy.latest(0) is None
+    proxy.register(0, _seg(0, "0"))
+    assert proxy.latest(0) is None
+    assert await proxy.get(0, 0) == segs[0]
+    assert proxy.latest(0) == segs[0]
+    proxy.register(0, _seg(1, "1"))
+    await proxy.get(0, 1)
+    assert proxy.latest(0) == segs[1]
+    # a slot nobody polls keeps old segments, which no longer show its picture
+    assert proxy.latest(0, max_age=-1) is None
+    assert proxy.latest(1) is None
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_latest_gives_the_converted_output(ffmpeg, ts_run):
+    segs = ts_run(44100, 2)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, ffmpeg)
+    for i in range(2):
+        proxy.register(0, _seg(i, str(i)))
+    converted = await proxy.get(0, 0)
+    # once converted, a segment's raw bytes are gone; drop the newer one to reach it
+    proxy._slots[0].entries.popitem()
+    latest = proxy.latest(0)
+    assert latest == converted and latest is not None
+    assert audio_sample_rate(latest) == 48000
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_latest_skips_a_failed_fetch(ts_run):
+    segs = ts_run(48000, 1)
+
+    async def fetch(uri: str) -> bytes:
+        if uri == "1":
+            raise OSError("gone")
+        return segs[0]
+
+    proxy = SegmentProxy(fetch, None)
+    proxy.register(0, _seg(0, "0"))
+    proxy.register(0, _seg(1, "1"))
+    await proxy.get(0, 0)
+    assert await proxy.get(0, 1) is None
+    assert proxy.latest(0) == segs[0]
+    await proxy.aclose()

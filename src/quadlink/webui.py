@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from ruamel.yaml import YAML
 
 from quadlink import __version__
+from quadlink.api import EVENTS_PATH, STILL_PATH, Dashboard, DashboardAPI
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
 from quadlink.relay.server import SlotRelay
@@ -108,10 +109,12 @@ def _strip_empty(obj: Any) -> Any:
 class WebUI:
     """Web server for viewing and editing QuadLink configuration.
 
-    The page and the config API answer only requests whose Host header names an
-    allowed host (against DNS rebinding). The API also requires same-origin JSON
-    requests that carry the per-process token embedded in the page (against
-    cross-site request forgery). The relay /streams routes take no such checks.
+    The page and the API answer only requests whose Host header names an allowed
+    host (against DNS rebinding). The API also requires same-origin JSON requests
+    that carry the per-process token embedded in the page (against cross-site
+    request forgery). EventSource and <img> cannot send headers: the event stream
+    takes the token as a query parameter, and slot stills need no token. The relay
+    /streams routes take no such checks.
 
     Attributes:
         host: Host address to bind to.
@@ -129,6 +132,7 @@ class WebUI:
         port: int = 8081,
         slot_relay: SlotRelay | None = None,
         allowed_hosts: Iterable[str] = (),
+        dashboard: Dashboard | None = None,
     ):
         """Initialize web UI server.
 
@@ -139,6 +143,7 @@ class WebUI:
             slot_relay: Optional slot relay whose /streams routes are registered.
             allowed_hosts: Host names beyond the loopback names that may reach the page
                 and API, such as the name a reverse proxy serves the web UI under.
+            dashboard: Optional daemon whose dashboard API routes are registered.
         """
         self.host = host
         self.port = port
@@ -148,6 +153,7 @@ class WebUI:
         self.allowed_hosts = LOOPBACK_HOSTS | {h.strip().lower() for h in allowed_hosts}
         self.token = secrets.token_urlsafe(32)
         self.app = web.Application(middlewares=[self._guard])
+        self.api = DashboardAPI(dashboard) if dashboard is not None else None
         self._setup_routes()
 
     @web.middleware
@@ -185,7 +191,13 @@ class WebUI:
         # preflight, which fails because the server sends no CORS headers
         if request.method == "POST" and request.content_type != "application/json":
             return _deny(415, "the request body must be JSON (application/json)")
-        sent = request.headers.get(TOKEN_HEADER, "")
+        # <img> cannot send the token; the same-origin check above keeps other sites out
+        if STILL_PATH.fullmatch(path):
+            return await handler(request)
+        sent = request.headers.get(TOKEN_HEADER)
+        if sent is None and path == EVENTS_PATH:
+            sent = request.query.get("token")
+        sent = sent or ""
         if not secrets.compare_digest(sent.encode("utf-8", "surrogateescape"), self.token.encode()):
             return _deny(403, "the page token is missing or incorrect; reload the page")
 
@@ -203,6 +215,8 @@ class WebUI:
         self.app.router.add_get("/api/config", self._handle_get_config)
         self.app.router.add_post("/api/config", self._handle_post_config)
         self.app.router.add_post("/api/validate", self._handle_validate)
+        if self.api is not None:
+            self.api.register(self.app)
         if self.slot_relay is not None:
             self.slot_relay.register_routes(self.app.router)
 
