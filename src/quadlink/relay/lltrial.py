@@ -84,14 +84,16 @@ def cut(body: bytes, duration: float) -> list[tuple[int, float]]:
         pts = pes_pts(pkt[offset:])
         if pts is not None:
             frames.append((i, pts))
-    n = max(1, math.ceil(duration / PART_TARGET), round(duration / PART_SPLIT))
-    if not frames or n == 1:
+    # fixed steps, so a long segment gets more parts rather than shorter ones; only the
+    # last part of a segment may fall under Apple's floor
+    n = math.ceil(duration / PART_SPLIT - 0.05)
+    if not frames or n <= 1:
         return [(0, duration)]
     first = frames[0][1]
     offsets = [0]
     times = [0.0]
     for k in range(1, n):
-        want = k * duration / n
+        want = k * PART_SPLIT
         off, pts = min(frames, key=lambda f: abs((f[1] - first) / 90000 - want))
         t = (pts - first) / 90000
         if off > offsets[-1] and times[-1] < t < duration:
@@ -224,7 +226,10 @@ class LLTrial:
                 async with session.get(f"{self.upstream}/streams/{n}") as resp:
                     text = await resp.text()
                 seq, dseq, target, listed = parse(text)
-                slot.target = target
+                # only grows: a segment longer than the target breaks the playlist
+                slot.target = max(
+                    slot.target, target, *(math.ceil(d - 0.001) for d, _, _ in listed)
+                )
                 initial = not slot.segs
                 backlog: list[Seg] = []
                 last = slot.segs[-1].src if slot.segs else seq - 1
