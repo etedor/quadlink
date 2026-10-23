@@ -32,7 +32,6 @@ PART_TARGET = 0.54
 # the relay adds filler after 3s without video, checked on each poll; polling
 # faster than a normal client (2s) makes filler fire on gaps a player would ride out
 POLL = 1.0
-BLOCK_WAIT = 6.0
 WINDOW = 12
 # a slot nobody has asked for in this long stops polling the relay
 IDLE_STOP = 30.0
@@ -303,21 +302,45 @@ class LLTrial:
                         t -= seg.duration
                         seg.release = t
                     slot.segs = backlog[-WINDOW:]
+                took = time.monotonic() - started
+                if took > 2.5:
+                    logger.warning("ll trial slow poll", slot=n, took=round(took, 2))
             except Exception as e:
                 logger.warning("ll trial poll failed", slot=n, error=repr(e))
             await asyncio.sleep(POLL)
 
-    async def _wait_for(self, slot: Slot, msn: int, part: int | None) -> None:
-        deadline = time.monotonic() + BLOCK_WAIT
-        while not has(slot, msn, part, time.monotonic()) and time.monotonic() < deadline:
+    async def _wait_for(self, slot: Slot, msn: int, part: int | None) -> bool:
+        """Whether the part (or whole segment) came out within 3 target durations."""
+        # the server-side timeout of a blocking request (draft-pantos-hls-rfc8216bis 6.2.5.2)
+        deadline = time.monotonic() + 3 * slot.target
+        while not has(slot, msn, part, time.monotonic()):
+            if time.monotonic() >= deadline:
+                return False
             await asyncio.sleep(0.05)
+        return True
+
+    def _miss(self, event: str, request: web.Request, n: int, slot: Slot, **fields: object) -> None:
+        tail = slot.segs[-1] if slot.segs else None
+        logger.warning(
+            event,
+            slot=n,
+            tail=f"{tail.seq}.{tail.parts_released(time.monotonic())}" if tail else None,
+            agent=request.headers.get("User-Agent", "")[:60],
+            **fields,
+        )
 
     async def playlist(self, request: web.Request) -> web.Response:
         n, slot = self._slot(request)
         q = request.query
         if "_HLS_msn" in q:
+            msn = int(q["_HLS_msn"])
             part = int(q["_HLS_part"]) if "_HLS_part" in q else None
-            await self._wait_for(slot, int(q["_HLS_msn"]), part)
+            if slot.segs and msn > slot.segs[-1].seq + 2:
+                self._miss("ll trial request too far ahead", request, n, slot, msn=msn, part=part)
+                return web.Response(status=400, text="_HLS_msn too far ahead")
+            if not await self._wait_for(slot, msn, part):
+                self._miss("ll trial block timeout", request, n, slot, msn=msn, part=part)
+                return web.Response(status=503, text="not yet available")
         else:
             for _ in range(100):
                 if render(n, slot, time.monotonic()):
@@ -333,11 +356,12 @@ class LLTrial:
         )
 
     async def part(self, request: web.Request) -> web.Response:
-        _, slot = self._slot(request)
+        n, slot = self._slot(request)
         seq, k = int(request.match_info["seq"]), int(request.match_info["k"])
         await self._wait_for(slot, seq, k)
         seg = next((s for s in slot.segs if s.seq == seq), None)
         if seg is None or k >= len(seg.cuts) or seg.parts_released(time.monotonic()) <= k:
+            self._miss("ll trial part missing", request, n, slot, seq=seq, part=k)
             return web.Response(status=404)
         start = seg.cuts[k][0]
         end = seg.cuts[k + 1][0] if k + 1 < len(seg.cuts) else len(seg.body)
