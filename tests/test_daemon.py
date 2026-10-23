@@ -26,8 +26,10 @@ import structlog
 from quadlink import __main__ as cli
 from quadlink import logconfig
 from quadlink.daemon import Daemon, run_daemon
+from quadlink.dashboard import DashboardState
 from quadlink.health import HealthServer
-from quadlink.quad import compose
+from quadlink.overrides import GRACE_REFRESHES, OverrideError
+from quadlink.quad import Overrides, compose
 from quadlink.stream.fetcher import LookupFailed
 from quadlink.types import ChannelState, Metadata, Quad, Stream, channel_login
 
@@ -563,6 +565,174 @@ class TestFirstRefresh:
         # the same state after a refresh keeps the channel
         daemon._refreshed_at = 0.0
         assert [c.stream.channel for c in daemon._still_playing(pool)] == ["a"]
+
+
+ACTIONS: dict[str, tuple[Any, Any, dict[str, int], list[str], list[str]]] = {
+    # name: (setup action, action, saved pins, saved benches, slots after)
+    "place": (None, lambda d: d.place("e", 1), {"e": 1}, ["b"], ["a", "e", "c", "d"]),
+    "swap": (None, lambda d: d.swap(0, 1), {}, [], ["b", "a", "c", "d"]),
+    "pin": (None, lambda d: d.pin(2), {"c": 2}, [], ["a", "b", "c", "d"]),
+    "unpin": (lambda d: d.pin(2), lambda d: d.unpin(2), {}, [], ["a", "b", "c", "d"]),
+    "bench": (None, lambda d: d.bench("a"), {}, ["a"], ["e", "b", "c", "d"]),
+    "unbench": (lambda d: d.bench("a"), lambda d: d.unbench("a"), {}, [], ["e", "b", "c", "d"]),
+    "reset": (lambda d: d.place("e", 1), lambda d: d.reset(), {}, [], ["a", "e", "c", "d"]),
+}
+
+
+class TestOperatorActions:
+    """Each action updates the overrides, saves them and requests one recompose."""
+
+    @pytest.mark.parametrize("name", ACTIONS)
+    async def test_action_recomposes_once_and_persists(self, make_daemon, twitch, state_file, name):
+        setup, action, pins, benches, slots = ACTIONS[name]
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            if setup is not None:
+                await setup(daemon)
+                await settle()
+            with patch("quadlink.daemon.compose", wraps=compose) as composed:
+                await action(daemon)
+                await settle()
+            assert composed.call_count == 1
+        assert store_channels(daemon) == slots
+        saved = json.loads(state_file.read_text())
+        assert (saved["pins"], saved["benches"]) == (pins, benches)
+        assert saved["channels"] == slots
+
+    async def test_invalid_action_raises_and_changes_nothing(self, make_daemon, state_file):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            saved = state_file.read_text()
+            with pytest.raises(OverrideError, match="'zz' is not in the config"):
+                await daemon.place("zz", 0)
+            with pytest.raises(OverrideError, match="use a slot from 0 to 3"):
+                await daemon.unpin(4)
+            assert not daemon._recompose_requested.is_set()
+        assert daemon.overrides == Overrides()
+        assert state_file.read_text() == saved
+
+    async def test_channel_actions_wait_for_a_config(self, make_daemon):
+        daemon = make_daemon()
+        with pytest.raises(OverrideError, match="no config is loaded yet"):
+            await daemon.bench("a")
+        with pytest.raises(OverrideError, match="slot 0 is empty"):
+            await daemon.pin(0)
+
+    async def test_restart_restores_overrides_and_slots(self, make_daemon, twitch):
+        twitch.go_live("e")
+        first = make_daemon()
+        async with stepped(first) as loops:
+            await loops.refresh()
+            await first.swap(0, 3)
+            await first.place("e", 1)
+            await settle()
+        assert first.quad_state.channels == ("d", "e", "c", "a")
+
+        second = make_daemon()
+        assert second.overrides == first.overrides
+        assert second.quad_state.channels == ("d", "e", "c", "a")
+        async with stepped(second) as loops:
+            await loops.refresh()
+        assert store_channels(second) == ["d", "e", "c", "a"]
+
+    async def test_pin_clears_after_the_grace(self, make_daemon, twitch, state_file):
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.place("e", 1)
+            twitch.go_offline("e")
+            for absent in range(1, GRACE_REFRESHES + 1):
+                await loops.refresh()
+                assert daemon.overrides.pins == {"e": 1}
+                assert daemon.overrides.absent == {"e": absent}
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+        assert daemon.overrides.pins == {}
+        assert events(logs, "overrides cleared")[0]["channels"] == ["e"]
+        assert json.loads(state_file.read_text())["pins"] == {}
+
+    async def test_pinned_channel_back_within_the_grace_reclaims_its_slot(
+        self, make_daemon, twitch
+    ):
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.pin(3)
+            twitch.go_offline("d")
+            await loops.refresh()
+            assert store_channels(daemon) == ["a", "b", "c", "e"]
+            twitch.go_live("d")
+            await loops.refresh()
+        assert store_channels(daemon) == ["a", "b", "c", "d"]
+
+    async def test_empty_pool_does_not_run_out_the_grace(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.pin(0)
+            twitch.go_offline(*CHANNELS)
+            for _ in range(GRACE_REFRESHES + 2):
+                await loops.refresh()
+        assert daemon.overrides.pins == {"a": 0}
+
+    async def test_channel_removed_from_the_config_clears_at_once(
+        self, make_daemon, config_path, twitch
+    ):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.pin(0)
+            await daemon.bench("e")
+            write_config(config_path, channels=("b", "c", "d"))
+            await loops.refresh()
+        assert daemon.overrides == Overrides()
+
+    async def test_snapshot(self, make_daemon, config_path, twitch):
+        write_config(
+            config_path,
+            priorities={
+                100: [{"urls": ["a", "b", "c", "d", "f", "g", "h"]}],
+                300: [{"urls": ["e"]}],
+            },
+        )
+        twitch.display["a"] = "Alpha"
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            for slot in range(4):
+                await daemon.pin(slot)
+            await daemon.bench("g")
+            twitch.go_live("e", "h")
+            twitch.live["f"] = LookupFailed("timed out")
+            await loops.refresh()
+        snap = daemon.snapshot()
+        assert [(s.channel, s.display_name, s.pinned) for s in snap.slots] == [
+            ("a", "Alpha", True),
+            ("b", "b", True),
+            ("c", "c", True),
+            ("d", "d", True),
+        ]
+        assert [(c.channel, c.state, c.slot, c.pinned) for c in snap.channels] == [
+            ("e", DashboardState.WAITING, None, False),
+            ("a", DashboardState.IN_QUAD, 0, True),
+            ("b", DashboardState.IN_QUAD, 1, True),
+            ("c", DashboardState.IN_QUAD, 2, True),
+            ("d", DashboardState.IN_QUAD, 3, True),
+            ("f", DashboardState.LOOKUP_FAILED, None, False),
+            ("g", DashboardState.BENCHED, None, False),
+            ("h", DashboardState.LIVE, None, False),
+        ]
+        assert snap.refreshed_at == daemon.statuses_at
+
+    async def test_snapshot_before_any_refresh(self, make_daemon):
+        snap = make_daemon().snapshot()
+        assert [s.channel for s in snap.slots] == [""] * 4
+        assert snap.channels == []
 
 
 class TestConfigReload:

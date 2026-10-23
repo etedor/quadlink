@@ -1,26 +1,32 @@
 """Main daemon loop for stream monitoring and quad selection."""
 
 import asyncio
+import os
 import shutil
 import signal
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import httpx
 import structlog
 from aiohttp import web
 
+from quadlink import overrides as actions
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.config.models import Config
+from quadlink.dashboard import Snapshot, snapshot
 from quadlink.health import HealthServer
 from quadlink.logconfig import apply_config_level
-from quadlink.quad import Overrides, QuadState, compose
+from quadlink.overrides import OverrideError
+from quadlink.quad import Overrides, QuadState, compose, waiting
 from quadlink.quadstream import QuadStreamClient
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
+from quadlink.state import DEFAULT_STATE_PATH, StateStore
 from quadlink.stream.processor import StreamProcessor
-from quadlink.types import ChannelStatus, PrioritizedStream
+from quadlink.types import ChannelStatus, PrioritizedStream, channel_login
 from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
@@ -55,6 +61,7 @@ class Daemon:
         webui_host: str = "0.0.0.0",
         webui_port: int = 8081,
         webui_allowed_hosts: list[str] | None = None,
+        state_path: str | None = None,
     ):
         """Initialize daemon.
 
@@ -67,6 +74,8 @@ class Daemon:
             webui_host: Host address for web UI server.
             webui_port: Port for web UI server.
             webui_allowed_hosts: Host names beyond loopback the web UI answers to.
+            state_path: File that keeps pins, benches and slot positions across
+                restarts (default: $QL_STATE_FILE, else /var/lib/quadlink/state.json).
         """
         self.interval = interval
         self.one_shot = one_shot
@@ -91,9 +100,11 @@ class Daemon:
         self.webui_runner: web.AppRunner | None = None
         self.running = False
         self.processor: StreamProcessor | None = None
+        self.state_store = StateStore(
+            Path(state_path or os.environ.get("QL_STATE_FILE") or DEFAULT_STATE_PATH)
+        )
         # survives config reloads, so a save in the web UI does not reshuffle tiles
-        self.quad_state = QuadState()
-        self.overrides = Overrides()
+        self.overrides, self.quad_state = self.state_store.load()
         # channels per slot of the last quad QuadStream accepted; None until the
         # current login has accepted one
         self._pushed: tuple[str, ...] | None = None
@@ -300,6 +311,18 @@ class Daemon:
                     candidates=len(candidates),
                 )
 
+        overrides = actions.drop_unconfigured(self.overrides, configured_channels(config))
+        # an empty pool usually means every lookup failed (network or proxy down),
+        # which must not run out the grace of every pin and bench
+        if candidates:
+            overrides = actions.age(overrides, {c.stream.channel for c in candidates})
+        if overrides != self.overrides:
+            cleared = sorted(self.overrides.channels - overrides.channels)
+            if cleared:
+                logger.info("overrides cleared", channels=cleared)
+            self.overrides = overrides
+            self._save_state()
+
         self._config = config
         self._pool = candidates
         # set with the config, so the login uses this refresh's credentials
@@ -311,7 +334,8 @@ class Daemon:
     async def _recompose(self) -> None:
         """Compose the quad from the cached pool, feed the relay and push when needed.
 
-        The only writer of quad_state, the slot store and the QuadStream push.
+        The only writer of the slot store and the QuadStream push, and of
+        quad_state except for swap, which moves channels ahead of it.
         """
         config, pool = self._config, self._pool
         # an empty pool keeps the quad on screen as it is
@@ -319,6 +343,7 @@ class Daemon:
             return
 
         self.quad_state = state = compose(pool, self.quad_state, self.overrides, config)
+        self._save_state()
         quad = state.quad
         self._on_screen = {}
         for c in pool:
@@ -347,6 +372,65 @@ class Daemon:
                 self._pushed = state.channels
             if config.webhook.enabled and config.webhook.url:
                 await client.send_webhook(config.webhook.url, quad)
+
+    async def place(self, channel: str, slot: int) -> None:
+        """Pin channel to slot and bench the channel there.
+
+        Every operator action raises OverrideError for invalid input, and
+        otherwise saves the overrides and requests one recompose.
+        """
+        self._apply(
+            actions.place(self.overrides, self.quad_state, channel, slot, self._configured())
+        )
+
+    async def swap(self, a: int, b: int) -> None:
+        """Swap the channels of two slots; pins move with their channels."""
+        self._apply(*actions.swap(self.overrides, self.quad_state, a, b))
+
+    async def pin(self, slot: int) -> None:
+        """Pin the channel in slot to that slot."""
+        self._apply(actions.pin(self.overrides, self.quad_state, slot))
+
+    async def unpin(self, slot: int) -> None:
+        """Remove the pin on slot."""
+        self._apply(actions.unpin(self.overrides, slot))
+
+    async def bench(self, channel: str) -> None:
+        """Keep channel out of the quad."""
+        self._apply(actions.bench(self.overrides, channel, self._configured()))
+
+    async def unbench(self, channel: str) -> None:
+        """Make channel eligible again."""
+        self._apply(actions.unbench(self.overrides, channel, self._configured()))
+
+    async def reset(self) -> None:
+        """Clear every pin and bench."""
+        self._apply(actions.reset())
+
+    def snapshot(self) -> Snapshot:
+        """The quad and every configured channel's dashboard state."""
+        pending: list[str] = []
+        if self._config is not None:
+            pending = waiting(self._pool, self.quad_state, self.overrides, self._config)
+        return snapshot(
+            self.channel_statuses, self.quad_state, self.overrides, pending, self.statuses_at
+        )
+
+    def _configured(self) -> set[str]:
+        if self._config is None:
+            raise OverrideError("no config is loaded yet: wait for the first refresh")
+        return configured_channels(self._config)
+
+    def _apply(self, overrides: Overrides, state: QuadState | None = None) -> None:
+        # swap moves channels between slots ahead of the recompose that seats them
+        if state is not None:
+            self.quad_state = state
+        self.overrides = overrides
+        self._save_state()
+        self.request_recompose()
+
+    def _save_state(self) -> None:
+        self.state_store.save(self.overrides, self.quad_state)
 
     @staticmethod
     def _credentials_of(config: Config) -> tuple[str | None, str | None] | None:
@@ -390,6 +474,16 @@ class Daemon:
             self.health_server.mark_cycle()
 
 
+def configured_channels(config: Config) -> set[str]:
+    """Channel key of every configured URL."""
+    return {
+        channel_login(url)
+        for groups in config.priorities.values()
+        for group in groups
+        for url in group.urls
+    }
+
+
 async def run_daemon(
     one_shot: bool = False,
     interval: int = 30,
@@ -399,6 +493,7 @@ async def run_daemon(
     webui_host: str = "0.0.0.0",
     webui_port: int = 8081,
     webui_allowed_hosts: list[str] | None = None,
+    state_path: str | None = None,
 ) -> None:
     """Entry point for running the daemon.
 
@@ -413,6 +508,7 @@ async def run_daemon(
         webui_host: Host address for web UI server.
         webui_port: Port for web UI server.
         webui_allowed_hosts: Host names beyond loopback the web UI answers to.
+        state_path: File that keeps pins, benches and slot positions (see Daemon).
     """
     daemon = Daemon(
         interval=interval,
@@ -423,6 +519,7 @@ async def run_daemon(
         webui_host=webui_host,
         webui_port=webui_port,
         webui_allowed_hosts=webui_allowed_hosts,
+        state_path=state_path,
     )
     task = asyncio.create_task(daemon.start())
 

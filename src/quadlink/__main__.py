@@ -68,6 +68,14 @@ def parse_args() -> argparse.Namespace:
             "127.0.0.1 and ::1 (repeatable)"
         ),
     )
+    parser.add_argument(
+        "--state-file",
+        type=str,
+        help=(
+            "File that keeps pins, benches and slot positions across restarts "
+            "(default: $QL_STATE_FILE, else /var/lib/quadlink/state.json)"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -98,6 +106,7 @@ def main() -> None:
                 webui_host=args.webui_host,
                 webui_port=args.webui_port,
                 webui_allowed_hosts=args.webui_allowed_hosts,
+                state_path=args.state_file,
             )
         )
     except KeyboardInterrupt:
