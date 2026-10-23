@@ -173,8 +173,9 @@ def _existing_streams(
 ) -> list[PrioritizedStream]:
     """Unpinned streams of the previous quad still in the pool, with their slots.
 
-    A stream whose slot a pinned channel takes keeps its stability bonus but has
-    no slot (position None), so it is seated like a newcomer if it stays.
+    The occupant of a slot a pinned channel reclaims is left out: it competes as
+    a newcomer, with no stability bonus, so it cannot push out a channel that has
+    held its tile all along.
     """
     pinned_slots = {s.position for s in pinned.values()}
     return [
@@ -182,10 +183,10 @@ def _existing_streams(
             stream=candidate_map[channel].stream,
             priority=candidate_map[channel].priority,
             tiebreaker=candidate_map[channel].tiebreaker,
-            position=None if position in pinned_slots else position,
+            position=position,
         )
         for channel, position in state.positions.items()
-        if channel in candidate_map and channel not in pinned
+        if channel in candidate_map and channel not in pinned and position not in pinned_slots
     ]
 
 

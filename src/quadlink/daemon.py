@@ -385,6 +385,9 @@ class Daemon:
 
     async def swap(self, a: int, b: int) -> None:
         """Swap the channels of two slots; pins move with their channels."""
+        # with nothing to recompose from, the moved quad_state would never reach the relay
+        if self._config is None or not self._pool:
+            raise OverrideError("no live channels yet: wait for a refresh that finds one")
         self._apply(*actions.swap(self.overrides, self.quad_state, a, b))
 
     async def pin(self, slot: int) -> None:

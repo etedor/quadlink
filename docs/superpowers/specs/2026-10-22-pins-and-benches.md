@@ -48,7 +48,7 @@ Consequences:
 
 ## Scenario
 
-Six configured channels in one category (so category bonuses drop out), stability bonus 30: A 100, B 90, C 80, D 70, E 60, F 50. Natural selection starts with A, B, C, D in slots 0–3.
+The scenario assumes that `diversity_bonus` and `category_continuity_bonus` are 0. If they are not 0, the saturation penalty still applies to newcomers, even when all channels are in one category. Six configured channels in one category, stability bonus 30: A 100, B 90, C 80, D 70, E 60, F 50. Natural selection starts with A, B, C, D in slots 0–3.
 
 | Step | Event | Slots 0 / 1 / 2 / 3 | Why |
 |---|---|---|---|
@@ -78,11 +78,13 @@ Six configured channels in one category (so category bonuses drop out), stabilit
 
 Every action applies at once: the web handler updates the overrides and requests a recompose. No action waits for the next refresh.
 
+Place and bench are for live channels. On an offline channel, a pin or bench lasts only for the grace period.
+
 ## Dashboard states for a configured channel
 
 - **in quad** (slot N), with a pin marker when pinned
 - **benched**
-- **waiting**: live and would be selected, but the quad is full of higher or pinned channels
+- **waiting**: live and would be selected, but the slots are held by pinned channels
 - **live**: live but not selected
 - **offline**, **no video**, **rejected** (with the reason), **lookup failed**
 

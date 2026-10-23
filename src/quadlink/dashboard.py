@@ -30,12 +30,15 @@ class SlotView:
         display_name: Twitch display name of that channel, or its login when
             the last refresh did not resolve it.
         pinned: The channel on screen is pinned to this slot.
+        reserved_for: Channel pinned to this slot while it is out of the pool;
+            it takes the slot back if it returns within the grace.
     """
 
     slot: int
     channel: str
     display_name: str
     pinned: bool
+    reserved_for: str | None
 
 
 @dataclass(frozen=True)
@@ -46,14 +49,14 @@ class ChannelView:
         channel: Channel key (lowercase Twitch login).
         state: Dashboard state.
         slot: Slot it is on screen in, if any.
-        pinned: It has a pin, whether or not it is on screen.
+        pin_slot: Slot it is pinned to, whether or not it is on screen.
         status: The last refresh's lookup outcome.
     """
 
     channel: str
     state: DashboardState
     slot: int | None
-    pinned: bool
+    pin_slot: int | None
     status: ChannelStatus
 
 
@@ -81,12 +84,14 @@ def snapshot(
 ) -> Snapshot:
     """Build the dashboard view from the daemon's current state."""
     names = {s.channel: s.stream.metadata.author for s in statuses if s.stream is not None}
+    pinned_to = {slot: channel for channel, slot in overrides.pins.items()}
     slots = [
         SlotView(
             slot=slot,
             channel=channel,
             display_name=names.get(channel, channel),
-            pinned=bool(channel) and overrides.pins.get(channel) == slot,
+            pinned=bool(channel) and pinned_to.get(slot) == channel,
+            reserved_for=None if pinned_to.get(slot) == channel else pinned_to.get(slot),
         )
         for slot, channel in enumerate(state.channels)
     ]
@@ -96,7 +101,7 @@ def snapshot(
             channel=s.channel,
             state=_state(s, positions, overrides, waiting),
             slot=positions.get(s.channel),
-            pinned=s.channel in overrides.pins,
+            pin_slot=overrides.pins.get(s.channel),
             status=s,
         )
         for s in statuses
