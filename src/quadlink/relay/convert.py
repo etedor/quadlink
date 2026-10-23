@@ -188,6 +188,56 @@ class Splitter:
         return keys
 
 
+def command(ffmpeg: str) -> list[str]:
+    """ffmpeg arguments for one run: MPEG-TS in on stdin, 48 kHz AAC MPEG-TS out on stdout."""
+    return [
+        ffmpeg,
+        "-v",
+        "error",
+        "-copyts",
+        # the default probe holds a new run's first output until a third segment
+        # is in; 0.5s finds both streams within the first
+        "-analyzeduration",
+        "500000",
+        "-f",
+        "mpegts",
+        "-i",
+        "pipe:0",
+        "-map",
+        "0:v",
+        "-map",
+        "0:a",
+        "-c:v",
+        "copy",
+        "-af",
+        f"aresample={TARGET_RATE},asetpts=PTS+{_ENCODER_DELAY}",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "160k",
+        # one stereo AAC encode needs no worker threads; each one counts toward TasksMax
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-f",
+        "mpegts",
+        # a run starting under 60s before the 33-bit PTS wrap reads as negative
+        # timestamps; shifting them would move every output off its input's PTS
+        "-avoid_negative_ts",
+        "disabled",
+        # each packet reaches the pipe as soon as it is muxed, so a segment's
+        # output completes as soon as the next segment's keyframe is fed
+        "-muxdelay",
+        "0",
+        "-muxpreload",
+        "0",
+        "-flush_packets",
+        "1",
+        "pipe:1",
+    ]
+
+
 class AudioConverter:
     """Pipes consecutive TS segments through ffmpeg and hands back one output per input.
 
@@ -209,50 +259,7 @@ class AudioConverter:
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
-            self.ffmpeg,
-            "-v",
-            "error",
-            "-copyts",
-            # the default probe holds a new run's first output until a third segment
-            # is in; 0.5s finds both streams within the first
-            "-analyzeduration",
-            "500000",
-            "-f",
-            "mpegts",
-            "-i",
-            "pipe:0",
-            "-map",
-            "0:v",
-            "-map",
-            "0:a",
-            "-c:v",
-            "copy",
-            "-af",
-            f"aresample={TARGET_RATE},asetpts=PTS+{_ENCODER_DELAY}",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "160k",
-            # one stereo AAC encode needs no worker threads; each one counts toward TasksMax
-            "-threads",
-            "1",
-            "-filter_threads",
-            "1",
-            "-f",
-            "mpegts",
-            # a run starting under 60s before the 33-bit PTS wrap reads as negative
-            # timestamps; shifting them would move every output off its input's PTS
-            "-avoid_negative_ts",
-            "disabled",
-            # each packet reaches the pipe as soon as it is muxed, so a segment's
-            # output completes as soon as the next segment's keyframe is fed
-            "-muxdelay",
-            "0",
-            "-muxpreload",
-            "0",
-            "-flush_packets",
-            "1",
-            "pipe:1",
+            *command(self.ffmpeg),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
         )

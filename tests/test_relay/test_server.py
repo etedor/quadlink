@@ -310,6 +310,7 @@ async def test_dead_newest_url_without_window_returns_503():
 class FakeProxy:
     def __init__(self, unready: set[int] | None = None, converts_fmp4: bool = False) -> None:
         self.converts_fmp4 = converts_fmp4
+        self.ffmpeg: str | None = None
         self.body: bytes | None = None
         self.registered: list[tuple[int, int]] = []
         self.channels: list[str] = []

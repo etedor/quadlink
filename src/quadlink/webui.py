@@ -20,7 +20,6 @@ from quadlink import __version__
 from quadlink.api import EVENTS_PATH, STILL_PATH, Dashboard, DashboardAPI
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
-from quadlink.relay.lltrial import LLTrial
 from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
@@ -233,9 +232,6 @@ class WebUI:
         if self.api is not None:
             self.api.register(self.app)
         if self.slot_relay is not None:
-            host = self.host if self.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
-            self.ll_trial = LLTrial(f"http://{host}:{self.port}")
-            self.ll_trial.register_routes(self.app.router)
             self.slot_relay.register_routes(self.app.router)
 
     async def _handle_index(self, request: web.Request) -> web.Response:

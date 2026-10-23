@@ -17,6 +17,7 @@ import httpx
 import structlog
 from aiohttp import web
 
+from quadlink.relay.lowlat import LowLatency
 from quadlink.relay.playlist import (
     FILLER_DURATION,
     Segment,
@@ -115,6 +116,9 @@ class SlotRelay:
         # slot -> URL last folded into its window, which the fMP4 init must match
         self._source_urls: dict[int, str] = {}
         self._filler = {name: (_FILLER_DIR / name).read_bytes() for name in _FILLER_TYPES}
+        self.low_latency = LowLatency(
+            self, segments.ffmpeg if segments is not None else None, self._filler["2s.ts"]
+        )
         self._client: httpx.AsyncClient | None = None
         self._segments = segments
         self.proxy_segments = True
@@ -289,6 +293,25 @@ class SlotRelay:
                     self._fold(slot, state, outgoing, out_text)
                     return
         self._fold(slot, state, entry, text)
+
+    async def current_source(self, slot: int) -> tuple[str, str] | None:
+        """(channel identity, source playlist) the slot plays now, or None.
+
+        Same choice as _ingest_slot, without its side effects: during a new channel's
+        preroll, the outgoing channel's playlist.
+        """
+        entry = self.store.get(slot)
+        if entry is None:
+            return None
+        text = await self._fetch_source(slot, entry.url)
+        if not has_live_segment(text):
+            outgoing = self.store.outgoing(slot)
+            if outgoing is not None:
+                try:
+                    return outgoing.identity, await self._cached_fetch(outgoing.url)
+                except Exception as e:
+                    logger.debug("relay outgoing fetch failed", slot=slot, error=str(e))
+        return entry.identity, text
 
     def _sync_format(self, state: SlotState) -> None:
         as_ts = self._proxying() and self._segments is not None and self._segments.converts_fmp4
@@ -472,6 +495,7 @@ class SlotRelay:
 
     def register_routes(self, router: web.UrlDispatcher) -> None:
         """Register the relay routes on an existing aiohttp router."""
+        self.low_latency.register_routes(router)
         router.add_get("/streams/{slot}", self.handle)
         router.add_get("/streams/filler/{name}", self.handle_filler)
         router.add_get("/streams/{slot}/seg/{name}", self.handle_segment)
@@ -485,6 +509,7 @@ class SlotRelay:
         await asyncio.gather(*tasks, return_exceptions=True)
         self._waits.clear()
         self._polls.clear()
+        await self.low_latency.aclose()
         if self._segments is not None:
             await self._segments.aclose()
         if self._client is not None:

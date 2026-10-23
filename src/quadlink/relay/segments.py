@@ -123,6 +123,10 @@ class SegmentProxy:
         self._retiring: set[asyncio.Task[None]] = set()
 
     @property
+    def ffmpeg(self) -> str | None:
+        return self._ffmpeg
+
+    @property
     def converts_fmp4(self) -> bool:
         """Whether fMP4 segments are served as MPEG-TS."""
         return self._ffmpeg is not None
