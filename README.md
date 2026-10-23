@@ -111,7 +111,12 @@ export QL_CREDENTIALS__FILE=/run/secrets/quadlink
 export QL_DIVERSITY_BONUS=30
 export QL_STABILITY_BONUS=40
 export QL_ENABLE_HEALTH_SERVER=true  # enable health checks (off by default)
+export QL_STATE_FILE=./state.json    # state file location, same as --state-file
 ```
+
+### State File
+
+The daemon keeps pins, benches and the slot of each on-screen channel in `/var/lib/quadlink/state.json`, so they survive a restart. The daemon writes the file after each change. To use a different file (for example in development), give `--state-file PATH` or set `QL_STATE_FILE`. If the file is not valid, the daemon logs a warning and starts with no pins or benches.
 
 ### Health Checks
 

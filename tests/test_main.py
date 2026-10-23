@@ -155,6 +155,7 @@ class TestMain:
             mock_args.webui_host = "0.0.0.0"
             mock_args.webui_port = 8081
             mock_args.webui_allowed_hosts = ["quadlink.example.net"]
+            mock_args.state_file = "/tmp/state.json"
             mock_parse.return_value = mock_args
 
             with patch("quadlink.__main__.setup_logging"):
@@ -172,6 +173,7 @@ class TestMain:
                                 webui_host="0.0.0.0",
                                 webui_port=8081,
                                 webui_allowed_hosts=["quadlink.example.net"],
+                                state_path="/tmp/state.json",
                             )
 
     def test_main_handles_keyboard_interrupt(self):

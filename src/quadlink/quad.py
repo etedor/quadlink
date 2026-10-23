@@ -1,6 +1,7 @@
 """Quad selection algorithm with stability, diversity, and saturation."""
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 
 import structlog
 
@@ -14,7 +15,32 @@ EMPTY_SLOTS = ("", "", "", "")
 
 @dataclass(frozen=True)
 class Overrides:
-    """Operator adjustments applied on top of the scored selection."""
+    """Operator adjustments applied on top of the scored selection.
+
+    Attributes:
+        pins: Slot (0-3) each pinned channel holds while it is in the pool.
+        benches: Channels kept out of the quad.
+        absent: Consecutive refreshes each pinned or benched channel has been out
+            of the pool; see quadlink.overrides.age.
+    """
+
+    pins: Mapping[str, int] = field(default_factory=dict)
+    benches: frozenset[str] = frozenset()
+    absent: Mapping[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if both := self.pins.keys() & self.benches:
+            raise ValueError(f"channels both pinned and benched: {sorted(both)}")
+        slots = list(self.pins.values())
+        if any(slot not in range(4) for slot in slots):
+            raise ValueError(f"pin slots out of range 0-3: {slots}")
+        if len(set(slots)) != len(slots):
+            raise ValueError(f"more than one pin per slot: {slots}")
+
+    @property
+    def channels(self) -> set[str]:
+        """Every pinned or benched channel."""
+        return self.pins.keys() | self.benches
 
 
 @dataclass(frozen=True)
@@ -45,22 +71,54 @@ def compose(
     overrides: Overrides,
     config: Config,
 ) -> QuadState:
-    """Compose the next quad from the live pool and the previous state.
+    """Compose the next quad from the live pool, the previous state and the overrides.
 
-    The pool is ordered best first. Channels already on screen keep their slots;
-    newcomers take freed slots lowest-first in priority order. The input state
-    is not modified, and an empty pool returns it as is, so slots and categories
-    survive a cycle in which every lookup failed.
+    The pool is ordered best first. Benched channels drop out of it; pinned
+    channels in it take their slots; the other slots fill by adjusted priority.
+    Channels already on screen keep their slots; newcomers take freed slots
+    lowest-first in priority order. The input state is not modified, and an empty
+    pool returns it as is, so slots and categories survive a cycle in which every
+    lookup failed.
     """
     if not pool:
         logger.info("no stream candidates available")
         return state
+    new, on_screen = _compose(pool, state, overrides, config)
+    _log_changes(state, new, on_screen)
+    return new
 
+
+def waiting(
+    pool: list[PrioritizedStream],
+    state: QuadState,
+    overrides: Overrides,
+    config: Config,
+) -> list[str]:
+    """Channels natural selection would put on screen that pins keep off.
+
+    state is the quad composed from this pool with these overrides.
+    """
+    if not pool or not overrides.pins:
+        return []
+    natural, _ = _compose(pool, state, replace(overrides, pins={}), config)
+    return [c for c in natural.channels if c and c not in state.positions]
+
+
+def _compose(
+    pool: list[PrioritizedStream],
+    state: QuadState,
+    overrides: Overrides,
+    config: Config,
+) -> tuple[QuadState, list[PrioritizedStream]]:
+    """The composed state and its on-screen streams in slot order."""
     # reversed: candidates arrive best first, and the first of a duplicate channel wins
-    candidate_map = {s.stream.channel: s for s in reversed(pool)}
-    existing_streams = _existing_streams(state, candidate_map)
+    candidate_map = {
+        s.stream.channel: s for s in reversed(pool) if s.stream.channel not in overrides.benches
+    }
+    pinned = _reclaimed(overrides, candidate_map)
+    existing_streams = _existing_streams(state, candidate_map, pinned)
     existing_channels = {s.stream.channel for s in existing_streams}
-    departed_categories = _departed_categories(state, existing_channels)
+    departed_categories = _departed_categories(state, existing_channels, pinned)
 
     logger.debug(
         "quad selection started",
@@ -69,43 +127,76 @@ def compose(
         departed_categories=list(departed_categories),
     )
 
+    competitors = [
+        s for s in pool if s.stream.channel in candidate_map and s.stream.channel not in pinned
+    ]
     adjusted = _apply_adjustments(
-        config, pool, existing_channels, existing_streams, departed_categories
+        config,
+        competitors,
+        existing_channels,
+        [*existing_streams, *pinned.values()],
+        departed_categories,
     )
     adjusted.sort(key=lambda s: (s.priority, s.tiebreaker), reverse=True)
-    selected = _select_top_4(adjusted)
-    seated = _seat(selected, existing_streams)
+    selected = _select_top(adjusted, 4 - len(pinned))
+    seated = _seat(selected, existing_streams, pinned.values())
 
     new = QuadState(
         quad=Quad([(s.stream.master_url or s.stream.url) if s else "" for s in seated]),
         channels=tuple(s.stream.channel if s else "" for s in seated),
-        categories={s.stream.channel: s.stream.metadata.category for s in selected},
+        categories={
+            s.stream.channel: s.stream.metadata.category for s in [*selected, *pinned.values()]
+        },
     )
-    _log_changes(state, new, [s for s in seated if s])
-    return new
+    return new, [s for s in seated if s]
+
+
+def _reclaimed(
+    overrides: Overrides, candidate_map: dict[str, PrioritizedStream]
+) -> dict[str, PrioritizedStream]:
+    """Pinned channels in the pool, each positioned at its pinned slot.
+
+    A pinned channel takes its slot back whenever it is in the pool, from
+    whichever channel holds the slot meanwhile.
+    """
+    return {
+        channel: replace(candidate_map[channel], position=slot)
+        for channel, slot in overrides.pins.items()
+        if channel in candidate_map
+    }
 
 
 def _existing_streams(
-    state: QuadState, candidate_map: dict[str, PrioritizedStream]
+    state: QuadState,
+    candidate_map: dict[str, PrioritizedStream],
+    pinned: dict[str, PrioritizedStream],
 ) -> list[PrioritizedStream]:
-    """Streams of the previous quad still in the pool, with their slots."""
+    """Unpinned streams of the previous quad still in the pool, with their slots.
+
+    A stream whose slot a pinned channel takes keeps its stability bonus but has
+    no slot (position None), so it is seated like a newcomer if it stays.
+    """
+    pinned_slots = {s.position for s in pinned.values()}
     return [
         PrioritizedStream(
             stream=candidate_map[channel].stream,
             priority=candidate_map[channel].priority,
             tiebreaker=candidate_map[channel].tiebreaker,
-            position=position,
+            position=None if position in pinned_slots else position,
         )
         for channel, position in state.positions.items()
-        if channel in candidate_map
+        if channel in candidate_map and channel not in pinned
     ]
 
 
-def _departed_categories(state: QuadState, existing_channels: set[str]) -> set[str]:
-    """Categories of the previous quad that no remaining channel represents."""
+def _departed_categories(
+    state: QuadState, existing_channels: set[str], pinned: dict[str, PrioritizedStream]
+) -> set[str]:
+    """Categories of the previous quad that no remaining or pinned channel represents."""
     previous = state.categories
-    departed = {previous[c] for c in previous.keys() - existing_channels}
+    departed = {previous[c] for c in previous.keys() - existing_channels - pinned.keys()}
     remaining = {previous[c] for c in existing_channels if c in previous}
+    remaining |= {s.stream.metadata.category for s in pinned.values()}
     return departed - remaining
 
 
@@ -113,12 +204,16 @@ def _apply_adjustments(
     config: Config,
     candidates: list[PrioritizedStream],
     existing_channels: set[str],
-    existing_streams: list[PrioritizedStream],
+    present: list[PrioritizedStream],
     departed_categories: set[str],
 ) -> list[PrioritizedStream]:
-    """Copies of the candidates with stability, saturation, diversity and continuity applied."""
+    """Copies of the candidates with stability, saturation, diversity and continuity applied.
+
+    present is every stream that stays on screen, pinned ones included; their
+    categories count toward saturation.
+    """
     category_counts: dict[str, int] = {}
-    for stream in existing_streams:
+    for stream in present:
         category = stream.stream.metadata.category
         category_counts[category] = category_counts.get(category, 0) + 1
 
@@ -197,28 +292,37 @@ def _apply_adjustments(
     return adjusted
 
 
-def _select_top_4(candidates: list[PrioritizedStream]) -> list[PrioritizedStream]:
-    """The first 4 unique channels of the sorted candidates."""
-    selected = []
+def _select_top(candidates: list[PrioritizedStream], count: int) -> list[PrioritizedStream]:
+    """The first count unique channels of the sorted candidates.
+
+    This is the eviction rule: a channel that ranks higher displaces the lowest
+    unpinned channel on screen. Pinned channels are not candidates.
+    """
+    selected: list[PrioritizedStream] = []
     seen_channels = set()
 
     for candidate in candidates:
+        if len(selected) == count:
+            break
         channel = candidate.stream.channel
         if channel in seen_channels:
             continue
         selected.append(candidate)
         seen_channels.add(channel)
-        if len(selected) == 4:
-            break
 
     return selected
 
 
 def _seat(
-    selected: list[PrioritizedStream], existing_streams: list[PrioritizedStream]
+    selected: list[PrioritizedStream],
+    existing_streams: list[PrioritizedStream],
+    pinned: Iterable[PrioritizedStream],
 ) -> list[PrioritizedStream | None]:
-    """Seat the selection in slots 0-3, keeping the slots of existing streams."""
+    """Seat pinned streams in their slots, then the selection, keeping existing slots."""
     seats: list[PrioritizedStream | None] = [None, None, None, None]
+    for stream in pinned:
+        assert stream.position is not None
+        seats[stream.position] = stream
     selected_map = {s.stream.channel: s for s in selected}
 
     kept = set()
