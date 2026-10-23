@@ -72,9 +72,9 @@
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; align-items: flex-start; justify-content: center; }
   /* the whole quad is 16:9, so each 16:9 stream fills its tile uncropped and the
-     tiles touch. it takes 80% of the stage width when the height allows, and sits
+     tiles touch. it takes 92% of the stage width when the height allows, and sits
      as far below the top bar as it is in from the sides (never past the bottom) */
-  .quad { --w: min(80cqw, (100cqh - 20cqw) * 16 / 9);
+  .quad { --w: min(92cqw, (100cqh - 8cqw) * 16 / 9);
     display: grid; grid-template: 1fr 1fr / 1fr 1fr;
     width: var(--w); aspect-ratio: 16 / 9;
     margin-top: min((100cqw - var(--w)) / 2, 100cqh - var(--w) * 9 / 16);
