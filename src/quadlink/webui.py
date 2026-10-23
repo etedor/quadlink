@@ -19,6 +19,7 @@ from ruamel.yaml import YAML
 from quadlink import __version__
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
+from quadlink.quadpage import QUAD_HTML
 from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
@@ -158,7 +159,7 @@ class WebUI:
     ) -> web.StreamResponse:
         path = request.path
         is_api = path.startswith("/api/")
-        if not (is_api or path == "/"):
+        if not (is_api or path in ("/", "/quad")):
             return await handler(request)
 
         # the page holds the token, so it needs the host check too
@@ -200,6 +201,7 @@ class WebUI:
     def _setup_routes(self) -> None:
         """Set up HTTP routes."""
         self.app.router.add_get("/", self._handle_index)
+        self.app.router.add_get("/quad", self._handle_quad)
         self.app.router.add_get("/api/config", self._handle_get_config)
         self.app.router.add_post("/api/config", self._handle_post_config)
         self.app.router.add_post("/api/validate", self._handle_validate)
@@ -210,6 +212,14 @@ class WebUI:
         """Serve the main config editor page."""
         return web.Response(
             text=HTML_TEMPLATE.replace(TOKEN_PLACEHOLDER, self.token),
+            content_type="text/html",
+            headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
+        )
+
+    async def _handle_quad(self, request: web.Request) -> web.Response:
+        """Serve the live quad page."""
+        return web.Response(
+            text=QUAD_HTML,
             content_type="text/html",
             headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
         )

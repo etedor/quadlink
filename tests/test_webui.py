@@ -14,7 +14,7 @@ from ruamel.yaml import YAML
 from quadlink.config.loader import ConfigLoader
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
-from quadlink.webui import TOKEN_HEADER, WebUI
+from quadlink.webui import TOKEN_HEADER, TOKEN_PLACEHOLDER, WebUI
 
 PAGE_YAML = "priorities:\n  100:\n    - urls: [alice]\n\nmode: local\n"
 
@@ -67,6 +67,14 @@ def _load(path: Path) -> dict:
 
 
 class TestPage:
+    async def test_quad_page_plays_each_relay_slot(self, client: TestClient) -> None:
+        resp = await client.get("/quad")
+        assert resp.status == 200
+        text = await resp.text()
+        assert text.count("<video") == 4
+        assert "'/streams/' + (i + 1)" in text
+        assert TOKEN_PLACEHOLDER not in text
+
     async def test_page_embeds_token(self, client: TestClient, webui: WebUI) -> None:
         resp = await client.get("/")
         assert resp.status == 200
@@ -162,7 +170,7 @@ class TestGuards:
         )
         assert config_file.read_text() == before
 
-    @pytest.mark.parametrize("path", ["/", "/api/config"])
+    @pytest.mark.parametrize("path", ["/", "/quad", "/api/config"])
     async def test_unknown_host_is_403(self, client: TestClient, webui: WebUI, path: str) -> None:
         resp = await client.get(path, headers=_auth(webui, Host="rebind.evil.example:8081"))
         assert resp.status == 403
