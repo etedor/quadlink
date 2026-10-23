@@ -83,6 +83,10 @@
   .tile.loud::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     box-shadow: inset 0 0 0 2px var(--accent); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  /* stands in for the incoming channel until the player reaches the splice */
+  .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+    background: var(--well); pointer-events: none; opacity: 0; transition: opacity 0.4s; }
+  .cover.shown { opacity: 1; transition: none; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
   .rail { list-style: none; margin: 0; padding: 4px 8px 8px; display: flex; flex-direction: column;
     gap: 4px; }
@@ -148,18 +152,22 @@
 <div class="quad">
   <div class="tile">
     <video muted autoplay playsinline></video>
+    <img class="cover" alt="">
     <button aria-label="Unmute slot 1"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
+    <img class="cover" alt="">
     <button aria-label="Unmute slot 2"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
+    <img class="cover" alt="">
     <button aria-label="Unmute slot 3"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
+    <img class="cover" alt="">
     <button aria-label="Unmute slot 4"></button>
   </div>
 </div>
@@ -167,27 +175,65 @@
 <script>
   const tiles = [...document.querySelectorAll('.tile')];
 
-  function play(video, src) {
+  // the relay marks every splice with a DISCONTINUITY, which hls.js counts in frag.cc;
+  // the native player exposes no such hook, so its cover lifts on a timer
+  const COVER_NATIVE = 7000;
+  const COVER_MAX = 20000;
+
+  function play(video, src, tile) {
     // native first: iOS Safari has HLS built in but no MSE, so hls.js can't run there
     if (video.canPlayType('application/vnd.apple.mpegurl') || !window.Hls || !Hls.isSupported()) {
       video.src = src;
-      const retry = () => setTimeout(() => play(video, src), 3000);
+      const retry = () => setTimeout(() => play(video, src, tile), 3000);
       video.addEventListener('error', retry, { once: true });
       return;
     }
-    const hls = new Hls({ liveSyncDurationCount: 3 });
+    tile.hls = true;
+    const hls = new Hls({ liveSyncDurationCount: 2 });
+    hls.on(Hls.Events.FRAG_CHANGED, (_, { frag }) => {
+      if (tile.cc !== undefined && frag.cc !== tile.cc && tile.awaiting) uncover(tile);
+      tile.cc = frag.cc;
+    });
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (!data.fatal) return;
       hls.destroy();
-      setTimeout(() => play(video, src), 3000);
+      tile.cc = undefined;
+      setTimeout(() => play(video, src, tile), 3000);
     });
     hls.loadSource(src);
     hls.attachMedia(video);
   }
 
+  function cover(tile, image) {
+    const img = tile.querySelector('.cover');
+    clearTimeout(tile.coverTimer);
+    if (image) img.src = image; else img.removeAttribute('src');
+    img.classList.add('shown');
+    tile.awaiting = true;
+    tile.coverTimer = setTimeout(() => uncover(tile), tile.hls ? COVER_MAX : COVER_NATIVE);
+  }
+
+  function uncover(tile) {
+    clearTimeout(tile.coverTimer);
+    tile.awaiting = false;
+    tile.querySelector('.cover').classList.remove('shown');
+    settle(tiles.indexOf(tile));
+  }
+
+  // the current frame as an image; the relay is same-origin, so the canvas stays readable
+  function frame(tile) {
+    const video = tile.querySelector('video');
+    if (!video.videoWidth) return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.8);
+  }
+
   tiles.forEach((tile, i) => {
     const video = tile.querySelector('video');
-    play(video, '/streams/' + (i + 1));
+    play(video, '/streams/' + (i + 1), tile);
     // one tile has sound at a time; click the loud one again to mute it
     tile.querySelector('button').addEventListener('click', () => {
       const loud = !tile.classList.contains('loud');
@@ -341,7 +387,6 @@
   // drag starts on a long press, leaving a quick swipe to scroll the rail
   const DRAG_DISTANCE = 6;
   const LONG_PRESS = 300;
-  const PENDING_WAIT = 15000;
   const pending = new Map();
   let drag = null;
   let dragged = false;
@@ -357,16 +402,12 @@
 
   function expect(slot, channel) {
     const tile = tiles[slot];
-    clearTimeout(pending.get(slot)?.timer);
     tile.classList.remove('failed');
     tile.classList.add('pending');
-    const timer = setTimeout(() => settle(slot), PENDING_WAIT);
-    pending.set(slot, { channel, timer });
+    pending.set(slot, { channel });
   }
 
   function settle(slot, failed = false) {
-    const entry = pending.get(slot);
-    if (entry) clearTimeout(entry.timer);
     pending.delete(slot);
     tiles[slot].classList.remove('pending');
     if (failed) {
@@ -375,11 +416,9 @@
     }
   }
 
-  function confirmPending() {
-    if (!latest) return;
-    for (const [slot, { channel }] of pending) {
-      if (latest.slots[slot] && latest.slots[slot].channel === channel) settle(slot);
-    }
+  function fail(slot) {
+    uncover(tiles[slot]);
+    settle(slot, true);
   }
 
   function tileUnder(x, y) {
@@ -415,13 +454,17 @@
     const slot = tiles.indexOf(over);
     if (source.channel !== undefined) {
       expect(slot, source.channel);
-      act({ action: 'place', channel: source.channel, slot }).catch(() => settle(slot, true));
+      cover(over, source.image());
+      act({ action: 'place', channel: source.channel, slot }).catch(() => fail(slot));
     } else if (slot !== source.slot) {
       const a = source.slot, b = slot;
       const ca = latest?.slots[a]?.channel ?? null, cb = latest?.slots[b]?.channel ?? null;
       expect(a, cb);
       expect(b, ca);
-      act({ action: 'swap', a, b }).catch(() => { settle(a, true); settle(b, true); });
+      const fa = frame(tiles[a]), fb = frame(tiles[b]);
+      cover(tiles[a], fb);
+      cover(tiles[b], fa);
+      act({ action: 'swap', a, b }).catch(() => { fail(a); fail(b); });
     }
   }
 
@@ -472,7 +515,7 @@
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
-  events.onmessage = e => { latest = JSON.parse(e.data); render(); confirmPending(); };
+  events.onmessage = e => { latest = JSON.parse(e.data); render(); };
   // a restart changes the page token, and EventSource never retries a refusal
   events.onerror = () => { if (events.readyState === EventSource.CLOSED) setTimeout(() => location.reload(), 5000); };
 </script>
