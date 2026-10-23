@@ -99,7 +99,8 @@ def main() -> None:
     app.router.add_get("/__reload", _reload)
     app.router.add_get("/web/{path:.+}", _asset)
     app.router.add_get("/{name:[a-z0-9_-]*}", _page)
-    print(f"http://{args.host}:{args.port}/quad  (pages from {WEB_DIR}, video from {args.upstream})")
+    print(f"http://{args.host}:{args.port}/quad")
+    print(f"pages from {WEB_DIR}, video from {args.upstream}")
     web.run_app(app, host=args.host, port=args.port, print=None)
 
 
