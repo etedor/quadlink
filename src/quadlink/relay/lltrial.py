@@ -79,19 +79,29 @@ def cut(body: bytes, duration: float) -> list[tuple[int, float]]:
     frames: list[tuple[int, int]] = []
     for i in range(0, len(body) - PACKET + 1, PACKET):
         pkt = body[i : i + PACKET]
-        pid = ((pkt[1] & 0x1F) << 8) | pkt[2]
-        if pid != video or not pkt[1] & 0x40:
+        if pkt[0] != 0x47 or not pkt[1] & 0x40:
             continue
+        pid = ((pkt[1] & 0x1F) << 8) | pkt[2]
         control = (pkt[3] >> 4) & 0x3
         offset = 4 + (1 + pkt[4] if control == 3 else 0)
-        pts = pes_pts(pkt[offset:])
+        payload = pkt[offset:]
+        # a segment without its own PAT/PMT names no video PID; a PES stream id of
+        # 0xE0-0xEF marks video (ISO/IEC 13818-1 table 2-22)
+        if video is None and payload[:3] == b"\x00\x00\x01" and len(payload) > 3:
+            if 0xE0 <= payload[3] <= 0xEF:
+                video = pid
+        if pid != video:
+            continue
+        pts = pes_pts(payload)
         if pts is not None:
             frames.append((i, pts))
     # fixed steps, so a long segment gets more parts rather than shorter ones; only the
     # last part of a segment may fall under Apple's floor
     n = math.ceil(duration / PART_SPLIT - 0.05)
-    if not frames or n <= 1:
+    if n <= 1:
         return [(0, duration)]
+    if not frames:
+        return _even(body, duration, n)
     first = frames[0][1]
     offsets = [0]
     times = [0.0]
@@ -103,7 +113,22 @@ def cut(body: bytes, duration: float) -> list[tuple[int, float]]:
             offsets.append(off)
             times.append(t)
     times.append(duration)
-    return [(off, times[i + 1] - times[i]) for i, off in enumerate(offsets)]
+    parts = [(off, times[i + 1] - times[i]) for i, off in enumerate(offsets)]
+    # a part over PART-TARGET makes AVPlayer reject the whole playlist
+    if any(d > PART_TARGET for _, d in parts):
+        return _even(body, duration, n)
+    return parts
+
+
+def _even(body: bytes, duration: float, n: int) -> list[tuple[int, float]]:
+    """n parts of PART_SPLIT seconds and a shorter last one, cut in proportion to bytes.
+
+    Equal parts would fall under Apple's 85% floor for some durations.
+    """
+    packets = len(body) // PACKET
+    times = [k * PART_SPLIT for k in range(n)] + [duration]
+    offsets = [round(t / duration * packets) * PACKET for t in times[:-1]]
+    return [(off, times[k + 1] - times[k]) for k, off in enumerate(offsets)]
 
 
 def parse(text: str) -> tuple[int, int, int, list[tuple[float, str, bool]]]:

@@ -92,7 +92,7 @@
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   /* stands in for the incoming channel until the player reaches the splice */
   .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
-    background: var(--well); pointer-events: none; opacity: 0; transition: opacity 0.4s; }
+    background: var(--well); pointer-events: none; opacity: 0; transition: opacity 0.8s; }
   .cover.shown { opacity: 1; transition: none; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
   .tile button:focus-visible { outline: 3px solid var(--text); outline-offset: -3px; }
@@ -254,6 +254,17 @@
     });
     hls.loadSource(src);
     hls.attachMedia(video);
+  }
+
+  // a slot the server changed (selection, an unbench) shows the incoming channel's
+  // thumbnail until its video plays, like a drop does
+  function coverChanges(before) {
+    tiles.forEach((tile, i) => {
+      const channel = latest.slots[i]?.channel;
+      if (!channel || channel === before.slots[i]?.channel || tile.awaiting) return;
+      const c = latest.channels.find(x => x.channel === channel);
+      cover(tile, c?.thumbnail ? c.thumbnail + '?t=' + Math.floor(Date.now() / 300000) : null);
+    });
   }
 
   function cover(tile, image) {
@@ -693,7 +704,13 @@
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
-  events.onmessage = e => { latest = JSON.parse(e.data); render(); markTiles(); };
+  events.onmessage = e => {
+    const before = latest;
+    latest = JSON.parse(e.data);
+    render();
+    markTiles();
+    if (before) coverChanges(before);
+  };
   // a restart changes the page token, and EventSource never retries a refusal
   events.onerror = () => { if (events.readyState === EventSource.CLOSED) setTimeout(() => location.reload(), 5000); };
 </script>
