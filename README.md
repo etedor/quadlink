@@ -99,6 +99,27 @@ See `config.yaml.example` for complete reference.
 
 `log_level` sets the minimum level the daemon logs (`debug`, `info`, `warning` or `error`; default `info`). A change to it takes effect on the next config reload, without a restart. The `--log-level` CLI flag (and NixOS module's `logLevel` option) takes priority over it when set.
 
+### Viewer Counts
+
+The dashboard shows the viewer count and the start time of each live channel.
+At each refresh, the daemon gets these values for all configured channels in one batch, in parallel with the channel lookups.
+The quad and the relay do not wait for the result.
+The daemon stops the request after 5 seconds.
+If a request fails, the dashboard keeps the last values for 3 more refreshes and then clears them.
+
+Two providers are available:
+
+- Twitch GQL (`gql.twitch.tv`, the API of the Twitch web site). This is the default provider and needs no setup.
+- Twitch Helix (`api.twitch.tv/helix`, the official API). This provider needs a Twitch application. Register one at <https://dev.twitch.tv/console/apps> (the OAuth redirect URL can be `http://localhost`), then set `twitch_api`. If a Helix request fails, the daemon uses GQL for that refresh.
+
+```yaml
+twitch_api:
+  client_id: abc123
+  client_secret_file: /run/secrets/twitch-client-secret   # or client_secret: ...
+```
+
+The NixOS module has the options `twitchApiClientId` and `twitchApiSecretFile`. They set `QL_TWITCH_API__CLIENT_ID` and `QL_TWITCH_API__CLIENT_SECRET_FILE`. The web UI does not show `client_secret`, and a save keeps the value in the file.
+
 ### Environment Variables
 
 Override any config value with `QL_` prefix:
@@ -179,8 +200,9 @@ The snapshot has `"v": 1`. The version changes when the shape changes. The snaps
 
 - `refreshed_at`: the time of the last channel lookup (seconds since the epoch), or `null`.
 - `quadstream`: the QuadStream login (`off`, `pending`, `logged in` or `failed`).
-- `slots`: for each slot, `channel`, `display_name`, `title`, `category`, `pinned`, `reserved_for` and `still` (the still URL). An empty slot has `null` values.
-- `channels`: for each configured channel, `channel`, `display_name`, `title`, `category`, `state`, `slot`, `pin_slot`, `benched`, `priorities`, `priority`, `reason` and `thumbnail`.
+- `slots`: for each slot, `channel`, `display_name`, `title`, `category`, `viewers`, `started_at`, `pinned`, `reserved_for` and `still` (the still URL). An empty slot has `null` values.
+- `channels`: for each configured channel, `channel`, `display_name`, `title`, `category`, `viewers`, `started_at`, `state`, `slot`, `pin_slot`, `benched`, `priorities`, `priority`, `reason` and `thumbnail`.
+- `viewers` and `started_at` (seconds since the epoch) come from the [viewer counts](#viewer-counts). They are `null` if the channel is offline or the provider has no value for it.
 
 The body of an action is a JSON object with an `action` and its parameters, and no other keys:
 

@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,12 +19,14 @@ from quadlink.quad import Overrides, QuadState
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
 from quadlink.types import ChannelState, ChannelStatus, Metadata, Stream
+from quadlink.viewers import Stats
 from quadlink.webui import TOKEN_HEADER, WebUI
 
 # the relay's fixtures: real segments encoded by ffmpeg
 from tests.test_relay.conftest import ffmpeg, ts_run  # noqa: F401
 
 THUMB_A = "https://static-cdn.jtvnw.net/previews-ttv/live_user_a-320x180.jpg"
+STARTED = datetime(2026, 10, 23, 17, 0, 48, tzinfo=UTC)
 
 
 def _live(channel: str, name: str, title: str = "t", category: str = "Games") -> ChannelStatus:
@@ -39,8 +42,16 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
         ChannelStatus("d", ChannelState.REJECTED, [50], reason="category blocked"),
     ]
     overrides = Overrides(pins={"a": 0, "c": 1}, benches=frozenset({"d"}))
+    # "c" is offline to the lookup, so its counts do not show
+    stats = {"a": Stats(1108, STARTED), "c": Stats(3, STARTED)}
     return snapshot(
-        statuses, QuadState(channels=slots), overrides, [], 1700000000.5, QuadStreamLogin.FAILED
+        statuses,
+        QuadState(channels=slots),
+        overrides,
+        [],
+        1700000000.5,
+        QuadStreamLogin.FAILED,
+        stats,
     )
 
 
@@ -216,6 +227,8 @@ class TestState:
                 "display_name": "Alpha",
                 "title": "hello",
                 "category": "Chess",
+                "viewers": 1108,
+                "started_at": 1792774848,
                 "pinned": True,
                 "reserved_for": None,
                 "still": "/api/slots/0/still.jpg?c=a",
@@ -226,6 +239,8 @@ class TestState:
                 "display_name": None,
                 "title": None,
                 "category": None,
+                "viewers": None,
+                "started_at": None,
                 "pinned": False,
                 "reserved_for": "c",
                 "still": None,
@@ -236,6 +251,8 @@ class TestState:
                 "display_name": "b",
                 "title": "t",
                 "category": "Games",
+                "viewers": None,
+                "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
                 "still": "/api/slots/2/still.jpg?c=b",
@@ -246,6 +263,8 @@ class TestState:
                 "display_name": None,
                 "title": None,
                 "category": None,
+                "viewers": None,
+                "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
                 "still": None,
@@ -256,6 +275,8 @@ class TestState:
             "display_name": "Alpha",
             "title": "hello",
             "category": "Chess",
+            "viewers": 1108,
+            "started_at": 1792774848,
             "state": "in quad",
             "slot": 0,
             "pin_slot": 0,
@@ -276,6 +297,7 @@ class TestState:
         ]
         assert body["channels"][3]["reason"] == "category blocked"
         assert body["channels"][2]["display_name"] == "c"
+        assert [(c["viewers"], c["started_at"]) for c in body["channels"][1:]] == [(None, None)] * 3
 
     async def test_state_is_built_per_request(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard

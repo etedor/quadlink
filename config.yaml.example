@@ -17,6 +17,12 @@ webhook:
   enabled: false
   url: https://example.com/webhook
 
+# optional Twitch application for viewer counts from the Helix API
+# (absent: viewer counts come from Twitch GQL)
+# twitch_api:
+#   client_id: abc123
+#   client_secret_file: /run/secrets/twitch-client-secret
+
 # streamlink configuration
 proxy_playlist: https://eu.luminous.dev
 low_latency: true

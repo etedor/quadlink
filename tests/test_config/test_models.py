@@ -314,3 +314,34 @@ def test_log_level_normalizes_case():
 def test_log_level_rejects_invalid():
     with pytest.raises(ValidationError, match="log_level"):
         Config(priorities={}, mode="local", log_level="verbose")
+
+
+class TestTwitchAPI:
+    BASE = {"mode": "local", "priorities": {1: [{"urls": ["a"]}]}}
+
+    def test_unset_by_default(self):
+        assert Config(**self.BASE).twitch_api is None
+
+    def test_inline_secret(self):
+        config = Config(**self.BASE, twitch_api={"client_id": "id", "client_secret": "s"})
+        assert config.twitch_api is not None
+        assert config.twitch_api.client_secret == "s"
+
+    def test_secret_from_env_file_merges_with_file_client_id(self, tmp_path, monkeypatch):
+        secret = tmp_path / "secret"
+        secret.write_text("s3cret\n")
+        monkeypatch.setenv("QL_TWITCH_API__CLIENT_SECRET_FILE", str(secret))
+        config = Config(**self.BASE, twitch_api={"client_id": "id"})
+        assert config.twitch_api is not None
+        assert (config.twitch_api.client_id, config.twitch_api.client_secret) == ("id", "s3cret")
+
+    def test_needs_a_secret(self):
+        with pytest.raises(ValidationError, match="client_secret or client_secret_file"):
+            Config(**self.BASE, twitch_api={"client_id": "id"})
+
+    def test_unreadable_secret_file(self, tmp_path):
+        with pytest.raises(ValidationError, match="cannot read the Twitch client secret"):
+            Config(
+                **self.BASE,
+                twitch_api={"client_id": "id", "client_secret_file": str(tmp_path / "none")},
+            )

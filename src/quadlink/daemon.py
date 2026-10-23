@@ -27,6 +27,7 @@ from quadlink.relay.store import SlotStore
 from quadlink.state import DEFAULT_STATE_PATH, StateStore
 from quadlink.stream.processor import StreamProcessor
 from quadlink.types import ChannelStatus, PrioritizedStream, channel_login
+from quadlink.viewers import GQLStats, ViewerCounts, provider_for
 from quadlink.webui import WebUI
 
 logger = structlog.get_logger()
@@ -130,6 +131,10 @@ class Daemon:
         self.statuses_at: float | None = None
         # called after anything the snapshot shows may have changed
         self._watchers: list[Callable[[], None]] = []
+        self._stats_client = httpx.AsyncClient()
+        self.viewers = ViewerCounts(GQLStats(self._stats_client))
+        # runs beside the lookups, never awaited by a refresh: the quad does not wait on it
+        self._viewers_task: asyncio.Task[None] | None = None
 
     async def _fetch_segment(self, uri: str) -> bytes:
         """Fetch one relay segment from its origin URI."""
@@ -218,9 +223,10 @@ class Daemon:
         try:
             await self._refresh_loop()
         finally:
-            if recomposer is not None:
-                recomposer.cancel()
-                await asyncio.gather(recomposer, return_exceptions=True)
+            tasks = [t for t in (recomposer, self._viewers_task) if t is not None]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _refresh_loop(self) -> None:
         while self.running:
@@ -284,6 +290,7 @@ class Daemon:
             if self.processor is not None:
                 self.processor.close()
             self.processor = StreamProcessor(config, lookup_timeout=config.lookup_timeout)
+            self.viewers.provider = provider_for(config, self._stats_client)
 
         assert self.processor is not None
 
@@ -293,6 +300,8 @@ class Daemon:
         if self.quadstream_client and self._credentials_of(config) != self._credentials:
             logger.info("quadstream credentials changed, logging in again")
             self.quadstream_client = None
+        if not self.one_shot:
+            self._start_viewer_counts(config)
         candidates = await self.processor.process_stream_groups()
         self.channel_statuses = self.processor.statuses()
         self.statuses_at = time.time()
@@ -333,6 +342,20 @@ class Daemon:
         self._mark_cycle()
         self._notify()
         return self.interval
+
+    def _start_viewer_counts(self, config: Config) -> None:
+        # FETCH_WAIT ends every fetch well within an interval; a fetch still running
+        # then has its result arrive late rather than twice
+        if self._viewers_task is not None and not self._viewers_task.done():
+            return
+        channels = sorted(configured_channels(config))
+        self._viewers_task = asyncio.create_task(self._viewer_counts(channels))
+
+    async def _viewer_counts(self, channels: list[str]) -> None:
+        before = self.viewers.stats
+        await self.viewers.refresh(channels)
+        if self.viewers.stats != before:
+            self._notify()
 
     async def _recompose(self) -> None:
         """Compose the quad from the cached pool, feed the relay and push when needed.
@@ -425,6 +448,7 @@ class Daemon:
             pending,
             self.statuses_at,
             self._quadstream_login(),
+            self.viewers.stats,
         )
 
     def watch(self, callback: Callable[[], None]) -> None:
@@ -579,3 +603,4 @@ async def run_daemon(
             daemon.processor.close()
         await daemon.slot_relay.aclose()
         await daemon._segment_client.aclose()
+        await daemon._stats_client.aclose()

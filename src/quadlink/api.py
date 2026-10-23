@@ -78,13 +78,27 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
     """The snapshot as the API sends it; bump API_VERSION when the shape changes."""
     views = {c.channel: c for c in snap.channels}
 
-    def about(channel: str) -> dict[str, str | None]:
+    def about(channel: str) -> dict[str, Any]:
         view = views.get(channel)
         stream = view.status.stream if view is not None else None
+        numbers = {
+            "viewers": view.viewers if view is not None else None,
+            # epoch seconds, like refreshed_at
+            "started_at": (
+                int(view.started_at.timestamp())
+                if view is not None and view.started_at is not None
+                else None
+            ),
+        }
         if stream is None:
-            return {"display_name": channel, "title": None, "category": None}
+            return {"display_name": channel, "title": None, "category": None, **numbers}
         meta = stream.metadata
-        return {"display_name": meta.author, "title": meta.title, "category": meta.category}
+        return {
+            "display_name": meta.author,
+            "title": meta.title,
+            "category": meta.category,
+            **numbers,
+        }
 
     slots = []
     for s in snap.slots:
@@ -93,7 +107,13 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             entry |= about(s.channel)
             entry["display_name"] = s.display_name
         else:
-            entry |= {"display_name": None, "title": None, "category": None}
+            entry |= {
+                "display_name": None,
+                "title": None,
+                "category": None,
+                "viewers": None,
+                "started_at": None,
+            }
         entry |= {
             "pinned": s.pinned,
             "reserved_for": s.reserved_for,

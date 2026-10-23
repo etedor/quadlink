@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from quadlink.overrides import GRACE_REFRESHES, OverrideError
 from quadlink.quad import Overrides, compose
 from quadlink.stream.fetcher import LookupFailed
 from quadlink.types import ChannelState, Metadata, Quad, Stream, channel_login
+from quadlink.viewers import Stats
 from quadlink.webui import TOKEN_HEADER, WebUI
 
 CHANNELS = ("a", "b", "c", "d")
@@ -84,6 +86,22 @@ class Twitch:
             ),
             master_url=f"https://edge.example/{channel}.m3u8?token={self.minted}",
         )
+
+
+class FakeStats:
+    """Stands in for the viewer count provider."""
+
+    def __init__(self) -> None:
+        self.live: dict[str, Stats] = {}
+        self.calls: list[list[str]] = []
+        # while set and clear, fetches wait for it
+        self.gate: asyncio.Event | None = None
+
+    async def fetch(self, logins: list[str]) -> dict[str, Stats]:
+        self.calls.append(logins)
+        if self.gate is not None:
+            await self.gate.wait()
+        return {k: v for k, v in self.live.items() if k in logins}
 
 
 class FakeExecutor:
@@ -217,8 +235,13 @@ def quadstream() -> QuadStream:
     return QuadStream()
 
 
+@pytest.fixture
+def stats() -> FakeStats:
+    return FakeStats()
+
+
 @pytest.fixture(autouse=True)
-def fakes(twitch: Twitch, quadstream: QuadStream) -> Any:
+def fakes(twitch: Twitch, quadstream: QuadStream, stats: FakeStats) -> Any:
     """Replace Twitch and quadstream.tv for every test; nothing reaches the network."""
 
     def fetcher(timeout: float | None = None, **_: Any) -> FakeFetcher:
@@ -233,6 +256,7 @@ def fakes(twitch: Twitch, quadstream: QuadStream) -> Any:
         patch("quadlink.stream.processor.StreamlinkFetcher", fetcher),
         patch("quadlink.stream.processor.random", tiebreakers),
         patch("quadlink.daemon.QuadStreamClient", quadstream.client),
+        patch("quadlink.daemon.provider_for", lambda config, client: stats),
     ):
         yield
 
@@ -261,6 +285,10 @@ async def make_daemon(config_path: Path) -> AsyncIterator[Callable[..., Daemon]]
             daemon.processor.close()
         await daemon.slot_relay.aclose()
         await daemon._segment_client.aclose()
+        if daemon._viewers_task is not None:
+            daemon._viewers_task.cancel()
+            await asyncio.gather(daemon._viewers_task, return_exceptions=True)
+        await daemon._stats_client.aclose()
 
 
 class Stepper:
@@ -760,6 +788,62 @@ class TestOperatorActions:
         snap = make_daemon().snapshot()
         assert [s.channel for s in snap.slots] == [""] * 4
         assert snap.channels == []
+
+
+class TestViewerCounts:
+    """Each refresh fetches viewer counts beside the lookups, never waiting on them."""
+
+    async def test_counts_reach_the_snapshot_for_live_channels(self, make_daemon, twitch, stats):
+        started = datetime(2026, 10, 23, 17, 0, 48, tzinfo=UTC)
+        # "e" is offline to the lookup, which wins over a lagging provider
+        stats.live = {"a": Stats(1108, started), "e": Stats(5, started)}
+        daemon = make_daemon()
+        notices = 0
+
+        def count() -> None:
+            nonlocal notices
+            notices += 1
+
+        daemon.watch(count)
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+        assert stats.calls == [sorted(CONFIGURED)]
+        # refresh, recompose, and the counts' arrival
+        assert notices == 3
+        views = {c.channel: c for c in daemon.snapshot().channels}
+        assert (views["a"].viewers, views["a"].started_at) == (1108, started)
+        assert (views["b"].viewers, views["b"].started_at) == (None, None)
+        assert (views["e"].viewers, views["e"].started_at) == (None, None)
+
+    async def test_a_slow_fetch_does_not_hold_the_quad(self, make_daemon, quadstream, stats):
+        stats.gate = asyncio.Event()
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert quadstream.pushes == [("secret", CHANNELS)]
+            assert store_channels(daemon) == list(CHANNELS)
+            # a fetch still running when the next refresh starts is not doubled
+            await loops.refresh()
+            assert len(stats.calls) == 1
+            stats.gate.set()
+            await settle()
+            await loops.refresh()
+            assert len(stats.calls) == 2
+
+    async def test_config_change_rebuilds_the_provider(self, make_daemon, config_path):
+        built: list[Any] = []
+
+        def provider_for(config: Any, client: Any) -> FakeStats:
+            built.append(config.twitch_api)
+            return FakeStats()
+
+        daemon = make_daemon()
+        with patch("quadlink.daemon.provider_for", provider_for):
+            async with stepped(daemon) as loops:
+                await loops.refresh()
+                write_config(config_path, twitch_api={"client_id": "id", "client_secret": "s"})
+                await loops.refresh()
+        assert [api.client_id if api else None for api in built] == [None, "id"]
 
 
 class TestDashboardFeed:

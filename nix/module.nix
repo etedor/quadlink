@@ -75,6 +75,27 @@ in {
       example = [ "quadlink.example.net" ];
     };
 
+    twitchApiClientId = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        Client ID of a registered Twitch application, for viewer counts from the Helix
+        API. Sets QL_TWITCH_API__CLIENT_ID; the config file can set twitch_api.client_id
+        instead.
+      '';
+    };
+
+    twitchApiSecretFile = mkOption {
+      # a string, so that the secret never goes into the Nix store
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        File that holds the client secret of the Twitch application. The quadlink user
+        must be able to read it. Sets QL_TWITCH_API__CLIENT_SECRET_FILE.
+      '';
+      example = "/run/agenix/quadlink-twitch-secret";
+    };
+
     openFirewall = mkOption {
       type = types.bool;
       default = false;
@@ -132,7 +153,9 @@ in {
           # glibc heap otherwise keeps ~25 MiB of them. ffmpeg children inherit it,
           # which is harmless there: their anon memory drops (bench: 72 -> 61 MiB)
           "MALLOC_MMAP_THRESHOLD_=131072"
-        ];
+        ]
+        ++ optional (cfg.twitchApiClientId != null) "QL_TWITCH_API__CLIENT_ID=${cfg.twitchApiClientId}"
+        ++ optional (cfg.twitchApiSecretFile != null) "QL_TWITCH_API__CLIENT_SECRET_FILE=${cfg.twitchApiSecretFile}";
 
         MemoryMax = "512M";
         # each ffmpeg converter runs several threads, up to 4 slots plus retiring runs

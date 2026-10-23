@@ -276,6 +276,21 @@ class TestSave:
         await self._save(client, webui, PAGE_YAML + "credentials:\n  username: x\n  secret: y\n")
         assert "credentials" not in _load(config_file)
 
+    async def test_twitch_client_secret_stays_hidden_and_kept(
+        self, client: TestClient, webui: WebUI, config_file: Path
+    ) -> None:
+        config_file.write_text(
+            config_file.read_text() + "twitch_api:\n  client_id: id\n  client_secret: shh\n"
+        )
+        body = await (await client.get("/api/config", headers=_auth(webui))).json()
+        assert "shh" not in body["yaml"]
+        assert "client_id: id" in body["yaml"]
+        page = PAGE_YAML + "twitch_api:\n  client_id: id2\n"
+        resp = await client.post("/api/validate", json={"yaml": page}, headers=_auth(webui))
+        assert (await resp.json())["valid"] is True
+        await self._save(client, webui, page + "  client_secret: from-page\n")
+        assert _load(config_file)["twitch_api"] == {"client_id": "id2", "client_secret": "shh"}
+
     async def test_writes_no_defaults_or_env(
         self,
         client: TestClient,

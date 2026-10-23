@@ -1,10 +1,12 @@
 """Read-only view of the quad and every configured channel, for the dashboard."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 from quadlink.quad import Overrides, QuadState
 from quadlink.types import ChannelState, ChannelStatus
+from quadlink.viewers import Stats
 
 
 class DashboardState(StrEnum):
@@ -61,6 +63,8 @@ class ChannelView:
         pin_slot: Slot it is pinned to, whether or not it is on screen.
         benched: The operator keeps it out of the quad.
         status: The last refresh's lookup outcome.
+        viewers: Viewer count, while the channel is live and a provider reports it.
+        started_at: When the stream started (UTC), under the same condition.
     """
 
     channel: str
@@ -69,6 +73,8 @@ class ChannelView:
     pin_slot: int | None
     benched: bool
     status: ChannelStatus
+    viewers: int | None = None
+    started_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -95,8 +101,10 @@ def snapshot(
     waiting: list[str],
     refreshed_at: float | None,
     quadstream: QuadStreamLogin = QuadStreamLogin.OFF,
+    stats: dict[str, Stats] | None = None,
 ) -> Snapshot:
     """Build the dashboard view from the daemon's current state."""
+    stats = stats or {}
     names = {s.channel: s.stream.metadata.author for s in statuses if s.stream is not None}
     pinned_to = {slot: channel for channel, slot in overrides.pins.items()}
     slots = [
@@ -118,12 +126,22 @@ def snapshot(
             pin_slot=overrides.pins.get(s.channel),
             benched=s.channel in overrides.benches,
             status=s,
+            viewers=found.viewers if found else None,
+            started_at=found.started_at if found else None,
         )
         for s in statuses
+        for found in [_live_stats(s, stats)]
     ]
     return Snapshot(
         slots=slots, channels=channels, refreshed_at=refreshed_at, quadstream=quadstream
     )
+
+
+def _live_stats(status: ChannelStatus, stats: dict[str, Stats]) -> Stats | None:
+    # the lookup has the last word on offline: the stats can lag a stream's end
+    if status.state is ChannelState.OFFLINE:
+        return None
+    return stats.get(status.channel)
 
 
 def _state(

@@ -51,6 +51,34 @@ class Credentials(BaseModel):
         return self
 
 
+class TwitchAPI(BaseModel):
+    """A registered Twitch application, for viewer counts from the Helix API.
+
+    Attributes:
+        client_id: The application's client ID.
+        client_secret: The application's client secret (or give client_secret_file).
+        client_secret_file: File that holds the client secret.
+    """
+
+    client_id: str
+    client_secret: str | None = None
+    client_secret_file: Path | None = None
+
+    @model_validator(mode="after")
+    def _read_secret(self) -> "TwitchAPI":
+        if self.client_secret_file is not None:
+            try:
+                self.client_secret = self.client_secret_file.expanduser().read_text().strip()
+            except OSError as e:
+                raise ValueError(
+                    f"quadlink cannot read the Twitch client secret from "
+                    f"{self.client_secret_file}: {e}"
+                ) from e
+        if not self.client_secret:
+            raise ValueError("twitch_api needs client_secret or client_secret_file")
+        return self
+
+
 class Filters(BaseModel):
     """Regex filters for stream categories and titles.
 
@@ -121,6 +149,7 @@ class Config(BaseSettings):
         lookup_timeout: Seconds before one channel lookup counts as failed.
         relay_segments: Serve segments from the relay and convert audio to 48 kHz.
         log_level: Minimum log level, unless a CLI --log-level flag overrides it.
+        twitch_api: Twitch application for Helix viewer counts; None uses Twitch GQL.
     """
 
     model_config = SettingsConfigDict(
@@ -157,6 +186,8 @@ class Config(BaseSettings):
 
     # None defers to a CLI --log-level flag, or "info" if that is also unset
     log_level: Literal["debug", "info", "warning", "error"] | None = None
+
+    twitch_api: TwitchAPI | None = None
 
     @field_validator("mode", "log_level", mode="before")
     @classmethod

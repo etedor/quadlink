@@ -284,6 +284,8 @@ class WebUI:
             # and env overrides or defaults must not end up in the file
             config_dict = self._read_file_config()
             config_dict.pop("credentials", None)
+            if isinstance(config_dict.get("twitch_api"), dict):
+                config_dict["twitch_api"].pop("client_secret", None)
             config_dict = _strip_empty(config_dict)
 
             # sort priorities if requested
@@ -350,6 +352,11 @@ class WebUI:
             # validate with pydantic (but don't require credentials for validation)
             if "credentials" not in parsed:
                 parsed["credentials"] = {"username": "test", "secret": "test"}
+            # the page never sees an inline Twitch client secret, so a placeholder passes
+            # validation; the save restores the file's
+            api = parsed.get("twitch_api")
+            if isinstance(api, dict) and "client_secret_file" not in api:
+                api.setdefault("client_secret", "test")
 
             Config(**parsed)
             return web.json_response({"valid": True})
@@ -378,6 +385,12 @@ class WebUI:
             on_disk = self._read_file_config()
             if "credentials" in on_disk:
                 parsed["credentials"] = on_disk["credentials"]
+            # the Twitch client secret is hidden from the page the same way
+            api, api_on_disk = parsed.get("twitch_api"), on_disk.get("twitch_api")
+            if isinstance(api, dict):
+                api.pop("client_secret", None)
+                if isinstance(api_on_disk, dict) and "client_secret" in api_on_disk:
+                    api["client_secret"] = api_on_disk["client_secret"]
 
             Config(**parsed)
 
