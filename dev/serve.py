@@ -4,10 +4,14 @@ usage: python dev/serve.py [--upstream https://quadlink.et42.net] [--host 127.0.
 
 Pages come from src/quadlink/web/ as saved; /streams/* and /api/* go to the upstream
 quadlink, so the page plays the real relay. A saved file reloads every open page.
+
+/api/* is sent as the upstream's own page would send it (its page token, no
+cross-site headers): anyone who can reach this server can use the upstream's API.
 """
 
 import argparse
 import asyncio
+import re
 from pathlib import Path
 
 import aiohttp
@@ -17,6 +21,9 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "src" / "quadlink" / "web"
 PROXIED = ("/streams/", "/api/")
 # hop-by-hop and length headers: aiohttp sets its own for the re-sent body
 DROPPED = {"connection", "keep-alive", "transfer-encoding", "content-length", "content-encoding"}
+# headers a browser adds that the upstream reads as a cross-site request
+CROSS_SITE = {"origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"}
+TOKEN_RE = re.compile(r'<meta name="quadlink-token" content="([^"]+)"')
 RELOAD = """<script>
 new EventSource('/__reload').onmessage = () => location.reload();
 </script>
@@ -55,13 +62,33 @@ async def _reload(request: web.Request) -> web.StreamResponse:
             return resp
 
 
+async def _token(app: web.Application, fresh: bool = False) -> str:
+    """The upstream page's token; it changes when the upstream restarts."""
+    if fresh or "token" not in app:
+        session: aiohttp.ClientSession = app["session"]
+        async with session.get(app["upstream"] + "/") as resp:
+            match = TOKEN_RE.search(await resp.text())
+        app["token"] = match.group(1) if match else ""
+    return str(app["token"])
+
+
 async def _proxy(request: web.Request) -> web.StreamResponse:
     session: aiohttp.ClientSession = request.app["session"]
     url = request.app["upstream"] + request.path_qs
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in DROPPED | {"host"}}
-    async with session.request(
-        request.method, url, headers=headers, data=await request.read(), allow_redirects=False
-    ) as upstream:
+    api = request.path.startswith("/api/")
+    skip = DROPPED | {"host"} | (CROSS_SITE if api else set())
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in skip}
+    body = await request.read()
+    for attempt in (0, 1):
+        if api:
+            headers["X-QuadLink-Token"] = await _token(request.app, fresh=attempt > 0)
+        upstream = await session.request(
+            request.method, url, headers=headers, data=body, allow_redirects=False
+        )
+        if not (api and upstream.status == 403 and attempt == 0):
+            break
+        upstream.release()
+    async with upstream:
         resp = web.StreamResponse(status=upstream.status)
         for key, value in upstream.headers.items():
             if key.lower() not in DROPPED:
