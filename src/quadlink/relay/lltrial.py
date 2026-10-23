@@ -25,9 +25,10 @@ from quadlink.relay.tsinfo import PACKET, pes_pts, program
 logger = structlog.get_logger()
 
 VIDEO_TYPES = {0x1B, 0x24}
-# Apple rejects a playlist whose parts fall under 85% of PART-TARGET
+# Apple rejects a playlist with a part under 85% of PART-TARGET or over it; at
+# 30 fps, 0.54 admits parts of 14-16 frames
 PART_SPLIT = 0.5
-PART_TARGET = 0.55
+PART_TARGET = 0.54
 POLL = 0.5
 BLOCK_WAIT = 6.0
 WINDOW = 12
