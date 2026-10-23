@@ -6,12 +6,69 @@
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
-  /* one corner radius for every rounded surface; nested corners subtract their inset */
-  :root { --radius: 14px; }
-  html, body { margin: 0; height: 100%; background: #000; color: #e7e9ee; }
-  body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "top top" "rail quad"; }
-  header { grid-area: top; border-bottom: 1px solid #1c2028; background: #0b0d11; }
-  aside { grid-area: rail; border-right: 1px solid #1c2028; background: #0b0d11; overflow-y: auto; }
+  /* one corner radius for every rounded surface; nested corners subtract their inset.
+     every color is a token here, and every purple is mixed from --twitch */
+  :root {
+    --radius: 14px;
+    --twitch: #9147ff;
+    --black: #000;
+    --white: #fff;
+    --clear: transparent;
+    --ground: color-mix(in oklab, var(--twitch) 22%, var(--black));
+    --hover: color-mix(in oklab, var(--twitch) 36%, var(--black));
+    --well: var(--black);
+    --text: color-mix(in oklab, var(--twitch) 6%, var(--white));
+    --text-quiet: color-mix(in oklab, var(--twitch) 35%, var(--white));
+    --accent: var(--twitch);
+    --field: color-mix(in oklab, var(--twitch) 30%, var(--black));
+    --popover: color-mix(in oklab, var(--twitch) 32%, var(--black));
+    --live: #eb0400;
+    --error: var(--live);
+  }
+  html, body { margin: 0; height: 100%; background: var(--ground); color: var(--text); }
+  body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "rail top" "rail quad"; }
+  header { grid-area: top; }
+  aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
+    font: 13px system-ui, sans-serif; position: relative; }
+  .tools { display: flex; gap: 6px; padding: 8px 8px 4px; }
+  .tools input { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 10px;
+    border: 0; border-radius: calc(var(--radius) - 6px); background: var(--field);
+    color: var(--text); font: inherit; outline-offset: 0; }
+  .tools input::placeholder { color: var(--text-quiet); }
+  .tools button { position: relative; flex: none; width: 32px; height: 32px; border: 0;
+    border-radius: calc(var(--radius) - 6px); background: var(--field); color: var(--text);
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .tools button:hover, .tools button[aria-expanded="true"] { background: var(--hover); }
+  /* a dot on a glyph says its choices differ from the defaults */
+  .tools button.changed::after { content: ""; position: absolute; top: 5px; right: 5px;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  /* the gutter keeps room for the scrollbar even when it shows, so the reset glyph
+     at the row's right end never sits under it */
+  .pop { position: absolute; top: 44px; left: 8px; right: 8px; z-index: 1;
+    border-radius: var(--radius); background: var(--popover); max-height: 60vh;
+    overflow-y: auto; scrollbar-gutter: stable; }
+  .pop-head { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 6px 0 10px; color: var(--text-quiet); font-size: 12px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap; }
+  .pop-body { padding: 0 10px 6px; }
+  .pop fieldset:last-child { margin-bottom: 0; }
+  /* the fade shows only while more options sit below, so the menu ends at its last item */
+  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: 32px;
+    margin-top: -32px; pointer-events: none;
+    background: linear-gradient(var(--clear), var(--popover)); }
+  .pop .reset { width: 28px; height: 28px; border: 0; padding: 0;
+    border-radius: calc(var(--radius) - 6px); background: none; color: var(--text-quiet);
+    display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .pop .reset:hover { background: var(--hover); color: var(--text); }
+  /* fieldsets default to min-content width, which would let long names push past the edge */
+  .pop fieldset { border: 0; margin: 0 0 8px; padding: 0; min-width: 0; }
+  .pop legend { color: var(--text-quiet); font-size: 12px; margin-bottom: 4px; padding: 0; }
+  .pop label { display: flex; align-items: center; gap: 8px; padding: 4px 2px; cursor: pointer;
+    min-width: 0; }
+  .pop label span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pop input { accent-color: var(--accent); }
+  .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; align-items: flex-start; justify-content: center; }
   /* the whole quad is 16:9, so each 16:9 stream fills its tile uncropped and the
@@ -22,34 +79,71 @@
     width: var(--w); aspect-ratio: 16 / 9;
     margin-top: min((100cqw - var(--w)) / 2, 100cqh - var(--w) * 9 / 16);
     border-radius: var(--radius); overflow: hidden; }
-  .tile { position: relative; background: #0a0c10; overflow: hidden; }
+  .tile { position: relative; background: var(--well); overflow: hidden; }
+  .tile.loud::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 0 2px var(--accent); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
-  .rail { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 4px;
-    font: 13px system-ui, sans-serif; }
+  .rail { list-style: none; margin: 0; padding: 4px 8px 8px; display: flex; flex-direction: column;
+    gap: 4px; }
   .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: var(--radius); }
-  .rail li:hover { background: #151922; }
+  .rail li:hover { background: var(--hover); }
   .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 6px);
-    background: #0a0c10;
+    background: var(--well);
     object-fit: cover; }
   .rail .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .rail .viewers { flex: none; align-self: flex-start; display: inline-flex; align-items: center;
-    gap: 5px; color: #c9cfda; font-size: 12px; font-variant-numeric: tabular-nums; }
-  .rail .viewers::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
-    background: #e5484d; }
+  .rail .name, .rail .cat { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rail .name { font-weight: 600; }
-  .rail .cat { color: #9aa3b2; font-size: 12px; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; }
+  /* category and viewer count share the second line; the category gives way first */
+  .rail .meta { display: flex; align-items: center; gap: 8px; color: var(--text-quiet); font-size: 12px; }
+  .rail .cat { flex: 1; min-width: 0; }
+  .rail .viewers { flex: none; display: inline-flex; align-items: center; gap: 4px;
+    color: var(--text); font-variant-numeric: tabular-nums; }
+  .rail .viewers::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--live); }
+  /* drag: rows and tiles can be picked up; long-press callouts would steal touch drags */
+  .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+  .rail li { cursor: grab; }
+  .rail img { pointer-events: none; }
+  .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 120px; aspect-ratio: 16 / 9;
+    border-radius: calc(var(--radius) - 6px); background: var(--well) center / cover no-repeat;
+    box-shadow: 0 0 0 2px var(--accent); pointer-events: none; opacity: 0.9;
+    transform: translate(-50%, -50%); }
+  .tile.target::after, .tile.pending::after, .tile.failed::after { content: ""; position: absolute;
+    inset: 0; pointer-events: none; }
+  .tile.target::after { box-shadow: inset 0 0 0 3px var(--accent); }
+  .tile.pending::after { box-shadow: inset 0 0 0 3px var(--accent); animation: pulse 1s infinite alternate; }
+  .tile.failed::after { box-shadow: inset 0 0 0 3px var(--error); }
+  .tile.lifted { opacity: 0.5; }
+  @keyframes pulse { to { opacity: 0.35; } }
   @media (max-width: 720px) {
     body { grid-template: 48px 1fr auto / 1fr; grid-template-areas: "top" "quad" "rail"; }
-    aside { border-right: 0; border-top: 1px solid #1c2028; min-height: 120px; }
+    aside { min-height: 120px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 </head>
 <body>
 <header></header>
-<aside aria-label="Online streamers"><ul class="rail"></ul></aside>
+<aside aria-label="Online streamers">
+  <div class="tools">
+    <input type="search" placeholder="Search…" aria-label="Search channels">
+    <button type="button" class="filter-btn" aria-label="Filter" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
+    <button type="button" class="sort-btn" aria-label="Sort" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
+  </div>
+  <div class="pop filter-pop" hidden>
+    <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="reset" aria-label="Reset filters" title="Reset"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-body">
+      <fieldset class="show"><legend class="sr-only">Show</legend></fieldset>
+      <fieldset class="cats"><legend>Category</legend></fieldset>
+    </div>
+  </div>
+  <div class="pop sort-pop" hidden>
+    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="reset" aria-label="Reset sort" title="Reset"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-body"><fieldset class="sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
+  </div>
+  <div class="rail-scroll"><ul class="rail"></ul></div>
+</aside>
 <main class="stage">
 <div class="quad">
   <div class="tile">
@@ -103,8 +197,19 @@
   });
 
   const rail = document.querySelector('.rail');
-  const SHOWN = new Set(['live', 'waiting']);
   const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
+  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['benched', 'Benched'],
+                  ['in quad', 'In quad'], ['offline', 'Offline']];
+  const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
+                 ['newest', 'Newest stream'], ['longest', 'Longest stream']];
+  const DEFAULTS = { show: ['live', 'waiting'], cats: [], sort: 'priority' };
+  let view = { ...DEFAULTS, q: '' };
+  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.rail') || '{}'), { q: '' }); } catch {}
+  let latest = null;
+
+  function save() {
+    try { localStorage.setItem('quadlink.rail', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+  }
 
   function row(c) {
     const li = document.createElement('li');
@@ -119,29 +224,255 @@
     name.textContent = c.display_name || c.channel;
     const cat = document.createElement('span');
     cat.className = 'cat';
-    cat.textContent = c.category || '';
-    who.append(name, cat);
-    li.append(img, who);
+    const label = STATES.find(([s]) => s === c.state);
+    cat.textContent = c.state === 'live' ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.append(cat);
     if (c.viewers != null) {
       const viewers = document.createElement('span');
       viewers.className = 'viewers';
       viewers.textContent = compact.format(c.viewers);
       viewers.title = c.viewers.toLocaleString() + ' viewers';
-      li.append(viewers);
+      meta.append(viewers);
     }
+    who.append(name, meta);
+    li.dataset.channel = c.channel;
+    li.append(img, who);
     return li;
   }
 
-  function render(state) {
-    const online = state.channels
-      .filter(c => SHOWN.has(c.state))
-      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
-    rail.replaceChildren(...online.map(row));
+  const ORDER = {
+    priority: (a, b) => (b.priority ?? -Infinity) - (a.priority ?? -Infinity),
+    viewers: (a, b) => (b.viewers ?? -1) - (a.viewers ?? -1),
+    name: (a, b) => (a.display_name || a.channel).localeCompare(b.display_name || b.channel),
+    newest: (a, b) => (b.started_at ?? -Infinity) - (a.started_at ?? -Infinity),
+    longest: (a, b) => (a.started_at ?? Infinity) - (b.started_at ?? Infinity),
+  };
+
+  function render() {
+    if (!latest) return;
+    const q = view.q.trim().toLowerCase();
+    const show = new Set(view.show);
+    const cats = new Set(view.cats);
+    const rows = latest.channels
+      .filter(c => show.has(c.state))
+      .filter(c => !cats.size || cats.has(c.category))
+      .filter(c => !q || [c.display_name, c.channel, c.category, c.title]
+        .some(v => v && v.toLowerCase().includes(q)))
+      .sort(ORDER[view.sort] || ORDER.priority);
+    rail.replaceChildren(...rows.map(row));
+    document.querySelector('.filter-btn').classList.toggle('changed',
+      cats.size > 0 || view.show.slice().sort().join() !== DEFAULTS.show.slice().sort().join());
+    document.querySelector('.sort-btn').classList.toggle('changed', view.sort !== DEFAULTS.sort);
   }
+
+  function option(type, name, value, text, checked, onChange) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = type;
+    input.name = name;
+    input.value = value;
+    input.checked = checked;
+    input.addEventListener('change', onChange);
+    const span = document.createElement('span');
+    span.textContent = text;
+    label.title = text;
+    label.append(input, span);
+    return label;
+  }
+
+  function fillFilters() {
+    const show = document.querySelector('.filter-pop .show');
+    show.replaceChildren(show.querySelector('legend'), ...STATES.map(([s, text]) =>
+      option('checkbox', 'show', s, text, view.show.includes(s), e => {
+        view.show = e.target.checked ? [...view.show, s] : view.show.filter(x => x !== s);
+        save(); render();
+      })));
+    const live = latest ? [...new Set(latest.channels
+      .filter(c => c.state !== 'offline' && c.category).map(c => c.category))].sort() : [];
+    const cats = document.querySelector('.filter-pop .cats');
+    cats.replaceChildren(cats.querySelector('legend'), ...live.map(name =>
+      option('checkbox', 'cat', name, name, view.cats.includes(name), e => {
+        view.cats = e.target.checked ? [...view.cats, name] : view.cats.filter(x => x !== name);
+        save(); render();
+      })));
+  }
+
+  function fillSorts() {
+    const sorts = document.querySelector('.sort-pop .sorts');
+    sorts.replaceChildren(sorts.querySelector('legend'), ...SORTS.map(([key, text]) =>
+      option('radio', 'sort', key, text, view.sort === key, () => { view.sort = key; save(); render(); })));
+  }
+
+  function edge(pop) {
+    pop.classList.toggle('more', pop.scrollTop + pop.clientHeight < pop.scrollHeight - 1);
+  }
+  document.querySelectorAll('.pop').forEach(pop => pop.addEventListener('scroll', () => edge(pop)));
+
+  function toggle(button, pop, fill) {
+    const open = pop.hidden;
+    document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
+    document.querySelectorAll('.tools button').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    if (open) {
+      fill(); pop.hidden = false; pop.scrollTop = 0;
+      button.setAttribute('aria-expanded', 'true'); edge(pop);
+    }
+  }
+  const filterBtn = document.querySelector('.filter-btn');
+  const sortBtn = document.querySelector('.sort-btn');
+  filterBtn.addEventListener('click', () => toggle(filterBtn, document.querySelector('.filter-pop'), fillFilters));
+  sortBtn.addEventListener('click', () => toggle(sortBtn, document.querySelector('.sort-pop'), fillSorts));
+  function closePops() {
+    document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
+    document.querySelectorAll('.tools button').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  }
+  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools button')) closePops(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
+  document.querySelector('.filter-pop .reset').addEventListener('click', () => {
+    view.show = [...DEFAULTS.show]; view.cats = []; save(); fillFilters(); render();
+  });
+  document.querySelector('.sort-pop .reset').addEventListener('click', () => {
+    view.sort = DEFAULTS.sort; save(); fillSorts(); render();
+  });
+  document.querySelector('.tools input').addEventListener('input', e => { view.q = e.target.value; render(); });
+
+  // drag and drop on pointer events, so mouse, pen and touch share one path. a touch
+  // drag starts on a long press, leaving a quick swipe to scroll the rail
+  const DRAG_DISTANCE = 6;
+  const LONG_PRESS = 300;
+  const PENDING_WAIT = 15000;
+  const pending = new Map();
+  let drag = null;
+  let dragged = false;
+
+  async function act(body) {
+    const resp = await fetch('/api/actions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-QuadLink-Token': token },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || resp.statusText);
+  }
+
+  function expect(slot, channel) {
+    const tile = tiles[slot];
+    clearTimeout(pending.get(slot)?.timer);
+    tile.classList.remove('failed');
+    tile.classList.add('pending');
+    const timer = setTimeout(() => settle(slot), PENDING_WAIT);
+    pending.set(slot, { channel, timer });
+  }
+
+  function settle(slot, failed = false) {
+    const entry = pending.get(slot);
+    if (entry) clearTimeout(entry.timer);
+    pending.delete(slot);
+    tiles[slot].classList.remove('pending');
+    if (failed) {
+      tiles[slot].classList.add('failed');
+      setTimeout(() => tiles[slot].classList.remove('failed'), 2000);
+    }
+  }
+
+  function confirmPending() {
+    if (!latest) return;
+    for (const [slot, { channel }] of pending) {
+      if (latest.slots[slot] && latest.slots[slot].channel === channel) settle(slot);
+    }
+  }
+
+  function tileUnder(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el ? el.closest('.tile') : null;
+  }
+
+  function start(e, source) {
+    const ghost = document.createElement('div');
+    ghost.className = 'ghost';
+    const image = source.image();
+    if (image) ghost.style.backgroundImage = 'url("' + image + '")';
+    document.body.append(ghost);
+    if (source.tile) source.tile.classList.add('lifted');
+    drag = { ...drag, ghost, source, active: true };
+    move(e);
+  }
+
+  function move(e) {
+    drag.ghost.style.left = e.clientX + 'px';
+    drag.ghost.style.top = e.clientY + 'px';
+    const over = tileUnder(e.clientX, e.clientY);
+    tiles.forEach(t => t.classList.toggle('target', t === over && t !== drag.source.tile));
+  }
+
+  function end(e, cancelled) {
+    const { source, ghost } = drag;
+    ghost.remove();
+    tiles.forEach(t => t.classList.remove('target', 'lifted'));
+    const over = cancelled ? null : tileUnder(e.clientX, e.clientY);
+    drag = null;
+    if (!over) return;
+    const slot = tiles.indexOf(over);
+    if (source.channel !== undefined) {
+      expect(slot, source.channel);
+      act({ action: 'place', channel: source.channel, slot }).catch(() => settle(slot, true));
+    } else if (slot !== source.slot) {
+      const a = source.slot, b = slot;
+      const ca = latest?.slots[a]?.channel ?? null, cb = latest?.slots[b]?.channel ?? null;
+      expect(a, cb);
+      expect(b, ca);
+      act({ action: 'swap', a, b }).catch(() => { settle(a, true); settle(b, true); });
+    }
+  }
+
+  document.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (drag.active) { move(e); return; }
+    const far = Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > DRAG_DISTANCE;
+    if (!far) return;
+    // a touch that moves before the long press is a scroll, not a drag
+    if (drag.touch) { clearTimeout(drag.timer); drag = null; return; }
+    start(e, drag.pending());
+  });
+  document.addEventListener('pointerup', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    clearTimeout(drag.timer);
+    if (drag.active) { dragged = true; end(e, false); } else drag = null;
+  });
+  document.addEventListener('pointercancel', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    clearTimeout(drag.timer);
+    if (drag.active) end(e, true); else drag = null;
+  });
+  // once a touch drag starts, keep the page from scrolling under it
+  document.addEventListener('touchmove', e => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
+  // the drop's pointerup also clicks the tile; that click must not toggle its sound
+  document.addEventListener('click', e => { if (dragged) { dragged = false; e.stopPropagation(); e.preventDefault(); } }, true);
+
+  rail.addEventListener('pointerdown', e => {
+    const li = e.target.closest('li');
+    if (!li || e.button !== 0 || drag) return;
+    const img = li.querySelector('img');
+    const source = () => ({ channel: li.dataset.channel, image: () => img && img.src });
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
+  });
+  tiles.forEach((tile, slot) => tile.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || drag) return;
+    const source = () => ({
+      slot, tile,
+      image: () => {
+        const channel = latest?.slots[slot]?.channel;
+        return channel ? '/api/slots/' + slot + '/still.jpg?c=' + encodeURIComponent(channel) : null;
+      },
+    });
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
+  }));
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
-  events.onmessage = e => render(JSON.parse(e.data));
+  events.onmessage = e => { latest = JSON.parse(e.data); render(); confirmPending(); };
   // a restart changes the page token, and EventSource never retries a refusal
   events.onerror = () => { if (events.readyState === EventSource.CLOSED) setTimeout(() => location.reload(), 5000); };
 </script>
