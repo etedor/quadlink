@@ -81,6 +81,7 @@ class TestPage:
         html = await resp.text()
         assert f'<meta name="quadlink-token" content="{webui.token}">' in html
         assert resp.headers["Cache-Control"] == "no-store"
+        assert resp.headers["Referrer-Policy"] == "no-referrer"
 
     async def test_every_fetch_sends_token_and_json(self, client: TestClient) -> None:
         html = await (await client.get("/")).text()

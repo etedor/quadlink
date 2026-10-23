@@ -9,6 +9,7 @@ import json
 import re
 from collections.abc import Callable
 from typing import Any, Protocol
+from urllib.parse import quote
 
 import structlog
 from aiohttp import web
@@ -96,7 +97,8 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
         entry |= {
             "pinned": s.pinned,
             "reserved_for": s.reserved_for,
-            "still": f"/api/slots/{s.slot}/still.jpg" if s.channel else None,
+            # the channel in the URL keeps a browser's cached still from outliving a swap
+            "still": f"/api/slots/{s.slot}/still.jpg?c={quote(s.channel)}" if s.channel else None,
         }
         slots.append(entry)
     channels = [
@@ -148,7 +150,31 @@ def parse_action(body: Any) -> tuple[str, dict[str, Any]]:
 
 async def grab_frame(ffmpeg: str, segment: bytes, timeout: float = STILL_WAIT) -> bytes | None:
     """A JPEG (480 px wide) of the first keyframe in an MPEG-TS segment, or None."""
-    proc = await asyncio.create_subprocess_exec(
+    try:
+        proc = await _start_ffmpeg(ffmpeg)
+    except OSError as e:
+        logger.warning("still frame grab could not start ffmpeg", error=str(e))
+        return None
+    try:
+        async with asyncio.timeout(timeout):
+            out, err = await proc.communicate(segment)
+    except TimeoutError:
+        logger.warning("still frame grab timed out")
+        return None
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+    if proc.returncode != 0 or not out:
+        logger.warning(
+            "still frame grab failed", code=proc.returncode, error=err.decode(errors="replace")
+        )
+        return None
+    return out
+
+
+async def _start_ffmpeg(ffmpeg: str) -> asyncio.subprocess.Process:
+    return await asyncio.create_subprocess_exec(
         ffmpeg,
         "-v",
         "error",
@@ -172,22 +198,6 @@ async def grab_frame(ffmpeg: str, segment: bytes, timeout: float = STILL_WAIT) -
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    try:
-        async with asyncio.timeout(timeout):
-            out, err = await proc.communicate(segment)
-    except TimeoutError:
-        logger.warning("still frame grab timed out")
-        return None
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-    if proc.returncode != 0 or not out:
-        logger.warning(
-            "still frame grab failed", code=proc.returncode, error=err.decode(errors="replace")
-        )
-        return None
-    return out
 
 
 class DashboardAPI:
@@ -198,11 +208,12 @@ class DashboardAPI:
         # one per open event stream: set when the snapshot may have changed
         self._subscribers: set[asyncio.Event] = set()
         self._closing = False
-        # (version, JSON text) of the newest snapshot built, shared by subscribers
+        # (version, JSON text) of the newest snapshot built for the event streams,
+        # which share one build per change
         self._version = 0
         self._built: tuple[int, str] | None = None
-        # slot -> (loop time, JPEG or None for a failed grab)
-        self._stills: dict[int, tuple[float, bytes | None]] = {}
+        # slot -> (channel, loop time, JPEG or None for a failed grab)
+        self._stills: dict[int, tuple[str, float, bytes | None]] = {}
         self._still_locks = {slot: asyncio.Lock() for slot in range(4)}
         dashboard.watch(self._changed)
 
@@ -219,9 +230,11 @@ class DashboardAPI:
             event.set()
 
     def _snapshot_text(self) -> str:
+        return json.dumps(snapshot_json(self.dashboard.snapshot()), separators=(",", ":"))
+
+    def _shared_snapshot_text(self) -> str:
         if self._built is None or self._built[0] != self._version:
-            text = json.dumps(snapshot_json(self.dashboard.snapshot()), separators=(",", ":"))
-            self._built = (self._version, text)
+            self._built = (self._version, self._snapshot_text())
         return self._built[1]
 
     async def _shutdown(self, app: web.Application) -> None:
@@ -266,9 +279,11 @@ class DashboardAPI:
                 if self._closing:
                     break
                 changed.clear()
-                text = self._snapshot_text()
+                text = self._shared_snapshot_text()
                 if text != sent:
-                    await resp.write(f"data: {text}\n\n".encode())
+                    # retry: the delay before EventSource reconnects after a drop
+                    retry = "retry: 2000\n" if sent is None else ""
+                    await resp.write(f"{retry}data: {text}\n\n".encode())
                     sent, last_write = text, loop.time()
                     await asyncio.sleep(EVENT_GAP)
         except ConnectionError:
@@ -298,29 +313,38 @@ class DashboardAPI:
         channel = self.dashboard.snapshot().slots[slot].channel
         if not channel:
             return web.json_response({"error": f"slot {slot} is empty"}, status=404)
-        jpeg = await self._still(slot)
+        requested = request.query.get("c", "")
+        if requested != channel:
+            # a URL from before a swap: never the picture of the channel there now
+            if _LOGIN.fullmatch(requested):
+                return _redirect(thumbnail_url(requested))
+            return web.json_response(
+                {"error": f"the c parameter must name the channel in slot {slot}"}, status=404
+            )
+        jpeg = await self._still(slot, channel)
         if jpeg is not None:
             return web.Response(
                 body=jpeg, content_type="image/jpeg", headers={"Cache-Control": "max-age=5"}
             )
         if not _LOGIN.fullmatch(channel):
             return web.json_response({"error": f"slot {slot} has no picture"}, status=404)
-        return web.Response(
-            status=302,
-            headers={"Location": thumbnail_url(channel), "Cache-Control": "no-store"},
-        )
+        return _redirect(thumbnail_url(channel))
 
-    async def _still(self, slot: int) -> bytes | None:
-        """The slot's current picture, decoded at most once per STILL_TTL."""
+    async def _still(self, slot: int, channel: str) -> bytes | None:
+        """Channel's picture in slot, decoded at most once per STILL_TTL."""
         loop = asyncio.get_running_loop()
         async with self._still_locks[slot]:
             cached = self._stills.get(slot)
-            if cached is not None and loop.time() - cached[0] < STILL_TTL:
-                return cached[1]
+            if cached is not None and cached[0] == channel and loop.time() - cached[1] < STILL_TTL:
+                return cached[2]
             ffmpeg = self.dashboard.ffmpeg
-            segment = self.dashboard.segments.latest(slot)
+            segment = self.dashboard.segments.latest(slot, channel)
             jpeg = None
             if ffmpeg is not None and segment is not None:
                 jpeg = await grab_frame(ffmpeg, segment)
-            self._stills[slot] = (loop.time(), jpeg)
+            self._stills[slot] = (channel, loop.time(), jpeg)
             return jpeg
+
+
+def _redirect(location: str) -> web.Response:
+    return web.Response(status=302, headers={"Location": location, "Cache-Control": "no-store"})

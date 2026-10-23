@@ -312,6 +312,7 @@ class FakeProxy:
         self.converts_fmp4 = converts_fmp4
         self.body: bytes | None = None
         self.registered: list[tuple[int, int]] = []
+        self.channels: list[str] = []
         self.unready = unready or set()
         self.waits: list[tuple[int, int, float]] = []
         self.wait_gate: asyncio.Event | None = None
@@ -319,8 +320,9 @@ class FakeProxy:
         self.error: Exception | None = None
         self.flushes: list[int] = []
 
-    def register(self, slot, seg):
+    def register(self, slot, seg, channel=""):
         self.registered.append((slot, seg.seq))
+        self.channels.append(channel)
 
     def ready(self, slot, seq):
         return seq not in self.unready
@@ -360,6 +362,7 @@ async def test_proxied_playlist_points_at_relay_segments():
     assert "/streams/1/seg/1.ts" in resp.text
     assert "https://cdn/" not in resp.text
     assert proxy.registered == [(0, 0), (0, 1)]
+    assert proxy.channels == ["chan-A", "chan-A"]
 
 
 @pytest.mark.asyncio

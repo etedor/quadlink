@@ -825,6 +825,7 @@ class TestDashboardFeed:
             assert (await resp.json())["error"] == "channel 'zz' is not in the config"
             events = await client.get(f"/api/events?token={webui.token}")
             first = await events.content.readuntil(b"\n\n")
+            first = first.removeprefix(b"retry: 2000\n")
             assert json.loads(first[len(b"data: ") :])["slots"][0]["channel"] == "a"
             await daemon.swap(0, 1)
             await settle()

@@ -165,9 +165,15 @@ Two routes are different, because a browser cannot send headers for them:
 | Route | Result |
 |---|---|
 | `GET /api/state` | The snapshot as JSON. |
-| `GET /api/events` | Server-Sent Events. The server sends the snapshot when you connect and each time it changes (at most 4 times each second). It sends a comment line after 15 seconds without an event. |
-| `POST /api/actions` | Applies one operator action. If the action succeeds, the server sends `200` and the new snapshot. If the action is not valid, the server sends `400` and `{"error": "..."}`. |
-| `GET /api/slots/{slot}/still.jpg` | A JPEG (480 pixels wide) of the picture in the slot, at most 5 seconds old. If no client plays the slot, or ffmpeg cannot decode a frame, the server redirects to the Twitch preview image of the channel. For an empty slot, the server sends `404`. |
+| `GET /api/events` | Server-Sent Events. The server sends the snapshot when you connect and each time it changes (at most 4 times each second). It sends a comment line after 15 seconds without an event. The first event sets the reconnect delay to 2 seconds. |
+| `POST /api/actions` | Applies one operator action. If the action succeeds, the server sends `200` and a snapshot. If the action is not valid, the server sends `400` and `{"error": "..."}`. |
+| `GET /api/slots/{slot}/still.jpg?c={channel}` | A JPEG (480 pixels wide) of the picture in the slot, at most 5 seconds old. The `still` URL in the snapshot has the correct `c`. If `c` is not the channel in the slot, or no client plays the slot, or ffmpeg cannot decode a frame, the server redirects to the Twitch preview image of the channel in `c`. For an empty slot, the server sends `404`. |
+
+The snapshot in the action response shows the new pins and benches, but the quad can still change: the daemon composes the quad again after the response.
+Use the snapshots from `/api/events` as the source of truth.
+
+When the daemon restarts, the page token changes, and the event stream cannot connect again with the old token.
+If an `EventSource` reports an error and its `readyState` is `CLOSED`, reload the page to get a new token.
 
 The snapshot has `"v": 1`. The version changes when the shape changes. The snapshot contains:
 
