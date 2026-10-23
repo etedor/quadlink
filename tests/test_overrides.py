@@ -181,6 +181,20 @@ class TestCompose:
         # the lowest unpinned channel, C at 80 + 30, gives way
         assert scene.refresh() == ("a", "b", "g", "d")
 
+    def test_occupant_of_a_reclaimed_slot_competes_as_a_newcomer(self, scene):
+        probe = Scene(
+            scene.config, {"a": 100, "b": 90, "x": 75, "y": 55}, {"a", "b", "x", "y", "c"}
+        )
+        assert probe.refresh() == ("a", "b", "x", "y")
+        probe.act(pin(probe.overrides, probe.state, 3))
+        probe.live["c"] = 80
+        assert probe.refresh() == ("a", "b", "x", "y")
+        del probe.live["y"]
+        assert probe.refresh() == ("a", "b", "x", "c")
+        # C (80, no stability bonus) does not outrank X (75 + 30), on screen all along
+        probe.live["y"] = 55
+        assert probe.refresh() == ("a", "b", "x", "y")
+
     def test_overrides_for_channels_out_of_the_pool_change_nothing(self, scene):
         natural = compose(scene.pool(), scene.state, Overrides(), scene.config)
         overrides = Overrides(pins={"g": 0}, benches=frozenset({"h"}))

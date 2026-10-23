@@ -711,23 +711,48 @@ class TestOperatorActions:
             twitch.live["f"] = LookupFailed("timed out")
             await loops.refresh()
         snap = daemon.snapshot()
-        assert [(s.channel, s.display_name, s.pinned) for s in snap.slots] == [
-            ("a", "Alpha", True),
-            ("b", "b", True),
-            ("c", "c", True),
-            ("d", "d", True),
+        assert [(s.channel, s.display_name, s.pinned, s.reserved_for) for s in snap.slots] == [
+            ("a", "Alpha", True, None),
+            ("b", "b", True, None),
+            ("c", "c", True, None),
+            ("d", "d", True, None),
         ]
-        assert [(c.channel, c.state, c.slot, c.pinned) for c in snap.channels] == [
-            ("e", DashboardState.WAITING, None, False),
-            ("a", DashboardState.IN_QUAD, 0, True),
-            ("b", DashboardState.IN_QUAD, 1, True),
-            ("c", DashboardState.IN_QUAD, 2, True),
-            ("d", DashboardState.IN_QUAD, 3, True),
-            ("f", DashboardState.LOOKUP_FAILED, None, False),
-            ("g", DashboardState.BENCHED, None, False),
-            ("h", DashboardState.LIVE, None, False),
+        assert [(c.channel, c.state, c.slot, c.pin_slot) for c in snap.channels] == [
+            ("e", DashboardState.WAITING, None, None),
+            ("a", DashboardState.IN_QUAD, 0, 0),
+            ("b", DashboardState.IN_QUAD, 1, 1),
+            ("c", DashboardState.IN_QUAD, 2, 2),
+            ("d", DashboardState.IN_QUAD, 3, 3),
+            ("f", DashboardState.LOOKUP_FAILED, None, None),
+            ("g", DashboardState.BENCHED, None, None),
+            ("h", DashboardState.LIVE, None, None),
         ]
         assert snap.refreshed_at == daemon.statuses_at
+
+    async def test_snapshot_shows_a_slot_held_during_the_grace(self, make_daemon, twitch):
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.pin(3)
+            twitch.go_offline("d")
+            await loops.refresh()
+        snap = daemon.snapshot()
+        held = snap.slots[3]
+        assert (held.channel, held.pinned, held.reserved_for) == ("e", False, "d")
+        (d,) = [c for c in snap.channels if c.channel == "d"]
+        assert (d.state, d.slot, d.pin_slot) == (DashboardState.OFFLINE, None, 3)
+
+    async def test_swap_waits_for_a_live_pool(self, make_daemon, twitch):
+        daemon = make_daemon()
+        with pytest.raises(OverrideError, match="no live channels yet"):
+            await daemon.swap(0, 1)
+        twitch.go_offline(*CHANNELS)
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            with pytest.raises(OverrideError, match="no live channels yet"):
+                await daemon.swap(0, 1)
+            assert not daemon._recompose_requested.is_set()
 
     async def test_snapshot_before_any_refresh(self, make_daemon):
         snap = make_daemon().snapshot()
