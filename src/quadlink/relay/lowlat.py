@@ -140,7 +140,6 @@ class _Run:
         self._proc: asyncio.subprocess.Process | None = None
         self._reader: asyncio.Task[None] | None = None
         self.last_key: int | None = None
-        self.first = True
         # false once the run is replaced; its parts then go nowhere
         self.live = True
         # fMP4 only: remuxes this run's segments, all of one init
@@ -256,6 +255,8 @@ class _Slot:
         self.next_seq = 0
         self.target = 2
         self.queue: deque[_Queued] = deque()
+        # the segment being fed
+        self.current: _Queued | None = None
         self.wake = asyncio.Event()
         # bumps at every channel change; queued work of an older one is dropped
         self.gen = 0
@@ -325,7 +326,7 @@ class _Slot:
             start = next((s for s in new if s.uri in prefetch), new[-1])
             new = [s for s in new if s.seq >= start.seq]
             self.gen += 1
-            for queued in self.queue:
+            for queued in [*self.queue, *([self.current] if self.current else [])]:
                 if queued.fetch is not None:
                     queued.fetch.cancel()
             self.queue.clear()
@@ -355,6 +356,7 @@ class _Slot:
                 continue
             if queued.fetch is None:
                 queued.fetch = _Fetch(self.ll.session(), queued.seg.uri)
+            self.current = queued
             try:
                 await self._feed_one(queued)
             except asyncio.CancelledError:
@@ -366,6 +368,8 @@ class _Slot:
                 queued.fetch.cancel()
                 # the run's input now has a hole; the next segment starts a new run
                 await self._end_run(cut=False)
+            finally:
+                self.current = None
 
     async def _feed_one(self, queued: _Queued) -> None:
         assert queued.fetch is not None
@@ -493,11 +497,8 @@ class _Slot:
                 self._open(now)
             seg = self.segs[-1]
             prev = seg.parts[-1] if seg.parts else self._last_part()
-            if run.first or prev is None:
-                release = now
-                run.first = False
-            else:
-                release = max(now, prev.release + prev.duration * PACE)
+            # releases stay in order, so a burst after a paced one queues behind it
+            release = now if prev is None else max(now, prev.release + prev.duration * PACE)
             if not seg.parts:
                 seg.wall = time.time() + (release - now)
             seg.parts.append(_Part(part.data, part.duration, part.independent, release))
