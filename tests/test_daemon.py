@@ -682,7 +682,7 @@ class TestOperatorActions:
             with structlog.testing.capture_logs() as logs:
                 await loops.refresh()
         assert daemon.overrides.pins == {}
-        assert events(logs, "overrides cleared")[0]["channels"] == ["e"]
+        assert events(logs, "overrides cleared")[0]["channels"] == ["b", "e"]
         assert json.loads(state_file.read_text())["pins"] == {}
 
     async def test_pinned_channel_back_within_the_grace_reclaims_its_slot(

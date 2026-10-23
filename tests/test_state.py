@@ -10,7 +10,7 @@ import structlog
 from quadlink.quad import Overrides, QuadState
 from quadlink.state import StateStore
 
-OVERRIDES = Overrides(pins={"f": 3}, benches=frozenset({"d"}), absent={"f": 1})
+OVERRIDES = Overrides(pins={"f": 3}, benches=frozenset({"d"}), absent={"f": 1}, bound={"d": "f"})
 STATE = QuadState(channels=("a", "b", "", "f"), categories={"a": "Games", "b": "Chess"})
 
 
@@ -20,7 +20,7 @@ def test_round_trip(state_file: Path):
     assert overrides == OVERRIDES
     assert state.channels == STATE.channels
     assert state.categories == STATE.categories
-    assert json.loads(state_file.read_text())["version"] == 1
+    assert json.loads(state_file.read_text())["version"] == 2
 
 
 def test_missing_file_starts_empty(state_file: Path):
@@ -33,23 +33,25 @@ def test_missing_file_starts_empty(state_file: Path):
     "text",
     [
         "{not json",
-        json.dumps({"version": 2, "pins": {}}),
+        json.dumps({"version": 3, "pins": {}}),
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "pins": {"a": 0},
                 "benches": ["a"],
                 "absent": {},
+                "bound": {},
                 "channels": ["a", "", "", ""],
                 "categories": {},
             }
         ),
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "pins": {"a": 9},
                 "benches": [],
                 "absent": {},
+                "bound": {},
                 "channels": ["a", "", "", ""],
                 "categories": {},
             }

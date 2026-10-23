@@ -62,6 +62,8 @@ class ChannelView:
         slot: Slot it is on screen in, if any.
         pin_slot: Slot it is pinned to, whether or not it is on screen.
         benched: The operator keeps it out of the quad.
+        benched_for: The pinned channel whose placement benched it; the bench
+            ends with that pin.
         status: The last refresh's lookup outcome.
         viewers: Viewer count, while the channel is live and a provider reports it.
         started_at: When the stream started (UTC), under the same condition.
@@ -72,6 +74,7 @@ class ChannelView:
     slot: int | None
     pin_slot: int | None
     benched: bool
+    benched_for: str | None
     status: ChannelStatus
     viewers: int | None = None
     started_at: datetime | None = None
@@ -125,6 +128,7 @@ def snapshot(
             slot=positions.get(s.channel),
             pin_slot=overrides.pins.get(s.channel),
             benched=s.channel in overrides.benches,
+            benched_for=overrides.bound.get(s.channel),
             status=s,
             viewers=found.viewers if found else None,
             started_at=found.started_at if found else None,

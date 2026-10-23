@@ -129,6 +129,7 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             "slot": c.slot,
             "pin_slot": c.pin_slot,
             "benched": c.benched,
+            "benched_for": c.benched_for,
             "priorities": c.status.priorities,
             "priority": c.status.priority,
             "reason": c.status.reason,

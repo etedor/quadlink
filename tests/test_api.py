@@ -281,6 +281,7 @@ class TestState:
             "slot": 0,
             "pin_slot": 0,
             "benched": False,
+            "benched_for": None,
             "priorities": [100],
             "priority": 100,
             "reason": None,

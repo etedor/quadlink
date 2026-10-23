@@ -383,13 +383,14 @@ class TestInvariants:
         """Overrides() raises on a broken invariant, so each step checks them."""
         o = scene.overrides
         o = place(o, scene.state, "e", 0, CONFIGURED)
+        # benching E ends its pin, and with it the bench its placement put on A
         o = bench(o, "e", CONFIGURED)
-        assert (o.pins, o.benches) == ({}, {"a", "e"})
+        assert (o.pins, o.benches) == ({}, {"e"})
         o = place(o, scene.state, "e", 1, CONFIGURED)
-        assert (o.pins, o.benches) == ({"e": 1}, {"a", "b"})
+        assert (o.pins, o.benches, o.bound) == ({"e": 1}, {"b"}, {"b": "e"})
         # the state still shows B in slot 1: pinning it replaces E's pin and unbenches B
         o = pin(o, scene.state, 1)
-        assert (o.pins, o.benches) == ({"b": 1}, {"a"})
+        assert (o.pins, o.benches, o.bound) == ({"b": 1}, set(), {})
 
 
 class TestGrace:
@@ -420,3 +421,65 @@ class TestGrace:
     def test_channels_removed_from_the_config_clear_at_once(self):
         overrides = Overrides(pins={"f": 3, "a": 0}, benches=frozenset({"d"}), absent={"f": 1})
         assert drop_unconfigured(overrides, {"a"}) == Overrides(pins={"a": 0})
+
+
+class TestBoundBench:
+    """A bench that place makes ends with the pin that made it."""
+
+    def test_place_binds_the_displaced_bench_to_the_new_pin(self, scene):
+        overrides = place(scene.overrides, scene.state, "f", 3, CONFIGURED)
+        assert overrides.bound == {"d": "f"}
+
+    def test_unpin_releases_the_bound_bench(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides = unpin(scene.overrides, 3)
+        assert overrides == Overrides()
+        # D competes again; F (50 + 30 stability) still outranks it (70)
+        assert scene.act(overrides) == ("a", "b", "c", "f")
+
+    def test_benching_the_pinned_channel_releases_its_bench(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides = bench(scene.overrides, "f", CONFIGURED)
+        assert overrides == Overrides(benches=frozenset({"f"}))
+
+    def test_benching_the_bound_channel_again_unbinds_it(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        scene.act(bench(scene.overrides, "d", CONFIGURED))
+        assert scene.overrides.bound == {}
+        assert unpin(scene.overrides, 3).benches == {"d"}
+
+    def test_unbench_unbinds(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides = unbench(scene.overrides, "d", CONFIGURED)
+        assert overrides == Overrides(pins={"f": 3})
+
+    def test_a_new_place_on_the_slot_releases_the_old_pins_bench(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides = place(scene.overrides, scene.state, "e", 3, CONFIGURED)
+        assert overrides.pins == {"e": 3}
+        assert overrides.benches == {"f"}
+        assert overrides.bound == {"f": "e"}
+
+    def test_placing_the_bound_channel_unbinds_it(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides = place(scene.overrides, scene.state, "d", 0, CONFIGURED)
+        assert overrides.pins == {"f": 3, "d": 0}
+        assert overrides.bound == {"a": "d"}
+
+    def test_swap_keeps_the_binding(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        overrides, _ = swap(scene.overrides, scene.state, 0, 3)
+        assert overrides.pins == {"f": 0}
+        assert overrides.bound == {"d": "f"}
+
+    def test_an_expired_pin_releases_its_bench(self):
+        overrides = Overrides(pins={"f": 3}, benches=frozenset({"d"}), bound={"d": "f"})
+        for _ in range(GRACE_REFRESHES + 1):
+            overrides = age(overrides, pool={"a", "d"})
+        assert overrides == Overrides()
+
+    def test_a_binding_needs_its_bench_and_its_pin(self):
+        with pytest.raises(ValueError):
+            Overrides(pins={"f": 3}, bound={"d": "f"})
+        with pytest.raises(ValueError):
+            Overrides(benches=frozenset({"d"}), bound={"d": "f"})

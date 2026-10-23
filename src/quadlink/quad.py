@@ -22,11 +22,14 @@ class Overrides:
         benches: Channels kept out of the quad.
         absent: Consecutive refreshes each pinned or benched channel has been out
             of the pool; see quadlink.overrides.age.
+        bound: Benched channel -> the pinned channel whose placement benched
+            it. The bench ends when that pin does.
     """
 
     pins: Mapping[str, int] = field(default_factory=dict)
     benches: frozenset[str] = frozenset()
     absent: Mapping[str, int] = field(default_factory=dict)
+    bound: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if both := self.pins.keys() & self.benches:
@@ -36,6 +39,10 @@ class Overrides:
             raise ValueError(f"pin slots out of range 0-3: {slots}")
         if len(set(slots)) != len(slots):
             raise ValueError(f"more than one pin per slot: {slots}")
+        if loose := {
+            b: p for b, p in self.bound.items() if b not in self.benches or p not in self.pins
+        }:
+            raise ValueError(f"bindings without their bench or pin: {loose}")
 
     @property
     def channels(self) -> set[str]:

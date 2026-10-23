@@ -14,16 +14,17 @@ from quadlink.quad import Overrides, QuadState
 logger = structlog.get_logger()
 
 DEFAULT_STATE_PATH = Path("/var/lib/quadlink/state.json")
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 Slot = Annotated[int, Field(ge=0, le=3)]
 
 
 class _StateFile(BaseModel):
-    version: Literal[1]
+    version: Literal[2]
     pins: dict[str, Slot]
     benches: list[str]
     absent: dict[str, int]
+    bound: dict[str, str]
     channels: Annotated[list[str], Field(min_length=4, max_length=4)]
     categories: dict[str, str]
 
@@ -56,7 +57,10 @@ class StateStore:
         try:
             data = _StateFile.model_validate_json(text)
             overrides = Overrides(
-                pins=data.pins, benches=frozenset(data.benches), absent=data.absent
+                pins=data.pins,
+                benches=frozenset(data.benches),
+                absent=data.absent,
+                bound=data.bound,
             )
         except ValueError as e:
             logger.warning("state file invalid, starting empty", path=str(self.path), error=str(e))
@@ -89,6 +93,7 @@ def _serialize(overrides: Overrides, state: QuadState) -> str:
             "pins": dict(sorted(overrides.pins.items())),
             "benches": sorted(overrides.benches),
             "absent": dict(sorted(overrides.absent.items())),
+            "bound": dict(sorted(overrides.bound.items())),
             "channels": list(state.channels),
             "categories": dict(sorted(state.categories.items())),
         },

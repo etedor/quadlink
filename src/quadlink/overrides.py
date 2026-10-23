@@ -34,10 +34,12 @@ def place(
     pins = {c: s for c, s in overrides.pins.items() if c != channel and s != slot}
     pins[channel] = slot
     benches = set(overrides.benches) - {channel}
+    bound = dict(overrides.bound)
     if occupant and occupant != channel:
         pins.pop(occupant, None)
         benches.add(occupant)
-    return _build(overrides, pins, benches, fresh={channel, occupant})
+        bound[occupant] = channel
+    return _build(overrides, pins, benches, fresh={channel, occupant}, bound=bound)
 
 
 def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> tuple[Overrides, QuadState]:
@@ -78,10 +80,14 @@ def unpin(overrides: Overrides, slot: int) -> Overrides:
 
 
 def bench(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
-    """Keep channel out of the quad; its pin, if any, is removed."""
+    """Keep channel out of the quad; its pin, if any, is removed.
+
+    A bench set this way is the operator's own, so it is bound to no pin.
+    """
     _check_channel(channel, configured)
     pins = {c: s for c, s in overrides.pins.items() if c != channel}
-    return _build(overrides, pins, overrides.benches | {channel}, fresh={channel})
+    bound = {b: p for b, p in overrides.bound.items() if b != channel}
+    return _build(overrides, pins, overrides.benches | {channel}, fresh={channel}, bound=bound)
 
 
 def unbench(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
@@ -110,10 +116,24 @@ def age(overrides: Overrides, pool: Collection[str]) -> Overrides:
     absent = {c: overrides.absent.get(c, 0) + 1 for c in overrides.channels if c not in pool}
     expired = {c for c, n in absent.items() if n > GRACE_REFRESHES}
     pins = {c: s for c, s in overrides.pins.items() if c not in expired}
+    benches, bound = _release(pins, overrides.benches - expired, overrides.bound)
     return Overrides(
         pins=pins,
-        benches=frozenset(overrides.benches - expired),
-        absent={c: n for c, n in absent.items() if c not in expired},
+        benches=benches,
+        absent={c: n for c, n in absent.items() if c in pins.keys() | benches},
+        bound=bound,
+    )
+
+
+def _release(
+    pins: Mapping[str, int], benches: Collection[str], bound: Mapping[str, str]
+) -> tuple[frozenset[str], dict[str, str]]:
+    """Benches and bindings left once every bench bound to an ended pin ends too."""
+    bound = {b: p for b, p in bound.items() if b in benches}
+    released = {b for b, p in bound.items() if p not in pins}
+    return (
+        frozenset(set(benches) - released),
+        {b: p for b, p in bound.items() if b not in released},
     )
 
 
@@ -122,13 +142,20 @@ def _build(
     pins: Mapping[str, int],
     benches: Collection[str],
     fresh: Collection[str] = (),
+    bound: Mapping[str, str] | None = None,
 ) -> Overrides:
-    """Overrides with absence counts kept for surviving entries, except fresh ones."""
-    keep = (pins.keys() | set(benches)) - set(fresh)
+    """Overrides with absence counts kept for surviving entries, except fresh ones.
+
+    `bound` defaults to the previous bindings; benches bound to a pin that is
+    gone are released.
+    """
+    kept, bindings = _release(pins, benches, previous.bound if bound is None else bound)
+    keep = (pins.keys() | kept) - set(fresh)
     return Overrides(
         pins=dict(pins),
-        benches=frozenset(benches),
+        benches=kept,
         absent={c: n for c, n in previous.absent.items() if c in keep},
+        bound=bindings,
     )
 
 

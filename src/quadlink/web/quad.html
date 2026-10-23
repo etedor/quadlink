@@ -9,7 +9,7 @@
   /* one corner radius for every rounded surface; nested corners subtract their inset.
      every color is a token here, and every purple is mixed from --twitch */
   :root {
-    --radius: 14px;
+    --radius: 17px;
     --twitch: #9147ff;
     --black: #000;
     --white: #fff;
@@ -18,6 +18,7 @@
     --hover: color-mix(in oklab, var(--twitch) 36%, var(--black));
     --current: color-mix(in oklab, var(--twitch) 29%, var(--black));
     --well: var(--black);
+    --scrim: color-mix(in oklab, var(--black) 65%, var(--clear));
     --text: color-mix(in oklab, var(--twitch) 6%, var(--white));
     --text-quiet: color-mix(in oklab, var(--twitch) 35%, var(--white));
     --accent: var(--twitch);
@@ -27,50 +28,50 @@
     --error: var(--live);
   }
   html, body { margin: 0; height: 100%; background: var(--ground); color: var(--text); }
-  body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "rail top" "rail quad"; }
+  body { display: grid; grid-template: 58px 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
   header { grid-area: top; display: flex; align-items: center; justify-content: flex-end;
-    padding: 0 16px; font: 13px system-ui, sans-serif; }
+    padding: 0 19px; font: 16px system-ui, sans-serif; }
   /* temporary: clears every pin and bench */
-  .reset-all { height: 28px; padding: 0 12px; border: 0; border-radius: calc(var(--radius) - 6px);
+  .reset-all { height: 34px; padding: 0 14px; border: 0; border-radius: calc(var(--radius) - 7px);
     background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
   .reset-all:hover { background: var(--hover); }
   aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
-    font: 13px system-ui, sans-serif; position: relative; }
-  .tools { display: flex; gap: 6px; padding: 8px 8px 4px; }
-  .tools input { flex: 1; min-width: 0; height: 32px; box-sizing: border-box; padding: 0 10px;
-    border: 0; border-radius: calc(var(--radius) - 6px); background: var(--field);
+    font: 16px system-ui, sans-serif; position: relative; }
+  .tools { display: flex; gap: 7px; padding: 10px 10px 5px; }
+  .tools input { flex: 1; min-width: 0; height: 38px; box-sizing: border-box; padding: 0 12px;
+    border: 0; border-radius: calc(var(--radius) - 7px); background: var(--field);
     color: var(--text); font: inherit; outline-offset: 0; }
   .tools input::placeholder { color: var(--text-quiet); }
-  .tools button { position: relative; flex: none; width: 32px; height: 32px; border: 0;
-    border-radius: calc(var(--radius) - 6px); background: var(--field); color: var(--text);
+  .tools button { position: relative; flex: none; width: 38px; height: 38px; border: 0;
+    border-radius: calc(var(--radius) - 7px); background: var(--field); color: var(--text);
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
   .tools button:hover, .tools button[aria-expanded="true"] { background: var(--hover); }
   /* a dot on a glyph says its choices differ from the defaults */
-  .tools button.changed::after { content: ""; position: absolute; top: 5px; right: 5px;
-    width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .tools button.changed::after { content: ""; position: absolute; top: 6px; right: 6px;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
   /* the gutter keeps room for the scrollbar even when it shows, so the reset glyph
      at the row's right end never sits under it */
-  .pop { position: absolute; top: 44px; left: 8px; right: 8px; z-index: 1;
+  .pop { position: absolute; top: 53px; left: 10px; right: 10px; z-index: 1;
     border-radius: var(--radius); background: var(--popover); max-height: 60vh;
     overflow-y: auto; scrollbar-gutter: stable; }
   .pop-head { display: flex; align-items: center; justify-content: space-between;
-    padding: 6px 6px 0 10px; color: var(--text-quiet); font-size: 12px; }
+    padding: 7px 7px 0 12px; color: var(--text-quiet); font-size: 14px; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
-  .pop-body { padding: 0 10px 6px; }
+  .pop-body { padding: 0 12px 7px; }
   .pop fieldset:last-child { margin-bottom: 0; }
   /* the fade shows only while more options sit below, so the menu ends at its last item */
-  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: 32px;
+  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: 38px;
     margin-top: -32px; pointer-events: none;
     background: linear-gradient(var(--clear), var(--popover)); }
-  .pop .reset { width: 28px; height: 28px; border: 0; padding: 0;
-    border-radius: calc(var(--radius) - 6px); background: none; color: var(--text-quiet);
+  .pop .reset { width: 34px; height: 34px; border: 0; padding: 0;
+    border-radius: calc(var(--radius) - 7px); background: none; color: var(--text-quiet);
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
   .pop .reset:hover { background: var(--hover); color: var(--text); }
   /* fieldsets default to min-content width, which would let long names push past the edge */
-  .pop fieldset { border: 0; margin: 0 0 8px; padding: 0; min-width: 0; }
-  .pop legend { color: var(--text-quiet); font-size: 12px; margin-bottom: 4px; padding: 0; }
-  .pop label { display: flex; align-items: center; gap: 8px; padding: 4px 2px; cursor: pointer;
+  .pop fieldset { border: 0; margin: 0 0 10px; padding: 0; min-width: 0; }
+  .pop legend { color: var(--text-quiet); font-size: 14px; margin-bottom: 5px; padding: 0; }
+  .pop label { display: flex; align-items: center; gap: 10px; padding: 5px 2px; cursor: pointer;
     min-width: 0; }
   .pop label span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pop input { accent-color: var(--accent); }
@@ -94,35 +95,61 @@
     background: var(--well); pointer-events: none; opacity: 0; transition: opacity 0.4s; }
   .cover.shown { opacity: 1; transition: none; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
-  .rail { list-style: none; margin: 0; padding: 4px 8px 8px; display: flex; flex-direction: column;
-    gap: 4px; }
-  .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: var(--radius); }
+  .tile button:focus-visible { outline: 3px solid var(--text); outline-offset: -3px; }
+  body.picking .tile button { cursor: copy; }
+  body.picking .tile:hover::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 0 3px var(--accent); }
+  /* pin and sound marks sit on a scrim, so they read over any video */
+  .tile-marks { position: absolute; top: 10px; left: 10px; display: flex; gap: 5px;
+    pointer-events: none; }
+  .tile-marks span { display: inline-flex; padding: 5px; border-radius: calc(var(--radius) - 10px);
+    background: var(--scrim); color: var(--text); }
+  .tile-marks .pin { color: var(--accent); }
+  .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
+    gap: 5px; }
+  .rail li { display: flex; align-items: center; gap: 12px; padding: 7px; border-radius: var(--radius); }
   .rail li.in { background: var(--current); }
   .rail li:hover { background: var(--hover); }
-  .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 6px);
+  .rail img { flex: none; width: 96px; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     background: var(--well);
     object-fit: cover; }
   .rail .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .rail .name, .rail .cat { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rail .name { font-weight: 600; }
   /* override glyphs follow the name; the name gives way first */
-  .rail .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
-  .rail .marks { flex: none; display: inline-flex; gap: 4px; color: var(--text-quiet); }
+  .rail .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .rail .marks { flex: none; display: inline-flex; gap: 5px; color: var(--text-quiet); }
   .rail .marks .pin { color: var(--accent); }
+  /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
+  .rail .undo { all: unset; display: inline-flex; align-items: center; justify-content: center;
+    width: 29px; height: 29px; margin: -6px -4px; border-radius: 50%; cursor: pointer; }
+  .rail .undo:hover { background: var(--popover); }
+  .rail .undo:focus-visible { outline: 2px solid var(--text); }
+  /* hover previews the result: the glyph gets struck through */
+  .rail .undo .off, .rail .undo:hover .on, .rail .undo:focus-visible .on { display: none; }
+  .rail .undo:hover .off, .rail .undo:focus-visible .off { display: inline-flex; }
+  /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
+  .rail .slot { display: inline-flex; align-items: center; justify-content: center;
+    min-width: 19px; height: 19px; padding: 0 3px; box-sizing: border-box;
+    border: 1.5px solid var(--accent); border-radius: calc(var(--radius) - 11px);
+    color: var(--text); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+  /* a picked row waits for a tile click: the click alternative to dragging */
+  .rail li.picked { box-shadow: inset 0 0 0 2px var(--accent); }
   .rail li.benched > img, .rail li.benched .line .name { opacity: 0.55; }
   /* category and viewer count share the second line; the category gives way first */
-  .rail .meta { display: flex; align-items: center; gap: 8px; color: var(--text-quiet); font-size: 12px; }
+  .rail .meta { display: flex; align-items: center; gap: 10px; color: var(--text-quiet); font-size: 14px; }
   .rail .cat { flex: 1; min-width: 0; }
-  .rail .viewers { flex: none; display: inline-flex; align-items: center; gap: 4px;
+  .rail .viewers { flex: none; display: inline-flex; align-items: center; gap: 5px;
     color: var(--text); font-variant-numeric: tabular-nums; }
-  .rail .viewers::before { content: ""; width: 6px; height: 6px; border-radius: 50%;
+  .rail .viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: var(--live); }
   /* drag: rows and tiles can be picked up; long-press callouts would steal touch drags */
   .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   .rail li { cursor: grab; }
   .rail img { pointer-events: none; }
-  .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 120px; aspect-ratio: 16 / 9;
-    border-radius: calc(var(--radius) - 6px); background: var(--well) center / cover no-repeat;
+  .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 144px; aspect-ratio: 16 / 9;
+    border-radius: calc(var(--radius) - 7px); background: var(--well) center / cover no-repeat;
     box-shadow: 0 0 0 2px var(--accent); pointer-events: none; opacity: 0.9;
     transform: translate(-50%, -50%); }
   .tile.target::after, .tile.pending::after, .tile.failed::after { content: ""; position: absolute;
@@ -132,14 +159,18 @@
   .tile.failed::after { box-shadow: inset 0 0 0 3px var(--error); }
   .tile.lifted { opacity: 0.5; }
   @keyframes pulse { to { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .tile.pending::after { animation: none; }
+    .cover { transition: none; }
+  }
   /* phones: top bar, a short quad, then the list. the quad fills the width at a fixed
      height, so tiles crop their streams instead of keeping 16:9 */
   @media (max-width: 720px) {
-    body { grid-template: 48px 32svh 1fr / 1fr; grid-template-areas: "top" "quad" "rail"; }
-    .stage { container-type: normal; padding: 0 16px; }
+    body { grid-template: 58px 32svh 1fr / 1fr; grid-template-areas: "top" "quad" "rail"; }
+    .stage { container-type: normal; padding: 0 19px; }
     .quad { width: 100%; height: 100%; aspect-ratio: auto; margin: 0; }
     video, .cover { object-fit: cover; }
-    aside { padding-top: 8px; }
+    aside { padding-top: 10px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
@@ -149,18 +180,18 @@
 <aside aria-label="Online streamers">
   <div class="tools">
     <input type="search" placeholder="Search…" aria-label="Search channels">
-    <button type="button" class="filter-btn" aria-label="Filter" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
-    <button type="button" class="sort-btn" aria-label="Sort" aria-expanded="false"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
+    <button type="button" class="filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
+    <button type="button" class="sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
   </div>
   <div class="pop filter-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="reset" aria-label="Reset filters" title="Reset"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="reset" aria-label="Reset filters" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
     <div class="pop-body">
       <fieldset class="show"><legend class="sr-only">Show</legend></fieldset>
       <fieldset class="cats"><legend>Category</legend></fieldset>
     </div>
   </div>
   <div class="pop sort-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="reset" aria-label="Reset sort" title="Reset"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
     <div class="pop-body"><fieldset class="sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
   </div>
   <div class="rail-scroll"><ul class="rail"></ul></div>
@@ -170,22 +201,26 @@
   <div class="tile">
     <video muted autoplay playsinline></video>
     <img class="cover" alt="">
-    <button aria-label="Unmute slot 1"></button>
+    <div class="tile-marks"></div>
+    <button aria-label="Slot 1" aria-pressed="false"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
     <img class="cover" alt="">
-    <button aria-label="Unmute slot 2"></button>
+    <div class="tile-marks"></div>
+    <button aria-label="Slot 2" aria-pressed="false"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
     <img class="cover" alt="">
-    <button aria-label="Unmute slot 3"></button>
+    <div class="tile-marks"></div>
+    <button aria-label="Slot 3" aria-pressed="false"></button>
   </div>
   <div class="tile">
     <video muted autoplay playsinline></video>
     <img class="cover" alt="">
-    <button aria-label="Unmute slot 4"></button>
+    <div class="tile-marks"></div>
+    <button aria-label="Slot 4" aria-pressed="false"></button>
   </div>
 </div>
 </main>
@@ -251,11 +286,19 @@
   tiles.forEach((tile, i) => {
     const video = tile.querySelector('video');
     play(video, '/streams/' + (i + 1), tile);
-    // one tile has sound at a time; click the loud one again to mute it
+    // one tile has sound at a time; click the loud one again to mute it. with a row
+    // picked, the click places that channel instead
     tile.querySelector('button').addEventListener('click', () => {
+      if (picked) {
+        const li = rail.querySelector(`li[data-channel="${CSS.escape(picked)}"]`);
+        place(i, picked, li?.querySelector('img')?.src || null);
+        pick(null);
+        return;
+      }
       const loud = !tile.classList.contains('loud');
       tiles.forEach(t => { t.classList.remove('loud'); t.querySelector('video').muted = true; });
       if (loud) { tile.classList.add('loud'); video.muted = false; video.play(); }
+      markTiles();
     });
   });
 
@@ -283,9 +326,72 @@
     span.title = label;
     span.setAttribute('role', 'img');
     span.setAttribute('aria-label', label);
-    span.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    span.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
       + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
     return span;
+  }
+
+  const SPEAKER = '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'
+    + '<path d="M18.5 5.5a9 9 0 0 1 0 13"/>';
+  let picked = null;
+
+  function pick(channel) {
+    picked = channel && channel !== picked ? channel : null;
+    document.body.classList.toggle('picking', picked !== null);
+    rail.querySelectorAll('li').forEach(li => {
+      li.classList.toggle('picked', li.dataset.channel === picked);
+      li.setAttribute('aria-pressed', String(li.dataset.channel === picked));
+    });
+  }
+
+  function markTiles() {
+    tiles.forEach((tile, i) => {
+      const s = latest?.slots[i];
+      const loud = tile.classList.contains('loud');
+      const marks = [];
+      if (s?.pinned) marks.push(glyph('pin', PIN, 'Pinned'));
+      if (loud) marks.push(glyph('sound', SPEAKER, 'Sound on'));
+      tile.querySelector('.tile-marks').replaceChildren(...marks);
+      const button = tile.querySelector('button');
+      const who = s?.display_name || s?.channel || 'empty';
+      button.setAttribute('aria-label', `Slot ${i + 1}: ${who}${s?.pinned ? ', pinned' : ''}`);
+      button.setAttribute('aria-pressed', String(loud));
+    });
+  }
+
+  rail.addEventListener('click', e => {
+    const li = e.target.closest('li');
+    if (li) pick(li.dataset.channel);
+  });
+  rail.addEventListener('keydown', e => {
+    const li = e.target.closest('li');
+    if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(li.dataset.channel); }
+  });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') pick(null); });
+
+  const STRIKE = '<path d="M3 3l18 18"/>';
+
+  function undo(kind, paths, label, body) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'undo ' + kind;
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const on = glyph('on', paths, label);
+    const off = glyph('off', paths + STRIKE, label);
+    on.removeAttribute('role');
+    off.removeAttribute('role');
+    on.removeAttribute('aria-label');
+    off.removeAttribute('aria-label');
+    button.append(on, off);
+    button.addEventListener('click', e => {
+      e.stopPropagation();
+      button.disabled = true;
+      act(body).catch(() => { button.disabled = false; });
+    });
+    // Enter on the button must not also pick the row
+    button.addEventListener('keydown', e => e.stopPropagation());
+    return button;
   }
 
   function row(c) {
@@ -318,8 +424,24 @@
     line.className = 'line';
     line.append(name);
     const marks = [];
-    if (c.pin_slot != null) marks.push(glyph('pin', PIN, 'Pinned to slot ' + (c.pin_slot + 1)));
-    if (c.benched) marks.push(glyph('bench', BENCH, 'Benched'));
+    if (c.slot != null) {
+      const badge = document.createElement('span');
+      badge.className = 'slot';
+      badge.textContent = c.slot + 1;
+      badge.title = 'On tile ' + (c.slot + 1);
+      marks.push(badge);
+    }
+    const displayName = c.display_name || c.channel;
+    if (c.pin_slot != null) {
+      marks.push(undo('pin', PIN, 'Unpin ' + displayName + ' from slot ' + (c.pin_slot + 1),
+        { action: 'unpin', slot: c.pin_slot }));
+    }
+    if (c.benched) {
+      const holder = latest?.channels.find(x => x.channel === c.benched_for);
+      const why = holder ? ' (benched for ' + (holder.display_name || holder.channel) + ')' : '';
+      marks.push(undo('bench', BENCH, 'Unbench ' + displayName + why,
+        { action: 'unbench', channel: c.channel }));
+    }
     if (marks.length) {
       const box = document.createElement('span');
       box.className = 'marks';
@@ -330,6 +452,10 @@
     who.append(line, meta);
     li.dataset.channel = c.channel;
     li.classList.toggle('in', c.state === 'in quad');
+    li.classList.toggle('picked', c.channel === picked);
+    li.tabIndex = 0;
+    li.setAttribute('role', 'button');
+    li.setAttribute('aria-pressed', String(c.channel === picked));
     li.append(img, who);
     return li;
   }
@@ -492,6 +618,12 @@
     tiles.forEach(t => t.classList.toggle('target', t === over && t !== drag.source.tile));
   }
 
+  function place(slot, channel, image) {
+    expect(slot, channel);
+    cover(tiles[slot], image);
+    act({ action: 'place', channel, slot }).catch(() => fail(slot));
+  }
+
   function end(e, cancelled) {
     const { source, ghost } = drag;
     ghost.remove();
@@ -501,9 +633,7 @@
     if (!over) return;
     const slot = tiles.indexOf(over);
     if (source.channel !== undefined) {
-      expect(slot, source.channel);
-      cover(over, source.image());
-      act({ action: 'place', channel: source.channel, slot }).catch(() => fail(slot));
+      place(slot, source.channel, source.image());
     } else if (slot !== source.slot) {
       const a = source.slot, b = slot;
       const ca = latest?.slots[a]?.channel ?? null, cb = latest?.slots[b]?.channel ?? null;
@@ -563,7 +693,7 @@
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
-  events.onmessage = e => { latest = JSON.parse(e.data); render(); };
+  events.onmessage = e => { latest = JSON.parse(e.data); render(); markTiles(); };
   // a restart changes the page token, and EventSource never retries a refusal
   events.onerror = () => { if (events.readyState === EventSource.CLOSED) setTimeout(() => location.reload(), 5000); };
 </script>
