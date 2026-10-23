@@ -29,7 +29,9 @@ VIDEO_TYPES = {0x1B, 0x24}
 # 30 fps, 0.54 admits parts of 14-16 frames
 PART_SPLIT = 0.5
 PART_TARGET = 0.54
-POLL = 0.5
+# the relay adds filler after 3s without video, checked on each poll; polling
+# faster than a normal client (2s) makes filler fire on gaps a player would ride out
+POLL = 1.0
 BLOCK_WAIT = 6.0
 WINDOW = 12
 # a slot nobody has asked for in this long stops polling the relay
@@ -66,6 +68,7 @@ class Slot:
     segs: list[Seg] = field(default_factory=list)
     target: int = 2
     task: asyncio.Task[None] | None = None
+    after_filler: bool = False
     seen: float = 0.0
 
 
@@ -243,12 +246,16 @@ class LLTrial:
                         body = await resp.read()
                     now = time.monotonic()
                     seg = Seg(s, dur, disc, dseq, body, cut(body, dur), src=s)
+                    filler = "/streams/filler/" in uri
+                    changed = disc and not filler and not slot.after_filler
+                    slot.after_filler = filler
                     if initial:
                         backlog.append(seg)
                         continue
-                    if disc:
-                        # a splice: parts no player has seen yet are dropped, so the
-                        # new channel goes out now instead of after the queue
+                    if changed:
+                        # a channel change: parts no player has seen yet are dropped, so
+                        # the new channel goes out now instead of after the queue. the
+                        # discontinuities around filler are the same channel resuming
                         before = sum(len(x.cuts) for x in slot.segs)
                         slot.segs = _drop_unreleased(slot.segs, now)
                         logger.info(
