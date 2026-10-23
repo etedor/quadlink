@@ -45,6 +45,7 @@ class Seg:
     body: bytes
     cuts: list[tuple[int, float]]  # (byte offset, part duration)
     release: float = 0.0  # monotonic time its first part is released
+    src: int = 0  # the relay's sequence number for this segment
 
     def parts_released(self, now: float) -> int:
         t = self.release
@@ -162,6 +163,22 @@ def render(n: int, slot: Slot, now: float) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _drop_unreleased(segs: list[Seg], now: float) -> list[Seg]:
+    """Segments cut back to the parts released by `now`; unreleased ones go."""
+    kept = []
+    for s in segs:
+        released = s.parts_released(now)
+        if released == 0:
+            continue
+        if released < len(s.cuts):
+            end = s.cuts[released][0]
+            s.cuts = s.cuts[:released]
+            s.duration = sum(d for _, d in s.cuts)
+            s.body = s.body[:end]
+        kept.append(s)
+    return kept
+
+
 def has(slot: Slot, msn: int, part: int | None, now: float) -> bool:
     for s in slot.segs:
         if s.seq == msn:
@@ -206,7 +223,7 @@ class LLTrial:
                 slot.target = target
                 initial = not slot.segs
                 backlog: list[Seg] = []
-                last = slot.segs[-1].seq if slot.segs else seq - 1
+                last = slot.segs[-1].src if slot.segs else seq - 1
                 for i, (dur, uri, disc) in enumerate(listed):
                     dseq += disc
                     s = seq + i
@@ -216,11 +233,19 @@ class LLTrial:
                     async with session.get(url) as resp:
                         body = await resp.read()
                     now = time.monotonic()
-                    seg = Seg(s, dur, disc, dseq, body, cut(body, dur))
+                    seg = Seg(s, dur, disc, dseq, body, cut(body, dur), src=s)
                     if initial:
                         backlog.append(seg)
                         continue
+                    if disc:
+                        # a splice: parts no player has seen yet are dropped, so the
+                        # new channel goes out now instead of after the queue
+                        slot.segs = _drop_unreleased(slot.segs, now)
                     prev = slot.segs[-1] if slot.segs else None
+                    if prev is not None:
+                        # own numbering: dropping segments must not leave gaps
+                        seg.seq = prev.seq + 1
+                        seg.dseq = prev.dseq + disc
                     seg.release = max(now, prev.end()) if prev else now
                     slot.segs = (slot.segs + [seg])[-WINDOW:]
                 if backlog:
