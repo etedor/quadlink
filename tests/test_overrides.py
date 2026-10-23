@@ -430,6 +430,10 @@ class TestBoundBench:
         overrides = place(scene.overrides, scene.state, "f", 3, CONFIGURED)
         assert overrides.bound == {"d": "f"}
 
+    def test_waiting_works_with_a_bound_bench(self, scene):
+        scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
+        assert scene.waiting() == []
+
     def test_unpin_releases_the_bound_bench(self, scene):
         scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
         overrides = unpin(scene.overrides, 3)

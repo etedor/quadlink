@@ -107,7 +107,7 @@ def waiting(
     """
     if not pool or not overrides.pins:
         return []
-    natural, _ = _compose(pool, state, replace(overrides, pins={}), config)
+    natural, _ = _compose(pool, state, replace(overrides, pins={}, bound={}), config)
     return [c for c in natural.channels if c and c not in state.positions]
 
 
