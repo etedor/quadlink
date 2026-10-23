@@ -131,6 +131,7 @@ async def _event(resp: ClientResponse, timeout: float = 2.0) -> bytes:
 
 
 def _data(event: bytes) -> dict[str, Any]:
+    event = event.removeprefix(b"retry: 2000\n")
     assert event.startswith(b"data: ")
     return json.loads(event[len(b"data: ") :])
 
@@ -177,7 +178,9 @@ class TestGuards:
     @pytest.mark.parametrize("site", [None, "same-origin", "none"])
     async def test_still_needs_no_token(self, client: TestClient, site: str | None) -> None:
         headers = {} if site is None else {"Sec-Fetch-Site": site}
-        resp = await client.get("/api/slots/0/still.jpg", headers=headers, allow_redirects=False)
+        resp = await client.get(
+            "/api/slots/0/still.jpg?c=a", headers=headers, allow_redirects=False
+        )
         assert resp.status == 302
 
     @pytest.mark.parametrize(
@@ -192,7 +195,9 @@ class TestGuards:
     async def test_still_from_another_site_is_403(
         self, client: TestClient, headers: dict[str, str]
     ) -> None:
-        resp = await client.get("/api/slots/0/still.jpg", headers=headers, allow_redirects=False)
+        resp = await client.get(
+            "/api/slots/0/still.jpg?c=a", headers=headers, allow_redirects=False
+        )
         assert resp.status == 403
 
 
@@ -213,7 +218,7 @@ class TestState:
                 "category": "Chess",
                 "pinned": True,
                 "reserved_for": None,
-                "still": "/api/slots/0/still.jpg",
+                "still": "/api/slots/0/still.jpg?c=a",
             },
             {
                 "slot": 1,
@@ -233,7 +238,7 @@ class TestState:
                 "category": "Games",
                 "pinned": False,
                 "reserved_for": None,
-                "still": "/api/slots/2/still.jpg",
+                "still": "/api/slots/2/still.jpg?c=b",
             },
             {
                 "slot": 3,
@@ -272,6 +277,15 @@ class TestState:
         assert body["channels"][3]["reason"] == "category blocked"
         assert body["channels"][2]["display_name"] == "c"
 
+    async def test_state_is_built_per_request(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+    ) -> None:
+        await client.get("/api/state", headers=_auth(webui))
+        # changed with no notice to watchers
+        dashboard.snap = _snapshot(("", "", "", "b"))
+        body = await (await client.get("/api/state", headers=_auth(webui))).json()
+        assert [s["channel"] for s in body["slots"]] == [None, None, None, "b"]
+
 
 class TestEvents:
     async def _open(self, client: TestClient, webui: WebUI) -> ClientResponse:
@@ -286,11 +300,14 @@ class TestEvents:
         assert resp.headers["Content-Type"] == "text/event-stream"
         assert resp.headers["Cache-Control"] == "no-store"
         assert resp.headers["X-Accel-Buffering"] == "no"
-        first = _data(await _event(resp))
-        assert first["slots"][1]["channel"] is None
+        raw = await _event(resp)
+        # the reconnect delay comes once, with the first event
+        assert raw.startswith(b"retry: 2000\ndata: ")
+        assert _data(raw)["slots"][1]["channel"] is None
         dashboard.change(_snapshot(("a", "c", "b", "")))
-        second = _data(await _event(resp))
-        assert second["slots"][1]["channel"] == "c"
+        raw = await _event(resp)
+        assert raw.startswith(b"data: ")
+        assert _data(raw)["slots"][1]["channel"] == "c"
         resp.close()
 
     async def test_unchanged_snapshot_sends_nothing(
@@ -309,8 +326,13 @@ class TestEvents:
         resp.close()
 
     async def test_changes_coalesce(
-        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+        self,
+        client: TestClient,
+        webui: WebUI,
+        dashboard: FakeDashboard,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(api, "EVENT_GAP", 1.0)
         resp = await self._open(client, webui)
         await _event(resp)
         for slots in (("a", "c", "b", ""), ("a", "", "b", "c"), ("", "", "", "c")):
@@ -461,11 +483,11 @@ class TestStills:
 
         proxy = SegmentProxy(fetch, ffmpeg)
         for seq in range(2):
-            proxy.register(0, _seg(seq))
+            proxy.register(0, _seg(seq), "a")
         # the newest segment's converted output waits for a next one; its raw bytes do not
         await proxy.get(0, 0)
         async with asyncio.timeout(2):
-            while proxy.latest(0) is None:
+            while proxy.latest(0, "a") is None:
                 await asyncio.sleep(0.01)
         yield FakeDashboard(proxy, ffmpeg)
         await proxy.aclose()
@@ -481,7 +503,7 @@ class TestStills:
     async def test_still_from_a_cached_segment(
         self, fed_client: TestClient, ffmpeg: str  # noqa: F811
     ) -> None:
-        resp = await fed_client.get("/api/slots/0/still.jpg")
+        resp = await fed_client.get("/api/slots/0/still.jpg?c=a")
         assert resp.status == 200
         assert resp.content_type == "image/jpeg"
         assert resp.headers["Cache-Control"] == "max-age=5"
@@ -514,7 +536,9 @@ class TestStills:
             return await real(path, segment)
 
         monkeypatch.setattr(api, "grab_frame", counted)
-        resps = await asyncio.gather(*(fed_client.get("/api/slots/0/still.jpg") for _ in range(5)))
+        resps = await asyncio.gather(
+            *(fed_client.get("/api/slots/0/still.jpg?c=a") for _ in range(5))
+        )
         bodies = {await r.read() for r in resps}
         assert [r.status for r in resps] == [200] * 5
         assert len(bodies) == 1
@@ -533,13 +557,13 @@ class TestStills:
 
         monkeypatch.setattr(api, "grab_frame", counted)
         for _ in range(2):
-            assert (await fed_client.get("/api/slots/0/still.jpg")).status == 200
+            assert (await fed_client.get("/api/slots/0/still.jpg?c=a")).status == 200
         assert grabs == 2
 
     async def test_unwatched_slot_redirects_to_the_twitch_thumbnail(
         self, client: TestClient
     ) -> None:
-        resp = await client.get("/api/slots/0/still.jpg", allow_redirects=False)
+        resp = await client.get("/api/slots/0/still.jpg?c=a", allow_redirects=False)
         assert resp.status == 302
         assert resp.headers["Location"] == THUMB_A
         assert resp.headers["Cache-Control"] == "no-store"
@@ -547,8 +571,8 @@ class TestStills:
     async def test_failed_decode_redirects(
         self, fed_client: TestClient, fed: FakeDashboard, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(fed.segments, "latest", lambda slot: b"not a video")
-        resp = await fed_client.get("/api/slots/0/still.jpg", allow_redirects=False)
+        monkeypatch.setattr(fed.segments, "latest", lambda slot, channel: b"not a video")
+        resp = await fed_client.get("/api/slots/0/still.jpg?c=a", allow_redirects=False)
         assert resp.status == 302
         assert resp.headers["Location"] == THUMB_A
 
@@ -558,19 +582,107 @@ class TestStills:
 
     @pytest.mark.parametrize("slot", ["1", "3"])
     async def test_empty_slot_is_404(self, client: TestClient, slot: str) -> None:
-        resp = await client.get(f"/api/slots/{slot}/still.jpg", allow_redirects=False)
+        resp = await client.get(f"/api/slots/{slot}/still.jpg?c=a", allow_redirects=False)
         assert resp.status == 404
 
     @pytest.mark.parametrize("slot", ["4", "-1", "01", "x"])
     async def test_unknown_slot_is_404(self, client: TestClient, slot: str) -> None:
-        resp = await client.get(f"/api/slots/{slot}/still.jpg", allow_redirects=False)
+        resp = await client.get(f"/api/slots/{slot}/still.jpg?c=a", allow_redirects=False)
         assert resp.status == 404
 
     async def test_channel_without_a_login_is_404(
         self, client: TestClient, dashboard: FakeDashboard
     ) -> None:
+        channel = "youtube.com/watch?v=x"
         dashboard.snap = snapshot(
-            [], QuadState(channels=("youtube.com/watch?v=x", "", "", "")), Overrides(), [], None
+            [], QuadState(channels=(channel, "", "", "")), Overrides(), [], None
         )
-        resp = await client.get("/api/slots/0/still.jpg", allow_redirects=False)
+        resp = await client.get(
+            "/api/slots/0/still.jpg", params={"c": channel}, allow_redirects=False
+        )
         assert resp.status == 404
+
+
+class TestStillChannels:
+    """A still URL names its channel; a slot never serves another channel's picture."""
+
+    @pytest.fixture
+    async def two(self, ffmpeg: str, ts_run: Any) -> AsyncIterator[FakeDashboard]:  # noqa: F811
+        segs = ts_run(48000, 2)
+
+        async def fetch(uri: str) -> bytes:
+            return segs[int(uri[-1])]
+
+        proxy = SegmentProxy(fetch, ffmpeg)
+        for slot, channel in ((0, "a"), (1, "b")):
+            for seq in range(2):
+                proxy.register(slot, _seg(seq), channel)
+        async with asyncio.timeout(5):
+            while proxy.latest(0, "a") is None or proxy.latest(1, "b") is None:
+                await asyncio.sleep(0.01)
+        dashboard = FakeDashboard(proxy, ffmpeg)
+        dashboard.snap = _snapshot(("a", "b", "", ""))
+        yield dashboard
+        await proxy.aclose()
+
+    @pytest.fixture
+    async def two_client(self, tmp_path: Path, two: FakeDashboard) -> AsyncIterator[TestClient]:
+        config = tmp_path / "config.yaml"
+        config.write_text("mode: local\npriorities:\n  1:\n    - urls: [a]\n")
+        webui = WebUI(ConfigLoader(explicit_path=str(config)), dashboard=two)
+        async with TestClient(TestServer(webui.app)) as c:
+            yield c
+
+    async def _get(self, client: TestClient, slot: int, channel: str) -> ClientResponse:
+        return await client.get(
+            f"/api/slots/{slot}/still.jpg", params={"c": channel}, allow_redirects=False
+        )
+
+    async def test_swap_never_serves_the_other_tiles_picture(
+        self, two_client: TestClient, two: FakeDashboard
+    ) -> None:
+        # both stills are cached before the swap
+        assert (await self._get(two_client, 0, "a")).status == 200
+        assert (await self._get(two_client, 1, "b")).status == 200
+        two.change(_snapshot(("b", "a", "", "")))
+        for slot, channel in ((0, "b"), (1, "a"), (0, "a"), (1, "b")):
+            resp = await self._get(two_client, slot, channel)
+            assert resp.status == 302, (slot, channel)
+            assert resp.headers["Location"] == THUMB_A.replace("_a-", f"_{channel}-")
+
+    async def test_snapshot_still_urls_name_the_channel(self, two: FakeDashboard) -> None:
+        slots = api.snapshot_json(two.snapshot())["slots"]
+        assert [s["still"] for s in slots[:2]] == [
+            "/api/slots/0/still.jpg?c=a",
+            "/api/slots/1/still.jpg?c=b",
+        ]
+
+    @pytest.mark.parametrize("query", ["", "?c=", "?c=a%2Fb"])
+    async def test_still_without_a_channel_login_is_404(
+        self, client: TestClient, query: str
+    ) -> None:
+        resp = await client.get(f"/api/slots/0/still.jpg{query}", allow_redirects=False)
+        assert resp.status == 404
+
+    async def test_empty_slot_is_404_whatever_c_names(self, client: TestClient) -> None:
+        resp = await client.get("/api/slots/1/still.jpg?c=c", allow_redirects=False)
+        assert resp.status == 404
+
+    async def test_missing_ffmpeg_gives_none(self) -> None:
+        assert await api.grab_frame("/nonexistent/ffmpeg", b"x") is None
+
+    async def test_missing_ffmpeg_failure_is_cached(
+        self, two_client: TestClient, two: FakeDashboard, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        starts = 0
+
+        async def missing(path: str) -> Any:
+            nonlocal starts
+            starts += 1
+            raise FileNotFoundError(path)
+
+        monkeypatch.setattr(api, "_start_ffmpeg", missing)
+        for _ in range(3):
+            resp = await self._get(two_client, 0, "a")
+            assert resp.status == 302
+        assert starts == 1

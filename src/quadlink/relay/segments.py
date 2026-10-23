@@ -44,6 +44,8 @@ LATEST_MAX_AGE = 10.0
 class _Entry:
     seg: Segment
     raw: "asyncio.Future[bytes]"
+    # identity of the channel whose playlist listed it
+    channel: str = ""
     # set while the segment's converted output is still to come
     converter: AudioConverter | None = None
     pts: int | None = None
@@ -125,12 +127,12 @@ class SegmentProxy:
         """Whether fMP4 segments are served as MPEG-TS."""
         return self._ffmpeg is not None
 
-    def register(self, slot: int, seg: Segment) -> None:
-        """Queue a newly listed segment for fetching (and converting) in order."""
+    def register(self, slot: int, seg: Segment, channel: str = "") -> None:
+        """Queue a newly listed segment of channel for fetching (and converting) in order."""
         state = self._slots.setdefault(slot, _Slot())
         if seg.filler or seg.seq in state.entries:
             return
-        entry = _Entry(seg, asyncio.get_running_loop().create_future())
+        entry = _Entry(seg, asyncio.get_running_loop().create_future(), channel)
         entry.raw.add_done_callback(_mark_retrieved)
         state.entries[seg.seq] = entry
         while len(state.entries) > self._keep:
@@ -455,17 +457,19 @@ class SegmentProxy:
             if state.entries.get(seq) is not entry:
                 self._discard(state, entry)
 
-    def latest(self, slot: int, max_age: float = LATEST_MAX_AGE) -> bytes | None:
-        """The newest fetched segment of slot, as a client gets it now, or None.
+    def latest(self, slot: int, channel: str, max_age: float = LATEST_MAX_AGE) -> bytes | None:
+        """The newest fetched segment of channel in slot, as a client gets it now, or None.
 
         Also None when that segment was fetched more than max_age seconds ago.
+        Segments of another channel (the one before a swap, or the outgoing one
+        during a preroll) are skipped.
         """
         state = self._slots.get(slot)
         if state is None:
             return None
         now = asyncio.get_running_loop().time()
         for entry in reversed(state.entries.values()):
-            if entry.fetched_at is None:
+            if entry.fetched_at is None or entry.channel != channel:
                 continue
             if now - entry.fetched_at > max_age:
                 return None

@@ -1047,17 +1047,17 @@ async def test_latest_is_the_newest_fetched_segment(ts_run):
     segs = ts_run(48000, 2)
     fetch, _ = _source(segs)
     proxy = SegmentProxy(fetch, None)
-    assert proxy.latest(0) is None
+    assert proxy.latest(0, "") is None
     proxy.register(0, _seg(0, "0"))
-    assert proxy.latest(0) is None
+    assert proxy.latest(0, "") is None
     assert await proxy.get(0, 0) == segs[0]
-    assert proxy.latest(0) == segs[0]
+    assert proxy.latest(0, "") == segs[0]
     proxy.register(0, _seg(1, "1"))
     await proxy.get(0, 1)
-    assert proxy.latest(0) == segs[1]
+    assert proxy.latest(0, "") == segs[1]
     # a slot nobody polls keeps old segments, which no longer show its picture
-    assert proxy.latest(0, max_age=-1) is None
-    assert proxy.latest(1) is None
+    assert proxy.latest(0, "", max_age=-1) is None
+    assert proxy.latest(1, "") is None
     await proxy.aclose()
 
 
@@ -1071,7 +1071,7 @@ async def test_latest_gives_the_converted_output(ffmpeg, ts_run):
     converted = await proxy.get(0, 0)
     # once converted, a segment's raw bytes are gone; drop the newer one to reach it
     proxy._slots[0].entries.popitem()
-    latest = proxy.latest(0)
+    latest = proxy.latest(0, "")
     assert latest == converted and latest is not None
     assert audio_sample_rate(latest) == 48000
     await proxy.aclose()
@@ -1091,5 +1091,20 @@ async def test_latest_skips_a_failed_fetch(ts_run):
     proxy.register(0, _seg(1, "1"))
     await proxy.get(0, 0)
     assert await proxy.get(0, 1) is None
-    assert proxy.latest(0) == segs[0]
+    assert proxy.latest(0, "") == segs[0]
+    await proxy.aclose()
+
+
+@pytest.mark.asyncio
+async def test_latest_skips_another_channels_segments(ts_run):
+    segs = ts_run(48000, 2)
+    fetch, _ = _source(segs)
+    proxy = SegmentProxy(fetch, None)
+    proxy.register(0, _seg(0, "0"), "a")
+    proxy.register(0, _seg(1, "1"), "b")
+    await proxy.get(0, 0)
+    await proxy.get(0, 1)
+    assert proxy.latest(0, "a") == segs[0]
+    assert proxy.latest(0, "b") == segs[1]
+    assert proxy.latest(0, "c") is None
     await proxy.aclose()

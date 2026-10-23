@@ -318,7 +318,7 @@ class SlotRelay:
                 self._segments.flush(slot)
             for seg in state.segments:
                 if seg.seq >= before:
-                    self._segments.register(slot, seg)
+                    self._segments.register(slot, seg, entry.identity)
                     self._proxy_first_seq.setdefault(slot, seg.seq)
             if budget is None:
                 self._wait_ready(slot, state, 2, FRESH_WAIT)

@@ -171,9 +171,21 @@ class WebUI:
         if _hostname(request.host) not in self.allowed_hosts:
             logger.warning("webui request for unknown host refused", host=request.host)
             return _deny(403, "the server does not accept requests for this host name")
-        if not is_api:
-            return await handler(request)
+        # authentication comes before the CSRF checks: their token exemptions for
+        # stills and events must never exempt a route from login
+        denied = self._authenticate(request)
+        if denied is None and is_api:
+            denied = self._check_csrf(request)
+        if denied is not None:
+            return denied
+        return await handler(request)
 
+    def _authenticate(self, request: web.Request) -> web.Response | None:
+        return None
+
+    def _check_csrf(self, request: web.Request) -> web.Response | None:
+        """Refuse an API request that does not come from the quadlink page."""
+        path = request.path
         fetch_site = request.headers.get("Sec-Fetch-Site")
         origin = request.headers.get("Origin")
         cross_site = fetch_site is not None and fetch_site not in ("same-origin", "none")
@@ -193,15 +205,14 @@ class WebUI:
             return _deny(415, "the request body must be JSON (application/json)")
         # <img> cannot send the token; the same-origin check above keeps other sites out
         if STILL_PATH.fullmatch(path):
-            return await handler(request)
+            return None
         sent = request.headers.get(TOKEN_HEADER)
         if sent is None and path == EVENTS_PATH:
             sent = request.query.get("token")
         sent = sent or ""
         if not secrets.compare_digest(sent.encode("utf-8", "surrogateescape"), self.token.encode()):
             return _deny(403, "the page token is missing or incorrect; reload the page")
-
-        return await handler(request)
+        return None
 
     def _find_config_path(self) -> Path | None:
         """Find the config file path being used."""
@@ -225,7 +236,11 @@ class WebUI:
         return web.Response(
             text=HTML_TEMPLATE.replace(TOKEN_PLACEHOLDER, self.token),
             content_type="text/html",
-            headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "Referrer-Policy": "no-referrer",
+            },
         )
 
     def _read_file_config(self) -> dict[str, Any]:
