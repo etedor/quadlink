@@ -249,7 +249,7 @@ class WebUI:
     async def _handle_quad(self, request: web.Request) -> web.Response:
         """Serve the live quad page."""
         return web.Response(
-            text=(WEB_DIR / "quad.html").read_text(),
+            text=(WEB_DIR / "quad.html").read_text().replace(TOKEN_PLACEHOLDER, self.token),
             content_type="text/html",
             headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
         )

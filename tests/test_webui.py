@@ -67,13 +67,14 @@ def _load(path: Path) -> dict:
 
 
 class TestPage:
-    async def test_quad_page_plays_each_relay_slot(self, client: TestClient) -> None:
+    async def test_quad_page_plays_each_relay_slot(self, client: TestClient, webui: WebUI) -> None:
         resp = await client.get("/quad")
         assert resp.status == 200
         text = await resp.text()
         assert text.count("<video") == 4
         assert "'/streams/' + (i + 1)" in text
         assert TOKEN_PLACEHOLDER not in text
+        assert webui.token in text
 
     async def test_page_embeds_token(self, client: TestClient, webui: WebUI) -> None:
         resp = await client.get("/")

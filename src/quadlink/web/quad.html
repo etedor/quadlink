@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #e7e9ee; }
@@ -19,6 +20,16 @@
   .tile { position: relative; background: #0a0c10; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
+  .rail { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 4px;
+    font: 13px system-ui, sans-serif; }
+  .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 8px; }
+  .rail li:hover { background: #151922; }
+  .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: 4px; background: #0a0c10;
+    object-fit: cover; }
+  .rail .who { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .rail .name { font-weight: 600; }
+  .rail .cat { color: #9aa3b2; font-size: 12px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
   @media (max-width: 720px) {
     body { grid-template: 48px 1fr auto / 1fr; grid-template-areas: "top" "quad" "rail"; }
     aside { border-right: 0; border-top: 1px solid #1c2028; min-height: 120px; }
@@ -28,7 +39,7 @@
 </head>
 <body>
 <header></header>
-<aside aria-label="Online streamers"></aside>
+<aside aria-label="Online streamers"><ul class="rail"></ul></aside>
 <main class="stage">
 <div class="quad">
   <div class="tile">
@@ -80,6 +91,41 @@
       if (loud) { tile.classList.add('loud'); video.muted = false; video.play(); }
     });
   });
+
+  const rail = document.querySelector('.rail');
+  const SHOWN = new Set(['live', 'waiting']);
+
+  function row(c) {
+    const li = document.createElement('li');
+    const img = document.createElement('img');
+    img.alt = '';
+    // Twitch refreshes previews every few minutes; the bucket keeps the browser cache in step
+    if (c.thumbnail) img.src = c.thumbnail + '?t=' + Math.floor(Date.now() / 300000);
+    const who = document.createElement('div');
+    who.className = 'who';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = c.display_name || c.channel;
+    const cat = document.createElement('span');
+    cat.className = 'cat';
+    cat.textContent = c.category || '';
+    who.append(name, cat);
+    li.append(img, who);
+    return li;
+  }
+
+  function render(state) {
+    const online = state.channels
+      .filter(c => SHOWN.has(c.state))
+      .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
+    rail.replaceChildren(...online.map(row));
+  }
+
+  const token = document.querySelector('meta[name="quadlink-token"]').content;
+  const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
+  events.onmessage = e => render(JSON.parse(e.data));
+  // a restart changes the page token, and EventSource never retries a refusal
+  events.onerror = () => { if (events.readyState === EventSource.CLOSED) setTimeout(() => location.reload(), 5000); };
 </script>
 </body>
 </html>
