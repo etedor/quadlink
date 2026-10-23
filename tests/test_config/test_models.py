@@ -1,6 +1,7 @@
 """Tests for configuration models."""
 
 import pytest
+import structlog.testing
 from pydantic import ValidationError
 
 from quadlink.config.models import (
@@ -339,9 +340,12 @@ class TestTwitchAPI:
         with pytest.raises(ValidationError, match="client_secret or client_secret_file"):
             Config(**self.BASE, twitch_api={"client_id": "id"})
 
-    def test_unreadable_secret_file(self, tmp_path):
-        with pytest.raises(ValidationError, match="cannot read the Twitch client secret"):
-            Config(
+    def test_unreadable_secret_file_disables_helix(self, tmp_path):
+        with structlog.testing.capture_logs() as logs:
+            config = Config(
                 **self.BASE,
                 twitch_api={"client_id": "id", "client_secret_file": str(tmp_path / "none")},
             )
+        assert config.twitch_api is not None
+        assert config.twitch_api.client_secret is None
+        assert any("Twitch client secret" in log["event"] for log in logs)

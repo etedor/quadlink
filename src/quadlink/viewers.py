@@ -21,7 +21,7 @@ GQL_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 HELIX_STREAMS_URL = "https://api.twitch.tv/helix/streams"
 
-# Helix takes at most 100 user_login values; GQL took 500 in one query (2026-10),
+# Helix takes at most 100 user_login values; GQL has taken 500 in one query,
 # but has no documented limit, so it gets the same chunks
 BATCH = 100
 # seconds one HTTP request may take, short enough that a failed Helix call leaves

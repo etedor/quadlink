@@ -3,8 +3,11 @@
 from pathlib import Path
 from typing import Literal
 
+import structlog
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = structlog.get_logger()
 
 
 class Credentials(BaseModel):
@@ -67,13 +70,16 @@ class TwitchAPI(BaseModel):
     @model_validator(mode="after")
     def _read_secret(self) -> "TwitchAPI":
         if self.client_secret_file is not None:
+            # a secret not mounted yet at boot must not stop the quad: counts fall back to GQL
             try:
                 self.client_secret = self.client_secret_file.expanduser().read_text().strip()
             except OSError as e:
-                raise ValueError(
-                    f"quadlink cannot read the Twitch client secret from "
-                    f"{self.client_secret_file}: {e}"
-                ) from e
+                logger.warning(
+                    "quadlink cannot read the Twitch client secret, so viewer counts use GQL",
+                    path=str(self.client_secret_file),
+                    error=str(e),
+                )
+                return self
         if not self.client_secret:
             raise ValueError("twitch_api needs client_secret or client_secret_file")
         return self
