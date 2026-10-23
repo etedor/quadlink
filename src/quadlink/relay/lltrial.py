@@ -20,6 +20,7 @@ import aiohttp
 import structlog
 from aiohttp import web
 
+from quadlink.relay.playlist import FILLER_DURATION
 from quadlink.relay.tsinfo import PACKET, pes_pts, program
 
 logger = structlog.get_logger()
@@ -33,6 +34,9 @@ PART_TARGET = 0.54
 # faster than a normal client (2s) makes filler fire on gaps a player would ride out
 POLL = 1.0
 WINDOW = 12
+# seconds the released edge may stand still before filler goes out: well inside
+# PART-HOLD-BACK (1.6s), because QuadStream rebuilds any player that stalls
+FILL_AFTER = 1.0
 # a slot nobody has asked for in this long stops polling the relay
 IDLE_STOP = 30.0
 
@@ -47,6 +51,7 @@ class Seg:
     cuts: list[tuple[int, float]]  # (byte offset, part duration)
     release: float = 0.0  # monotonic time its first part is released
     src: int = 0  # the relay's sequence number for this segment
+    filler: bool = False  # black the trial put in while the relay had nothing
 
     def parts_released(self, now: float) -> int:
         t = self.release
@@ -67,6 +72,7 @@ class Slot:
     segs: list[Seg] = field(default_factory=list)
     target: int = 2
     task: asyncio.Task[None] | None = None
+    guard: asyncio.Task[None] | None = None
     after_filler: bool = False
     seen: float = 0.0
 
@@ -228,6 +234,7 @@ class LLTrial:
         self.upstream = upstream.rstrip("/")
         self.slots: dict[int, Slot] = {}
         self._session: aiohttp.ClientSession | None = None
+        self._filler: bytes | None = None
 
     def register_routes(self, router: web.UrlDispatcher) -> None:
         router.add_get("/streams/ll/{n:[1-4]}", self.playlist)
@@ -241,6 +248,8 @@ class LLTrial:
         if slot.task is None or slot.task.done():
             slot.segs = []
             slot.task = asyncio.create_task(self._follow(n, slot))
+        if slot.guard is None or slot.guard.done():
+            slot.guard = asyncio.create_task(self._guard(n, slot))
         return n, slot
 
     async def _follow(self, n: int, slot: Slot) -> None:
@@ -288,6 +297,9 @@ class LLTrial:
                             since_poll=round(now - started, 2),
                             dropped_parts=before - sum(len(x.cuts) for x in slot.segs),
                         )
+                    if slot.segs and slot.segs[-1].filler:
+                        slot.segs = _drop_unreleased(slot.segs, now)
+                        disc = seg.disc = True
                     prev = slot.segs[-1] if slot.segs else None
                     if prev is not None:
                         # own numbering: dropping segments must not leave gaps
@@ -308,6 +320,44 @@ class LLTrial:
             except Exception as e:
                 logger.warning("ll trial poll failed", slot=n, error=repr(e))
             await asyncio.sleep(POLL)
+
+    async def _guard(self, n: int, slot: Slot) -> None:
+        while time.monotonic() - slot.seen < IDLE_STOP:
+            await asyncio.sleep(0.1)
+            now = time.monotonic()
+            last = slot.segs[-1] if slot.segs else None
+            if last is None or now < last.end() + FILL_AFTER:
+                continue
+            try:
+                body = await self._filler_body()
+            except Exception as e:
+                logger.warning("ll trial filler fetch failed", slot=n, error=repr(e))
+                continue
+            fill = Seg(
+                last.seq + 1,
+                FILLER_DURATION,
+                True,
+                last.dseq + 1,
+                body,
+                cut(body, FILLER_DURATION),
+                release=now,
+                src=last.src,
+                filler=True,
+            )
+            # a DISCONTINUITY between two filler clips would make the player reset for nothing
+            if last.filler:
+                fill.disc, fill.dseq = False, last.dseq
+            else:
+                logger.info("ll trial filler", slot=n, stalled=round(now - last.end(), 2))
+            slot.segs = (slot.segs + [fill])[-WINDOW:]
+
+    async def _filler_body(self) -> bytes:
+        if self._filler is None:
+            assert self._session is not None
+            async with self._session.get(f"{self.upstream}/streams/filler/2s.ts") as resp:
+                resp.raise_for_status()
+                self._filler = await resp.read()
+        return self._filler
 
     async def _wait_for(self, slot: Slot, msn: int, part: int | None) -> bool:
         """Whether the part (or whole segment) came out within 3 target durations."""
@@ -377,7 +427,8 @@ class LLTrial:
 
     async def aclose(self) -> None:
         for slot in self.slots.values():
-            if slot.task is not None:
-                slot.task.cancel()
+            for task in (slot.task, slot.guard):
+                if task is not None:
+                    task.cancel()
         if self._session is not None:
             await self._session.close()
