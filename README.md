@@ -168,6 +168,16 @@ ruff check src/ tests/ # lint
 mypy src/ # type check
 ```
 
+### Web pages
+
+The pages in `src/quadlink/web/` load in a browser on your own machine, against a running quadlink:
+
+```bash
+nix develop -c python dev/serve.py   # http://localhost:8090/quad
+```
+
+The page reloads each time you save a file. `/streams/*` and `/api/*` go to `https://quadlink.et42.net` (change it with `--upstream`).
+
 ## License
 
 MIT

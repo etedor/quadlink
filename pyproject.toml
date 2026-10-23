@@ -45,7 +45,7 @@ dev = [
 quadlink = "quadlink.__main__:main"
 
 [tool.setuptools.package-data]
-quadlink = ["relay/filler/*"]
+quadlink = ["relay/filler/*", "web/*"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

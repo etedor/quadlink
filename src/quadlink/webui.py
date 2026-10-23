@@ -19,7 +19,6 @@ from ruamel.yaml import YAML
 from quadlink import __version__
 from quadlink.config.loader import ConfigLoader
 from quadlink.config.models import Config
-from quadlink.quadpage import QUAD_HTML
 from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
@@ -27,6 +26,8 @@ logger = structlog.get_logger()
 TOKEN_HEADER = "X-QuadLink-Token"
 TOKEN_PLACEHOLDER = "__QUADLINK_TOKEN__"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# static pages; dev/serve.py serves the same files with live reload
+WEB_DIR = Path(__file__).parent / "web"
 
 
 # urlsplit accepts userinfo, paths and fragments in a netloc; a Host header has none
@@ -219,7 +220,7 @@ class WebUI:
     async def _handle_quad(self, request: web.Request) -> web.Response:
         """Serve the live quad page."""
         return web.Response(
-            text=QUAD_HTML,
+            text=(WEB_DIR / "quad.html").read_text(),
             content_type="text/html",
             headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
         )
