@@ -1,6 +1,6 @@
 """Serve the web pages from this checkout, with live reload, against a running quadlink.
 
-usage: python dev/serve.py [--upstream https://quadlink.et42.net] [--port 8090]
+usage: python dev/serve.py [--upstream https://quadlink.et42.net] [--host 127.0.0.1] [--port 8090]
 
 Pages come from src/quadlink/web/ as saved; /streams/* and /api/* go to the upstream
 quadlink, so the page plays the real relay. A saved file reloads every open page.
@@ -88,6 +88,8 @@ async def _session(app: web.Application):  # type: ignore[no-untyped-def]
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--upstream", default="https://quadlink.et42.net")
+    # 0.0.0.0 shares it with other machines; it has no auth, so keep it to trusted networks
+    parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8090)
     args = parser.parse_args()
 
@@ -97,8 +99,8 @@ def main() -> None:
     app.router.add_get("/__reload", _reload)
     app.router.add_get("/web/{path:.+}", _asset)
     app.router.add_get("/{name:[a-z0-9_-]*}", _page)
-    print(f"http://localhost:{args.port}/quad  (pages from {WEB_DIR}, video from {args.upstream})")
-    web.run_app(app, host="127.0.0.1", port=args.port, print=None)
+    print(f"http://{args.host}:{args.port}/quad  (pages from {WEB_DIR}, video from {args.upstream})")
+    web.run_app(app, host=args.host, port=args.port, print=None)
 
 
 if __name__ == "__main__":
