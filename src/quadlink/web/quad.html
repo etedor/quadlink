@@ -6,25 +6,31 @@
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
+  /* one corner radius for every rounded surface; nested corners subtract their inset */
+  :root { --radius: 14px; }
   html, body { margin: 0; height: 100%; background: #000; color: #e7e9ee; }
-  body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "rail top" "rail quad"; }
+  body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "top top" "rail quad"; }
   header { grid-area: top; border-bottom: 1px solid #1c2028; background: #0b0d11; }
   aside { grid-area: rail; border-right: 1px solid #1c2028; background: #0b0d11; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
-    display: flex; align-items: center; justify-content: center; }
+    display: flex; align-items: flex-start; justify-content: center; }
   /* the whole quad is 16:9, so each 16:9 stream fills its tile uncropped and the
-     tiles touch; 80% of the stage leaves a 10% margin on the tighter side */
-  .quad { display: grid; grid-template: 1fr 1fr / 1fr 1fr;
-    width: min(80cqw, 80cqh * 16 / 9); aspect-ratio: 16 / 9;
-    border-radius: 14px; overflow: hidden; }
+     tiles touch. it takes 80% of the stage width when the height allows, and sits
+     as far below the top bar as it is in from the sides (never past the bottom) */
+  .quad { --w: min(80cqw, (100cqh - 20cqw) * 16 / 9);
+    display: grid; grid-template: 1fr 1fr / 1fr 1fr;
+    width: var(--w); aspect-ratio: 16 / 9;
+    margin-top: min((100cqw - var(--w)) / 2, 100cqh - var(--w) * 9 / 16);
+    border-radius: var(--radius); overflow: hidden; }
   .tile { position: relative; background: #0a0c10; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   .tile button { all: unset; position: absolute; inset: 0; cursor: pointer; }
   .rail { list-style: none; margin: 0; padding: 8px; display: flex; flex-direction: column; gap: 4px;
     font: 13px system-ui, sans-serif; }
-  .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: 8px; }
+  .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: var(--radius); }
   .rail li:hover { background: #151922; }
-  .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: 4px; background: #0a0c10;
+  .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 6px);
+    background: #0a0c10;
     object-fit: cover; }
   .rail .who { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .rail .name { font-weight: 600; }
