@@ -16,6 +16,7 @@
     --clear: transparent;
     --ground: color-mix(in oklab, var(--twitch) 22%, var(--black));
     --hover: color-mix(in oklab, var(--twitch) 36%, var(--black));
+    --current: color-mix(in oklab, var(--twitch) 29%, var(--black));
     --well: var(--black);
     --text: color-mix(in oklab, var(--twitch) 6%, var(--white));
     --text-quiet: color-mix(in oklab, var(--twitch) 35%, var(--white));
@@ -27,7 +28,12 @@
   }
   html, body { margin: 0; height: 100%; background: var(--ground); color: var(--text); }
   body { display: grid; grid-template: 48px 1fr / 260px 1fr; grid-template-areas: "rail top" "rail quad"; }
-  header { grid-area: top; }
+  header { grid-area: top; display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 16px; font: 13px system-ui, sans-serif; }
+  /* temporary: clears every pin and bench */
+  .reset-all { height: 28px; padding: 0 12px; border: 0; border-radius: calc(var(--radius) - 6px);
+    background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
+  .reset-all:hover { background: var(--hover); }
   aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
     font: 13px system-ui, sans-serif; position: relative; }
   .tools { display: flex; gap: 6px; padding: 8px 8px 4px; }
@@ -91,6 +97,7 @@
   .rail { list-style: none; margin: 0; padding: 4px 8px 8px; display: flex; flex-direction: column;
     gap: 4px; }
   .rail li { display: flex; align-items: center; gap: 10px; padding: 6px; border-radius: var(--radius); }
+  .rail li.in { background: var(--current); }
   .rail li:hover { background: var(--hover); }
   .rail img { flex: none; width: 80px; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 6px);
     background: var(--well);
@@ -98,6 +105,11 @@
   .rail .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .rail .name, .rail .cat { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rail .name { font-weight: 600; }
+  /* override glyphs follow the name; the name gives way first */
+  .rail .line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .rail .marks { flex: none; display: inline-flex; gap: 4px; color: var(--text-quiet); }
+  .rail .marks .pin { color: var(--accent); }
+  .rail li.benched > img, .rail li.benched .line .name { opacity: 0.55; }
   /* category and viewer count share the second line; the category gives way first */
   .rail .meta { display: flex; align-items: center; gap: 8px; color: var(--text-quiet); font-size: 12px; }
   .rail .cat { flex: 1; min-width: 0; }
@@ -120,15 +132,20 @@
   .tile.failed::after { box-shadow: inset 0 0 0 3px var(--error); }
   .tile.lifted { opacity: 0.5; }
   @keyframes pulse { to { opacity: 0.35; } }
+  /* phones: top bar, a short quad, then the list. the quad fills the width at a fixed
+     height, so tiles crop their streams instead of keeping 16:9 */
   @media (max-width: 720px) {
-    body { grid-template: 48px 1fr auto / 1fr; grid-template-areas: "top" "quad" "rail"; }
-    aside { min-height: 120px; }
+    body { grid-template: 48px 32svh 1fr / 1fr; grid-template-areas: "top" "quad" "rail"; }
+    .stage { container-type: normal; padding: 0 16px; }
+    .quad { width: 100%; height: 100%; aspect-ratio: auto; margin: 0; }
+    video, .cover { object-fit: cover; }
+    aside { padding-top: 8px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 </head>
 <body>
-<header></header>
+<header><button type="button" class="reset-all">Reset pins &amp; benches</button></header>
 <aside aria-label="Online streamers">
   <div class="tools">
     <input type="search" placeholder="Search…" aria-label="Search channels">
@@ -248,13 +265,27 @@
                   ['in quad', 'In quad'], ['offline', 'Offline']];
   const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
                  ['newest', 'Newest stream'], ['longest', 'Longest stream']];
-  const DEFAULTS = { show: ['live', 'waiting'], cats: [], sort: 'priority' };
+  const DEFAULTS = { show: ['in quad', 'live', 'waiting', 'benched'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
-  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.rail') || '{}'), { q: '' }); } catch {}
+  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.2') || '{}'), { q: '' }); } catch {}
   let latest = null;
 
   function save() {
-    try { localStorage.setItem('quadlink.rail', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+    try { localStorage.setItem('quadlink.view.2', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+  }
+
+  const PIN = '<path d="M12 17v5"/><path d="M9 10.76V6h6v4.76l2 3.24H7z"/><path d="M8 6h8"/>';
+  const BENCH = '<path d="M5 7h14"/><path d="M3 12h18"/><path d="M7 7v5M17 7v5"/><path d="M6 12v6M18 12v6"/>';
+
+  function glyph(kind, paths, label) {
+    const span = document.createElement('span');
+    span.className = kind;
+    span.title = label;
+    span.setAttribute('role', 'img');
+    span.setAttribute('aria-label', label);
+    span.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+      + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
+    return span;
   }
 
   function row(c) {
@@ -271,7 +302,8 @@
     const cat = document.createElement('span');
     cat.className = 'cat';
     const label = STATES.find(([s]) => s === c.state);
-    cat.textContent = c.state === 'live' ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
+    // glyphs and row shading carry these states, so the line keeps to the category
+    cat.textContent = ['live', 'in quad', 'benched'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.append(cat);
@@ -282,8 +314,22 @@
       viewers.title = c.viewers.toLocaleString() + ' viewers';
       meta.append(viewers);
     }
-    who.append(name, meta);
+    const line = document.createElement('div');
+    line.className = 'line';
+    line.append(name);
+    const marks = [];
+    if (c.pin_slot != null) marks.push(glyph('pin', PIN, 'Pinned to slot ' + (c.pin_slot + 1)));
+    if (c.benched) marks.push(glyph('bench', BENCH, 'Benched'));
+    if (marks.length) {
+      const box = document.createElement('span');
+      box.className = 'marks';
+      box.append(...marks);
+      line.append(box);
+    }
+    li.classList.toggle('benched', c.benched);
+    who.append(line, meta);
     li.dataset.channel = c.channel;
+    li.classList.toggle('in', c.state === 'in quad');
     li.append(img, who);
     return li;
   }
@@ -390,6 +436,8 @@
   const pending = new Map();
   let drag = null;
   let dragged = false;
+
+  document.querySelector('.reset-all').addEventListener('click', () => act({ action: 'reset' }));
 
   async function act(body) {
     const resp = await fetch('/api/actions', {
