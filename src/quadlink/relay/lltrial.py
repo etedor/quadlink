@@ -182,6 +182,9 @@ def _drop_unreleased(segs: list[Seg], now: float) -> list[Seg]:
 def has(slot: Slot, msn: int, part: int | None, now: float) -> bool:
     for s in slot.segs:
         if s.seq == msn:
+            if part is not None and part >= len(s.cuts):
+                # a splice dropped this part: answered once the next segment starts
+                continue
             got = s.parts_released(now)
             return got == len(s.cuts) if part is None else got > part
         if s.seq > msn:
@@ -216,6 +219,7 @@ class LLTrial:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
         session = self._session
         while time.monotonic() - slot.seen < IDLE_STOP:
+            started = time.monotonic()
             try:
                 async with session.get(f"{self.upstream}/streams/{n}") as resp:
                     text = await resp.text()
@@ -240,7 +244,14 @@ class LLTrial:
                     if disc:
                         # a splice: parts no player has seen yet are dropped, so the
                         # new channel goes out now instead of after the queue
+                        before = sum(len(x.cuts) for x in slot.segs)
                         slot.segs = _drop_unreleased(slot.segs, now)
+                        logger.info(
+                            "ll trial splice",
+                            slot=n,
+                            since_poll=round(now - started, 2),
+                            dropped_parts=before - sum(len(x.cuts) for x in slot.segs),
+                        )
                     prev = slot.segs[-1] if slot.segs else None
                     if prev is not None:
                         # own numbering: dropping segments must not leave gaps
