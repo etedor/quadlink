@@ -34,6 +34,9 @@ INIT_WAIT = 4.0
 INIT_RETRY_UNDER = 1.0
 # seconds the segments of a generation whose init failed skip fetching it
 INIT_BACKOFF = 10.0
+# seconds after its fetch a segment still shows the slot's current picture; a slot
+# nobody polls fetches nothing, so its newest cached segment can be minutes old
+LATEST_MAX_AGE = 10.0
 
 
 # identity equality: entries go in sets and are compared by object
@@ -47,6 +50,8 @@ class _Entry:
     converted: bytes | None = None
     # fMP4 only: the init segment its media segment needs
     init: bytes | None = None
+    # loop time the fetched bytes were set
+    fetched_at: float | None = None
 
     def set_converted(self, data: bytes) -> None:
         # converted is final once set: every client of a segment gets the same bytes,
@@ -185,6 +190,7 @@ class SegmentProxy:
             logger.warning("relay conversion failed", slot=slot, seq=entry.seg.seq, error=str(e))
         if not entry.raw.done():
             entry.raw.set_result(data)
+        entry.fetched_at = asyncio.get_running_loop().time()
         # evicted while still queued: its converter was set only now
         if state.entries.get(entry.seg.seq) is not entry:
             self._discard(state, entry)
@@ -448,6 +454,28 @@ class SegmentProxy:
             state.waiting.remove(entry)
             if state.entries.get(seq) is not entry:
                 self._discard(state, entry)
+
+    def latest(self, slot: int, max_age: float = LATEST_MAX_AGE) -> bytes | None:
+        """The newest fetched segment of slot, as a client gets it now, or None.
+
+        Also None when that segment was fetched more than max_age seconds ago.
+        """
+        state = self._slots.get(slot)
+        if state is None:
+            return None
+        now = asyncio.get_running_loop().time()
+        for entry in reversed(state.entries.values()):
+            if entry.fetched_at is None:
+                continue
+            if now - entry.fetched_at > max_age:
+                return None
+            if entry.converted:
+                return entry.converted
+            raw = entry.raw
+            # empty: an fMP4 segment no remux could make TS; an older one may still do
+            if raw.done() and not raw.cancelled() and raw.exception() is None and raw.result():
+                return raw.result()
+        return None
 
     async def aclose(self) -> None:
         workers = [s.worker for s in self._slots.values() if s.worker is not None]

@@ -20,6 +20,15 @@ class DashboardState(StrEnum):
     LOOKUP_FAILED = "lookup failed"
 
 
+class QuadStreamLogin(StrEnum):
+    """Where the daemon stands with quadstream.tv."""
+
+    OFF = "off"
+    PENDING = "pending"
+    LOGGED_IN = "logged in"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class SlotView:
     """One tile.
@@ -50,6 +59,7 @@ class ChannelView:
         state: Dashboard state.
         slot: Slot it is on screen in, if any.
         pin_slot: Slot it is pinned to, whether or not it is on screen.
+        benched: The operator keeps it out of the quad.
         status: The last refresh's lookup outcome.
     """
 
@@ -57,6 +67,7 @@ class ChannelView:
     state: DashboardState
     slot: int | None
     pin_slot: int | None
+    benched: bool
     status: ChannelStatus
 
 
@@ -68,11 +79,13 @@ class Snapshot:
         slots: The four tiles in slot order.
         channels: Every configured channel, in config order.
         refreshed_at: Wall-clock time (epoch seconds) of the last refresh.
+        quadstream: Login state with quadstream.tv.
     """
 
     slots: list[SlotView]
     channels: list[ChannelView]
     refreshed_at: float | None
+    quadstream: QuadStreamLogin = QuadStreamLogin.OFF
 
 
 def snapshot(
@@ -81,6 +94,7 @@ def snapshot(
     overrides: Overrides,
     waiting: list[str],
     refreshed_at: float | None,
+    quadstream: QuadStreamLogin = QuadStreamLogin.OFF,
 ) -> Snapshot:
     """Build the dashboard view from the daemon's current state."""
     names = {s.channel: s.stream.metadata.author for s in statuses if s.stream is not None}
@@ -102,11 +116,14 @@ def snapshot(
             state=_state(s, positions, overrides, waiting),
             slot=positions.get(s.channel),
             pin_slot=overrides.pins.get(s.channel),
+            benched=s.channel in overrides.benches,
             status=s,
         )
         for s in statuses
     ]
-    return Snapshot(slots=slots, channels=channels, refreshed_at=refreshed_at)
+    return Snapshot(
+        slots=slots, channels=channels, refreshed_at=refreshed_at, quadstream=quadstream
+    )
 
 
 def _state(

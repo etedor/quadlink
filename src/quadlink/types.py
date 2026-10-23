@@ -65,6 +65,11 @@ def channel_login(url: str) -> str:
     return f"{host}{parts.path.rstrip('/')}{query}".lower()
 
 
+def thumbnail_url(login: str) -> str:
+    """Twitch's live preview image of a channel; Twitch serves a placeholder when it is offline."""
+    return f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{login}-320x180.jpg"
+
+
 @dataclass
 class Metadata:
     """Stream metadata from Twitch.
@@ -157,9 +162,7 @@ class ChannelStatus:
         """Twitch's live preview image, for a live channel."""
         if self.state is not ChannelState.LIVE or self.stream is None:
             return None
-        return (
-            f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{self.stream.channel}-320x180.jpg"
-        )
+        return thumbnail_url(self.stream.channel)
 
 
 @dataclass
