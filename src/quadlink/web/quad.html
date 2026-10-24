@@ -1101,7 +1101,7 @@
       ex.opened = Date.now();
       markQuadCats();
       showCats();
-      if (ex.category) loadStreams(); else cards.replaceChildren();
+      if (ex.category) loadStreams(); else showEmpty();
     } else {
       pick(null);
       // back in the rail, the newest stream Explore added gets quick add's outline
@@ -1202,11 +1202,16 @@
     ex.listing = null;
     ex.request++;
     saveExplore();
-    cards.replaceChildren();
     note.textContent = '';
-    endNote.textContent = '';
-    markPills();
+    showEmpty();
+    // a category from search drops out of the chips with the choice
+    showCats();
     markQuadCats();
+  }
+
+  function showEmpty() {
+    cards.replaceChildren();
+    endNote.textContent = 'Choose a category to see its live streams.';
   }
 
   // shows the chips that fill CHIP_ROWS rows at this width; the chosen one always shows
