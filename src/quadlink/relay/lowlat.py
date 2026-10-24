@@ -69,6 +69,8 @@ PROBE_MAX = 1 << 20
 # a part released after a burst (an fMP4 segment arrives whole) follows the one
 # before at this fraction of real time: smooth, and still catching up
 PACE = 0.8
+# seconds between two "nothing released" reports for one slot
+EMPTY_REPORT = 10.0
 
 
 def next_release(now: float, prev: "_Part | None") -> float:
@@ -290,6 +292,8 @@ class _Slot:
         self.tasks: list[asyncio.Task[None]] = []
         self._failing = False
         self._init: tuple[str, bytes] | None = None
+        # loop time of the last "nothing released" report
+        self._empty_logged = -math.inf
 
     def start(self) -> None:
         self.tasks = [
@@ -668,6 +672,23 @@ class _Slot:
             return False
         return False
 
+    def report_empty(self, now: float) -> None:
+        """Log, at most every EMPTY_REPORT seconds, why a slot with segments lists none."""
+        if not self.segs or now - self._empty_logged < EMPTY_REPORT:
+            return
+        self._empty_logged = now
+        parts = [p for s in self.segs for p in s.parts]
+        logger.warning(
+            "relay ll nothing released",
+            slot=self.slot,
+            segs=len(self.segs),
+            parts=[len(s.parts) for s in self.segs],
+            fillers=sum(s.filler for s in self.segs),
+            next_release=round(min((p.release for p in parts), default=now) - now, 2),
+            longest=round(max((p.duration for p in parts), default=0.0), 2),
+            need_independent=self.need_independent,
+        )
+
     def last_seq(self) -> int | None:
         return self.segs[-1].seq if self.segs else None
 
@@ -780,6 +801,7 @@ class LowLatency:
                 await asyncio.sleep(0.1)
         body = state.render(loop.time())
         if not body:
+            state.report_empty(loop.time())
             return web.Response(status=503, text="no parts yet")
         return web.Response(
             text=body,
