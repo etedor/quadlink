@@ -264,6 +264,8 @@
   .card .pic button.chip.back:hover, .card .pic button.chip.back:focus-visible { background: var(--accent); }
   .card .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
   .card .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .cat { margin-top: -4px; color: var(--text-quiet); font-size: 14px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
   .card .title { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden; overflow-wrap: anywhere; }
   /* one line of tag chips; a chip that does not fit is cut, so cards keep one height */
@@ -1460,12 +1462,14 @@
     title.className = 'title';
     title.textContent = s.title;
     title.title = s.title;
-    li.append(pic, line, title);
+    // the category sits under the name, as on the rail's rows
+    const cat = document.createElement('div');
+    cat.className = 'cat';
+    cat.textContent = s.category;
+    li.append(pic, line, cat, title);
     // Twitch tags most streams with their language's name, which the chip already shows
     const spoken = languageNames(s.language);
-    // across all of Twitch, the stream's category leads its chips
-    const tags = [...(ex.category ? [] : [s.category].filter(Boolean)),
-      ...s.tags.filter(t => !spoken.has(t.toLowerCase()))].slice(0, 3);
+    const tags = s.tags.filter(t => !spoken.has(t.toLowerCase())).slice(0, 3);
     if (tags.length) {
       const t = document.createElement('div');
       t.className = 'tags';
