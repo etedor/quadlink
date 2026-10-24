@@ -233,6 +233,7 @@
   :is(.explore-cats, .quad-cats) .chip { color: var(--text); }
   :is(.explore-cats, .quad-cats) .chip .count { flex: none; display: inline-flex; align-items: center;
     gap: 5px; color: var(--text-quiet); font-weight: 400; }
+  :is(.explore-cats, .quad-cats) .chip .count:empty { display: none; }
   :is(.explore-cats, .quad-cats) .chip .count::before { content: ""; width: 7px; height: 7px;
     border-radius: 50%; background: var(--live); }
   :is(.explore-cats, .quad-cats) button.chip:hover, :is(.explore-cats, .quad-cats) button.chip:focus-visible {
@@ -1127,8 +1128,11 @@
     name.textContent = c.name;
     const count = document.createElement('span');
     count.className = 'count';
-    count.textContent = compact.format(c.viewers);
-    count.title = c.viewers.toLocaleString() + ' viewers';
+    // a choice saved by an earlier page has no count
+    if (c.viewers != null) {
+      count.textContent = compact.format(c.viewers);
+      count.title = c.viewers.toLocaleString() + ' viewers';
+    }
     b.append(name, count);
     b.dataset.id = c.id;
     b.setAttribute('aria-pressed', String(ex.via === 'list' && ex.category?.id === c.id));
@@ -1139,7 +1143,7 @@
 
   function choose(c, via) {
     const same = ex.category?.id === c.id;
-    ex.category = { id: c.id, name: c.name, box_art: c.box_art, live: c.live };
+    ex.category = { id: c.id, name: c.name, viewers: c.viewers };
     ex.via = via;
     saveExplore();
     // the suggestions may not hold it, so they are rebuilt with it in front
@@ -1321,7 +1325,7 @@
       const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}&language=${ex.lang}`);
       if (request !== ex.request) return;
       ex.listing = listing;
-      ex.category.live = listing.category.live;
+      ex.category.viewers = listing.category.viewers;
       showStreams();
     } catch (err) {
       if (request !== ex.request) return;
