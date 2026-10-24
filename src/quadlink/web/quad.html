@@ -243,10 +243,10 @@
     text-decoration: underline; cursor: pointer; }
   /* 7px wider each side, the cards' inset, so their content lines up with the quad */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0 -7px; padding: 0 7px; }
-  /* the fade shows once cards sit above, as the menus' fade shows while options sit below */
-  .explore-scroll.under::before { content: ""; position: sticky; top: 0; z-index: 1; display: block;
-    height: 38px; margin-bottom: -38px; pointer-events: none;
-    background: linear-gradient(var(--ground), var(--clear)); }
+  /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
+     a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
+  .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
+    mask-image: linear-gradient(var(--clear), var(--black) 48px); }
   .cards { list-style: none; margin: 0 -7px; padding: 5px 0 10px; min-width: 0; display: grid; gap: 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
   .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--radius);
@@ -313,6 +313,8 @@
     .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .card .title { -webkit-line-clamp: 1; }
     .card .tags { display: none; }
+    /* phones keep the chips to one row that scrolls sideways */
+    .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
     .explore .tools { flex-wrap: wrap; }
     .explore .tools input { flex-basis: 100%; }
     .sorts button { padding: 0 9px; }
