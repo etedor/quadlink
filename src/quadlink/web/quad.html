@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- the logo's Q; an icon cannot read the page's tokens, so this is --twitch's value -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22 fill=%22%239147ff%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39A15.61 15.61 0 1 0 39.53 12.39Z%22/%3E%3Cpath d=%22M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z%22/%3E%3C/svg%3E">
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
@@ -26,11 +28,14 @@
     --popover: color-mix(in oklab, var(--twitch) 32%, var(--black));
     --live: #eb0400;
     --error: var(--live);
+    --logo: var(--twitch);
   }
   html, body { margin: 0; height: 100%; background: var(--ground); color: var(--text); }
   body { display: grid; grid-template: 58px 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
-  header { grid-area: top; display: flex; align-items: center; justify-content: flex-end;
+  header { grid-area: top; display: flex; align-items: center; justify-content: space-between;
     padding: 0 19px; font: 16px system-ui, sans-serif; }
+  .logo { display: flex; align-items: center; }
+  .logo svg { width: 143.4px; height: 24.7px; }
   /* temporary: clears every pin and bench */
   .reset-all { height: 34px; padding: 0 14px; border: 0; border-radius: calc(var(--radius) - 7px);
     background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
@@ -184,7 +189,23 @@
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 </head>
 <body>
-<header><button type="button" class="reset-all">Reset pins &amp; benches</button></header>
+<header>
+  <a class="logo" href="/quad" aria-label="QuadLink">
+    <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
+      <g style="fill: var(--logo)">
+        <!-- Q: a crescent (two circles crossing at the gap) with a nail through its foot,
+             weighted to Play Bold's stem; 64 units span the ring's 42-unit cap height -->
+        <g transform="scale(0.3863)">
+        <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39A15.61 15.61 0 1 0 39.53 12.39Z"/>
+        <path d="M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z"/>
+        </g>
+        <!-- UADLINK in Play Bold (SIL OFL), as outlines so no font is needed -->
+        <path d="M24.92 16.02V4.25H28.82V16.02Q28.82 17.12 29.54 17.54Q30.25 17.95 32 17.95Q33.72 17.95 34.41 17.54Q35.1 17.12 35.1 16.02V4.25H39V16.02Q39 20.72 31.95 20.72Q24.92 20.72 24.92 16.02Z M48.25 4.25H53L58.85 20.47H54.9L53.45 16.2H47.52L46.1 20.47H42.25ZM52.6 13.6 50.55 7.5H50.45L48.4 13.6Z M62.15 4.25H69.05Q71.9 4.25 73.55 4.69Q75.2 5.12 75.97 6.2Q76.75 7.27 76.75 9.17V15.77Q76.75 17.62 76.02 18.64Q75.3 19.65 73.65 20.06Q72 20.47 69.07 20.47H62.15ZM68.9 17.7Q70.5 17.7 71.31 17.56Q72.12 17.42 72.49 17.02Q72.85 16.62 72.85 15.77V9.1Q72.85 7.95 71.94 7.49Q71.02 7.02 69.02 7.02H66.05V17.7Z M81.4 4.25H85.3V17.7H93.27V20.47H81.4Z M97.4 4.25H101.3V20.47H97.4Z M106.3 4.25H110.25L118.1 15.32V4.25H121.57V20.47H117.62L109.77 9.22V20.47H106.3Z M126.57 4.25H130.47V20.47H126.57ZM130.57 11.87 136.65 4.25H141.22L135.07 11.8L141.9 20.47H137.15Z"/>
+      </g>
+    </svg>
+  </a>
+  <button type="button" class="reset-all">Reset pins &amp; benches</button>
+</header>
 <aside aria-label="Online streamers">
   <div class="tools">
     <input type="search" placeholder="Search…" aria-label="Search channels">
