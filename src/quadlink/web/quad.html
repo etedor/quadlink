@@ -214,12 +214,8 @@
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
     background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
-  /* the gaps grow so every row is flush at both edges; the spacer takes the last row's
-     room, which stays ragged as in justified text */
+  /* the gaps grow so every row, the last too, is flush at both edges */
   .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
-  .explore-cats::after { content: ""; flex-grow: 1; }
-  /* cut to whole rows, the last row is full too */
-  .explore-cats.cut::after { display: none; }
   /* each quad tile's category, under the tile */
   .quad-cats { display: none; }
   body.exploring .quad-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1217,7 +1213,6 @@
   function fitRows() {
     const chips = [...cats.querySelectorAll('.chip')];
     chips.forEach(c => { c.style.display = ''; });
-    cats.classList.remove('cut');
     const tops = [...new Set(chips.map(c => c.offsetTop))];
     if (tops.length <= CHIP_ROWS) return;
     const last = tops[CHIP_ROWS - 1];
@@ -1229,7 +1224,6 @@
       return;
     }
     extra.forEach(c => { c.style.display = 'none'; });
-    cats.classList.add('cut');
   }
   addEventListener('resize', () => { if (exploring()) fitRows(); });
 
