@@ -63,10 +63,7 @@
   .add.busy input, .add.busy button { cursor: progress;
     box-shadow: inset 0 0 0 2px var(--accent); animation: edge 1s infinite alternate; }
   .add input.bad { outline: 2px solid var(--error); }
-  .rail li.just-added { animation: added 2s ease-in forwards; }
   @keyframes edge { to { box-shadow: inset 0 0 0 2px var(--clear); } }
-  @keyframes added { 0%, 50% { box-shadow: inset 0 0 0 2px var(--accent); }
-    to { box-shadow: inset 0 0 0 2px var(--clear); } }
   .add-error { margin: 0 10px 6px; color: var(--error); font-size: 14px; }
   .add-error[hidden] { display: none; }
   /* added channels sit above the configured ones, under their own label */
@@ -279,7 +276,6 @@
   @keyframes pulse { to { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
     .tile.pending::after, .add.busy input, .add.busy button, .card.skeleton .pic { animation: none; }
-    .rail li.just-added { animation: added 2s steps(2, jump-none) forwards; }
     .cover { transition: none; }
   }
   /* phones: top bar, a short quad, then the list. the quad fills the width at a fixed
@@ -639,7 +635,6 @@
   const BUSY_AFTER = 150;
   // the server gives up on a lookup after about 10 s
   const ROW_WAIT = 10000;
-  const HIGHLIGHT = 2000;
   let adding = false;
   let added = null;
   function addFailed(message) {
@@ -745,10 +740,6 @@
     li.classList.toggle('replaced', c.replaced_slot != null);
     who.append(line, meta);
     li.dataset.channel = c.channel;
-    if (added?.seen && added.channel === c.channel && Date.now() - added.seen < HIGHLIGHT) {
-      li.classList.add('just-added');
-      li.style.animationDelay = (added.seen - Date.now()) + 'ms';
-    }
     li.classList.toggle('in', c.state === 'in quad');
     li.classList.toggle('picked', c.channel === picked);
     li.tabIndex = 0;
