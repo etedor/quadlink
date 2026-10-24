@@ -134,17 +134,10 @@
   body.picking .tile button { cursor: copy; }
   body.picking .tile:hover::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     box-shadow: inset 0 0 0 3px var(--accent); }
-  /* pin and sound marks sit on a scrim, so they read over any video */
-  /* above the tile's full-size sound button; only the unpin button takes clicks */
+  /* the rail's chips, on a scrim so they read over any video; clicks pass to the tile */
   .tile-marks { position: absolute; z-index: 1; top: 10px; left: 10px; display: flex; gap: 5px;
     pointer-events: none; }
-  .tile-marks > * { display: inline-flex; padding: 5px; border-radius: calc(var(--radius) - 10px);
-    background: var(--scrim); color: var(--text); }
-  .tile-marks .unpin { all: unset; display: inline-flex; padding: 5px; pointer-events: auto;
-    cursor: pointer; border-radius: calc(var(--radius) - 10px); background: var(--scrim);
-    color: var(--accent); }
-  .tile-marks .unpin:hover, .tile-marks .unpin:focus-visible { color: var(--error); }
-  .tile-marks .offline { padding: 5px 9px; font: 600 14px/1 system-ui, sans-serif; }
+  .tile-marks .chip { background: var(--scrim); color: var(--text); }
   .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
     gap: 5px; }
   .rail li { display: flex; align-items: center; gap: 12px; padding: 7px; border-radius: var(--radius); }
@@ -164,19 +157,19 @@
   /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
   /* one chip for everything a row carries: facts (viewers, slot) and actions (put back,
      remove); only colour and behaviour differ */
-  .rail .chip { flex: none; display: inline-flex; align-items: center; justify-content: center;
+  .chip { flex: none; display: inline-flex; align-items: center; justify-content: center;
     gap: 5px; height: 22px; min-width: 22px; padding: 0 6px; margin: 0; box-sizing: border-box;
     border: 1.5px solid var(--chip-edge); border-radius: calc(var(--radius) - 9px);
     background: none; color: var(--text-quiet); font: 600 13px/1 system-ui, sans-serif;
     font-variant-numeric: tabular-nums; }
-  .rail .chip svg { width: 13px; height: 13px; }
+  .chip svg { width: 13px; height: 13px; }
   /* filled: the tile it is on; hollow (back): the tile a drop put it off */
   .rail .chip.slot { border-color: var(--accent); background: var(--accent); color: var(--white); }
   .rail .chip.back { border-color: var(--accent); color: var(--text); }
   .rail .chip.viewers { color: var(--text); }
   .rail .chip.viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: var(--live); }
-  /* red on hover says a click takes it away, as the quad's unpin does */
+  /* red on hover says a click takes it away */
   .rail button.chip { cursor: pointer; appearance: none; }
   .rail button.chip:hover, .rail button.chip:focus-visible { border-color: var(--error);
     color: var(--error); background: var(--popover); }
@@ -407,8 +400,6 @@
     try { localStorage.setItem('quadlink.view.3', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
   }
 
-  const PIN = '<path d="M12 17v5"/><path d="M9 10.76V6h6v4.76l2 3.24H7z"/><path d="M8 6h8"/>';
-
   function glyph(kind, paths, label) {
     const span = document.createElement('span');
     span.className = kind;
@@ -433,42 +424,18 @@
     });
   }
 
-  function unpinButton(slot, s) {
-    const label = 'Unpin ' + (s.display_name || s.channel);
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'unpin';
-    button.title = label;
-    button.setAttribute('aria-label', s.returns ? `${label}, bring back ${nameOf(s.returns)}` : label);
-    const mark = glyph('pin', PIN, label);
-    mark.removeAttribute('role');
-    mark.removeAttribute('aria-label');
-    button.append(mark);
-    // the tile under it toggles sound on click and starts a drag on press
-    button.addEventListener('pointerdown', e => e.stopPropagation());
-    button.addEventListener('click', e => {
-      e.stopPropagation();
-      button.disabled = true;
-      // with nothing to bring back, selection fills the tile and coverChanges shows it
-      if (s.returns) back(slot, s.returns);
-      act({ action: 'unpin', slot }).catch(() => { button.disabled = false; fail(slot); });
-    });
-    return button;
-  }
-
   function markTiles() {
     tiles.forEach((tile, i) => {
       const s = latest?.slots[i];
       const loud = tile.classList.contains('loud');
       const marks = [];
-      if (s?.pinned) marks.push(unpinButton(i, s));
       if (s?.reserved_for) {
         const offline = document.createElement('span');
-        offline.className = 'offline';
+        offline.className = 'chip';
         offline.textContent = 'Offline';
         marks.push(offline);
       }
-      if (loud) marks.push(glyph('sound', SPEAKER, 'Sound on'));
+      if (loud) marks.push(glyph('chip', SPEAKER, 'Sound on'));
       tile.querySelector('.tile-marks').replaceChildren(...marks);
       const button = tile.querySelector('button');
       const who = s?.display_name || s?.channel || 'empty';
