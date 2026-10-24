@@ -33,7 +33,7 @@ class Overrides:
 
     Attributes:
         holds: Slot (0-3) -> its hold.
-        absent: Consecutive refreshes each holder has been out of the pool; see
+        absent: Consecutive refreshes each held or replaced channel has been out of the pool; see
             quadlink.overrides.age.
         extras: Channels the operator added beside the config. They are looked up
             like configured ones but reach the quad only as holders.

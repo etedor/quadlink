@@ -186,6 +186,8 @@
   .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   .rail li { cursor: grab; }
   .rail img { pointer-events: none; }
+  /* an offline channel has no preview; an empty well reads as a broken image */
+  .rail img:not([src]) { background: var(--field); }
   .explore-btn[aria-pressed="true"] { background: var(--accent); color: var(--white); }
   /* Explore shares the main panel: the quad becomes one frozen row of tiles, still a drop
      target, and Explore scrolls below it at the quad's width */

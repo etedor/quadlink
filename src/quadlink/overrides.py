@@ -141,21 +141,23 @@ def drop_unconfigured(
 
 
 def age(overrides: Overrides, state: QuadState, pool: Collection[str]) -> Result:
-    """Count one refresh for every holder out of the pool.
+    """Count one refresh for every holder and replaced channel out of the pool.
 
-    A holder back in the pool starts over at zero; one out for more than
-    GRACE_REFRESHES refreshes loses its tile as Unpin takes it. A replaced
-    channel has no timer: it waits until its hold ends.
+    A channel back in the pool starts over at zero. A holder out for more than
+    GRACE_REFRESHES refreshes loses its tile as Unpin takes it; a replaced channel
+    out that long is forgotten, so the hold, when it ends, leaves the tile to
+    selection instead of keeping an offline stream's claim on it.
     """
-    absent = {
-        h.holder: overrides.absent.get(h.holder, 0) + 1
-        for h in overrides.holds.values()
-        if h.holder not in pool
+    watched = [c for h in overrides.holds.values() for c in (h.holder, h.replaced) if c]
+    absent = {c: overrides.absent.get(c, 0) + 1 for c in watched if c not in pool}
+    gone = {c for c, n in absent.items() if n > GRACE_REFRESHES}
+    holds = {
+        s: Hold(h.holder, None if h.replaced in gone else h.replaced)
+        for s, h in overrides.holds.items()
     }
-    holds = dict(overrides.holds)
-    for slot in [s for s, h in holds.items() if absent.get(h.holder, 0) > GRACE_REFRESHES]:
+    for slot in [s for s, h in holds.items() if h.holder in gone]:
         holds, state = _end(holds, state, slot)
-    kept = {h.holder for h in holds.values()}
+    kept = {c for h in holds.values() for c in (h.holder, h.replaced) if c}
     return (
         Overrides(
             holds=holds,
@@ -188,8 +190,8 @@ def _build(
     holds: Mapping[int, Hold],
     fresh: Collection[str] = (),
 ) -> Overrides:
-    """Overrides with absence counts kept for surviving holders, except fresh ones."""
-    keep = {h.holder for h in holds.values()} - set(fresh)
+    """Overrides with absence counts kept for surviving holds' channels, except fresh ones."""
+    keep = {c for h in holds.values() for c in (h.holder, h.replaced) if c} - set(fresh)
     return Overrides(
         holds=dict(holds),
         absent={c: n for c, n in previous.absent.items() if c in keep},

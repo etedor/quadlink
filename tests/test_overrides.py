@@ -218,10 +218,23 @@ class TestGrace:
         assert scene.refresh() == ("a", "b", "c", "f")
         assert scene.overrides.absent == {}
 
-    def test_a_replaced_stream_has_no_timer(self, scene):
+    def test_a_replaced_stream_offline_past_the_grace_is_forgotten(self, scene):
         scene.drop("f", 3)
         del scene.live["d"]
-        for _ in range(GRACE_REFRESHES + 2):
+        for _ in range(GRACE_REFRESHES):
+            scene.refresh()
+        assert scene.overrides.holds == {3: Hold("f", "d")}
+        scene.refresh()
+        # the hold stays; when it ends, selection fills the tile
+        assert scene.overrides.holds == {3: Hold("f")}
+        assert scene.overrides.absent == {}
+
+    def test_a_replaced_stream_back_within_the_grace_keeps_its_claim(self, scene):
+        scene.drop("f", 3)
+        del scene.live["d"]
+        scene.refresh()
+        scene.live["d"] = 50
+        for _ in range(GRACE_REFRESHES + 1):
             scene.refresh()
         assert scene.overrides.holds == {3: Hold("f", "d")}
 
