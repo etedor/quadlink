@@ -16,10 +16,10 @@ REQUEST_WAIT = 4.0
 # GQL refuses a second page without a browser integrity token, so one request is the
 # whole listing; 100 is the largest page it serves
 STREAMS_LIMIT = 100
-TOP_LIMIT = 12
+TOP_LIMIT = 24
 # Twitch ranks its top categories by a count older than the one it reports, so a few
 # extra let the reported order pick the top ones
-TOP_FETCH = 20
+TOP_FETCH = 32
 SEARCH_LIMIT = 10
 # GQL refuses a query with more than 15 aliased root fields
 ALIAS_LIMIT = 15

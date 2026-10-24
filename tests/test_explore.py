@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 import pytest
 
-from quadlink.explore import Category, DirectoryError, GQLDirectory, Sort
+from quadlink.explore import TOP_FETCH, TOP_LIMIT, Category, DirectoryError, GQLDirectory, Sort
 
 
 def _node(id: str, name: str, viewers: int | None, live: int | None = 3) -> dict[str, Any]:
@@ -56,8 +56,9 @@ class Twitch:
             ]
             data = {"searchCategories": {"edges": [{"node": n} for n in nodes]}}
         elif "games(" in query:
-            assert variables == {"first": 20}
-            nodes = [_node(str(i), f"c{i}", v) for i, v in enumerate([90, 70, 80, *range(17)])]
+            assert variables == {"first": TOP_FETCH}
+            counts = [90, 70, 80, *range(TOP_FETCH - 3)]
+            nodes = [_node(str(i), f"c{i}", v) for i, v in enumerate(counts)]
             data = {"games": {"edges": [{"node": n} for n in nodes]}}
         elif "streams(" in query:
             if variables["id"] == "404":
@@ -100,11 +101,10 @@ async def test_empty_search_asks_nothing(directory: GQLDirectory, twitch: Twitch
     assert twitch.requests == []
 
 
-async def test_top_is_the_twelve_most_watched_by_the_reported_counts(
-    directory: GQLDirectory,
-) -> None:
-    top = await directory.top()
-    assert [c.viewers for c in top] == [90, 80, 70, 16, 15, 14, 13, 12, 11, 10, 9, 8]
+async def test_top_is_the_most_watched_by_the_reported_counts(directory: GQLDirectory) -> None:
+    top = [c.viewers for c in await directory.top()]
+    assert top[:4] == [90, 80, 70, TOP_FETCH - 4]
+    assert top == sorted(top, reverse=True) and len(top) == TOP_LIMIT
 
 
 async def test_named_keeps_order_and_drops_unknown_names(
