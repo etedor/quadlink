@@ -326,9 +326,14 @@
     tiles.forEach((tile, i) => {
       const channel = latest.slots[i]?.channel;
       if (!channel || channel === before.slots[i]?.channel || tile.awaiting) return;
-      const c = latest.channels.find(x => x.channel === channel);
-      cover(tile, c?.thumbnail ? c.thumbnail + '?t=' + Math.floor(Date.now() / 300000) : null);
+      cover(tile, thumb(channel));
     });
+  }
+
+  // Twitch refreshes previews every few minutes; the bucket keeps the browser cache in step
+  function thumb(channel) {
+    const c = latest?.channels.find(x => x.channel === channel);
+    return c?.thumbnail ? c.thumbnail + '?t=' + Math.floor(Date.now() / 300000) : null;
   }
 
   function cover(tile, image) {
@@ -434,7 +439,9 @@
     button.addEventListener('click', e => {
       e.stopPropagation();
       button.disabled = true;
-      act({ action: 'unpin', slot }).catch(() => { button.disabled = false; });
+      // with nothing to bring back, selection fills the tile and coverChanges shows it
+      if (s.returns) back(slot, s.returns);
+      act({ action: 'unpin', slot }).catch(() => { button.disabled = false; fail(slot); });
     });
     return button;
   }
@@ -496,7 +503,9 @@
       e.stopPropagation();
       show(false);
       button.disabled = true;
-      act({ action: 'put_back', channel: c.channel }).catch(() => { button.disabled = false; });
+      back(c.replaced_slot, c.channel);
+      act({ action: 'put_back', channel: c.channel })
+        .catch(() => { button.disabled = false; fail(c.replaced_slot); });
     });
     button.addEventListener('keydown', e => e.stopPropagation());
     return button;
@@ -563,8 +572,8 @@
     const li = document.createElement('li');
     const img = document.createElement('img');
     img.alt = '';
-    // Twitch refreshes previews every few minutes; the bucket keeps the browser cache in step
-    if (c.thumbnail) img.src = c.thumbnail + '?t=' + Math.floor(Date.now() / 300000);
+    const image = thumb(c.channel);
+    if (image) img.src = image;
     const who = document.createElement('div');
     who.className = 'who';
     const name = document.createElement('span');
@@ -808,6 +817,11 @@
     drag.ghost.style.top = e.clientY + 'px';
     const over = tileUnder(e.clientX, e.clientY);
     tiles.forEach(t => t.classList.toggle('target', t === over && t !== drag.source.tile));
+  }
+
+  function back(slot, channel) {
+    expect(slot, channel);
+    cover(tiles[slot], thumb(channel));
   }
 
   function place(slot, channel, image) {
