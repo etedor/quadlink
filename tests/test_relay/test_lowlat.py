@@ -3,6 +3,7 @@
 import asyncio
 import re
 import time
+import types
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 
@@ -71,6 +72,35 @@ class TestNextRelease:
         # a PTS wrap reads as a part lasting about a day
         prev = _Part(b"", 95_000.0, False, release=100.0)
         assert next_release(100.0, prev) == pytest.approx(100.0 + PART_TARGET * PACE)
+
+
+def _numbers(text: str) -> dict[int, int]:
+    """Segment number -> discontinuity number, as RFC 8216 6.2.2 counts them."""
+    msn = int(re.search(r"MEDIA-SEQUENCE:(\d+)", text).group(1))
+    disc = int(re.search(r"DISCONTINUITY-SEQUENCE:(\d+)", text).group(1))
+    found, seq = {}, msn
+    for line in text.splitlines():
+        if line == "#EXT-X-DISCONTINUITY":
+            disc += 1
+        elif line.startswith("/streams/") and "/seg/" in line:
+            found[seq] = disc
+            seq += 1
+    return found
+
+
+def test_a_segment_keeps_its_discontinuity_number_as_the_window_slides():
+    # segment 11 follows a discontinuity; once 10 leaves the window it lists first
+    segs = []
+    for seq, disc, dseq in [(10, False, 5), (11, True, 6), (12, False, 6)]:
+        seg = lowlat._Seg(seq, disc, dseq, complete=True)
+        seg.parts.append(_Part(b"", 0.5, True, release=0.0))
+        segs.append(seg)
+    state = types.SimpleNamespace(segs=segs, slot=0, target=2)
+    before = _numbers(lowlat._Slot.render(state, 1.0))
+    state.segs = segs[1:]
+    after = _numbers(lowlat._Slot.render(state, 1.0))
+    assert before == {10: 5, 11: 6, 12: 6}
+    assert after == {11: 6, 12: 6}
 
 
 class Source:

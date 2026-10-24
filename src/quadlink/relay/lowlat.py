@@ -620,7 +620,10 @@ class _Slot:
             f"#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES,PART-HOLD-BACK={PART_HOLD_BACK:.2f}",
             f"#EXT-X-PART-INF:PART-TARGET={PART_TARGET}",
             f"#EXT-X-MEDIA-SEQUENCE:{live[0].seq}",
-            f"#EXT-X-DISCONTINUITY-SEQUENCE:{live[0].dseq - live[0].disc}",
+            # RFC 8216 6.2.2 counts a DISCONTINUITY before the first segment, so the first
+            # segment carries its own number and no tag: a segment's number may never change
+            # between reloads, or AVPlayer fails the stream (-12312) and stops
+            f"#EXT-X-DISCONTINUITY-SEQUENCE:{live[0].dseq}",
         ]
         n = self.slot + 1
         with_parts = live[-PARTS_FOR:]
