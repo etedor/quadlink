@@ -57,8 +57,16 @@
     display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
   .tools button:hover, .tools button[aria-expanded="true"] { background: var(--hover); }
   .add { padding-top: 0; }
-  .add button:disabled { color: var(--text-quiet); cursor: progress; }
+  .add .busy-glyph, .add.busy .idle-glyph { display: none; }
+  .add.busy .busy-glyph { display: block; }
+  /* the tiles' pending pulse, drawn as an edge so the text stays solid */
+  .add.busy input, .add.busy button { cursor: progress;
+    box-shadow: inset 0 0 0 2px var(--accent); animation: edge 1s infinite alternate; }
   .add input.bad { outline: 2px solid var(--error); }
+  .rail li.just-added { animation: added 2s ease-in forwards; }
+  @keyframes edge { to { box-shadow: inset 0 0 0 2px var(--clear); } }
+  @keyframes added { 0%, 50% { box-shadow: inset 0 0 0 2px var(--accent); }
+    to { box-shadow: inset 0 0 0 2px var(--clear); } }
   .add-error { margin: 0 10px 6px; color: var(--error); font-size: 14px; }
   .add-error[hidden] { display: none; }
   /* added channels sit above the configured ones, under their own label */
@@ -202,7 +210,8 @@
   .tile.lifted { opacity: 0.5; }
   @keyframes pulse { to { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
-    .tile.pending::after { animation: none; }
+    .tile.pending::after, .add.busy input, .add.busy button { animation: none; }
+    .rail li.just-added { animation: added 2s steps(2, jump-none) forwards; }
     .cover { transition: none; }
   }
   /* phones: top bar, a short quad, then the list. the quad fills the width at a fixed
@@ -244,9 +253,10 @@
   <form class="tools add">
     <input type="text" placeholder="Quick add…" aria-label="Add a Twitch channel"
       autocomplete="off" autocapitalize="none" spellcheck="false">
-    <button type="submit" aria-label="Add channel" title="Add channel"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg></button>
+    <button type="submit" aria-label="Add channel" title="Add channel"><svg class="idle-glyph" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg><svg class="busy-glyph" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"></path></svg></button>
   </form>
-  <p class="add-error" role="alert" hidden></p>
+  <p class="add-error" id="add-error" role="alert" hidden></p>
+  <p class="sr-only" role="status" aria-live="polite"></p>
   <div class="pop filter-pop" hidden>
     <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="reset" aria-label="Reset filters" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
     <div class="pop-body">
@@ -545,28 +555,67 @@
   const addInput = addForm.querySelector('input');
   const addButton = addForm.querySelector('button');
   const addError = document.querySelector('.add-error');
+  const addStatus = document.querySelector('aside [role="status"]');
+  // the name and duplicate checks answer at once; only the Twitch lookup shows as busy
+  const BUSY_AFTER = 150;
+  // the server gives up on a lookup after about 10 s
+  const ROW_WAIT = 10000;
+  const HIGHLIGHT = 2000;
+  let adding = false;
+  let added = null;
   function addFailed(message) {
     addInput.classList.toggle('bad', Boolean(message));
     addError.textContent = message || '';
     addError.hidden = !message;
+    if (message) {
+      addInput.setAttribute('aria-invalid', 'true');
+      addInput.setAttribute('aria-describedby', 'add-error');
+    } else {
+      addInput.removeAttribute('aria-invalid');
+      addInput.removeAttribute('aria-describedby');
+    }
     alignQuad();
+  }
+  function busy(channel) {
+    addForm.classList.toggle('busy', Boolean(channel));
+    addForm.setAttribute('aria-busy', String(Boolean(channel)));
+    addButton.setAttribute('aria-disabled', String(Boolean(channel)));
+    addButton.setAttribute('aria-label', channel ? 'Adding ' + channel : 'Add channel');
+    addInput.readOnly = Boolean(channel);
   }
   addInput.addEventListener('input', () => addFailed(null));
   addForm.addEventListener('submit', async e => {
     e.preventDefault();
-    const channel = addInput.value.trim();
-    if (!channel) return;
-    addButton.disabled = true;
+    const channel = addInput.value.trim().toLowerCase();
+    if (!channel || adding) return;
+    adding = true;
+    const timer = setTimeout(() => busy(channel), BUSY_AFTER);
     try {
       await act({ action: 'add', channel });
       addInput.value = '';
       addFailed(null);
+      added = { channel, until: Date.now() + ROW_WAIT, seen: null };
+      showAdded();
     } catch (err) {
       addFailed(err.message);
+      addInput.select();
     } finally {
-      addButton.disabled = false;
+      clearTimeout(timer);
+      busy(null);
+      adding = false;
     }
   });
+
+  // the snapshot with the new row can land before or after the action's answer
+  function showAdded() {
+    if (!added || added.seen) return;
+    if (Date.now() > added.until) { added = null; return; }
+    const li = [...rail.children].find(x => x.dataset.channel === added.channel);
+    if (!li) return;
+    added.seen = Date.now();
+    li.scrollIntoView({ block: 'nearest', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
+    addStatus.textContent = 'Added ' + (li.querySelector('.name')?.textContent || added.channel);
+  }
 
   function row(c) {
     const li = document.createElement('li');
@@ -617,6 +666,10 @@
     li.classList.toggle('replaced', c.replaced_slot != null);
     who.append(line, meta);
     li.dataset.channel = c.channel;
+    if (added?.seen && added.channel === c.channel && Date.now() - added.seen < HIGHLIGHT) {
+      li.classList.add('just-added');
+      li.style.animationDelay = (added.seen - Date.now()) + 'ms';
+    }
     li.classList.toggle('in', c.state === 'in quad');
     li.classList.toggle('picked', c.channel === picked);
     li.tabIndex = 0;
@@ -904,6 +957,7 @@
     latest = JSON.parse(e.data);
     render();
     markTiles();
+    showAdded();
     if (before) coverChanges(before);
   };
   // a restart changes the page token, and EventSource never retries a refusal

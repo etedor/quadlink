@@ -445,7 +445,7 @@ class Daemon:
         except Exception as e:
             raise OverrideError(f"the Twitch lookup of {channel} failed: {e}") from e
         if stream is None:
-            raise OverrideError(f"{channel} is not live on Twitch, or does not exist")
+            raise OverrideError(f"{channel} is not live or does not exist")
         if not stream.has_video:
             raise OverrideError(f"{channel} is live without video")
         overrides = actions.add_extra(self.overrides, channel, self._configured())
