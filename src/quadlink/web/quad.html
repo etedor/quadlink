@@ -216,6 +216,8 @@
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
   /* the gaps grow so every row, the last too, is flush at both edges */
   .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
+  .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
+    gap: 5px; min-width: 0; }
   /* each quad tile's category, under the tile */
   .quad-cats { display: none; }
   body.exploring .quad-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1216,10 +1218,15 @@
 
   // shows the chips that fill CHIP_ROWS rows at this width; the chosen one always shows
   function fitRows() {
+    // measured as one wrapping line, the way the browser first lays the chips out
+    cats.querySelectorAll('.chip-row').forEach(row => row.replaceWith(...row.children));
     const chips = [...cats.querySelectorAll('.chip')];
     chips.forEach(c => { c.style.display = ''; });
     const tops = [...new Set(chips.map(c => c.offsetTop))];
-    if (tops.length <= CHIP_ROWS) return;
+    if (tops.length <= CHIP_ROWS) {
+      if (tops.length > 1) balance(chips, tops.length);
+      return;
+    }
     const last = tops[CHIP_ROWS - 1];
     const extra = chips.filter(c => c.offsetTop > last);
     const chosen = extra.find(c => c.getAttribute('aria-pressed') === 'true');
@@ -1231,6 +1238,27 @@
     extra.forEach(c => { c.style.display = 'none'; });
   }
   addEventListener('resize', () => { if (exploring()) fitRows(); });
+
+  // splits the chips into rows of about equal width, so no row ends with a stray pair
+  function balance(chips, rows) {
+    const widths = chips.map(c => c.offsetWidth);
+    const total = widths.reduce((a, b) => a + b, 0);
+    const lines = [[]];
+    let done = 0;
+    chips.forEach((chip, i) => {
+      // a chip starts the next row once its middle passes this row's share
+      const share = (total * lines.length) / rows;
+      if (lines.length < rows && lines.at(-1).length && done + widths[i] / 2 > share) lines.push([]);
+      lines.at(-1).push(chip);
+      done += widths[i];
+    });
+    cats.replaceChildren(...lines.map(line => {
+      const row = document.createElement('div');
+      row.className = 'chip-row';
+      row.append(...line);
+      return row;
+    }));
+  }
 
   function markPills() {
     cats.querySelectorAll('.chip').forEach(b =>
