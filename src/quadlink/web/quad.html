@@ -41,10 +41,9 @@
     padding: 0 19px; font: 16px system-ui, sans-serif; }
   .logo { display: flex; align-items: center; }
   .logo svg { width: 143.4px; height: 24.7px; }
-  /* ends every tile hold */
-  .reset-all { height: 34px; padding: 0 14px; border: 0; border-radius: calc(var(--radius) - 7px);
+  .explore-btn { height: 34px; padding: 0 14px; border: 0; border-radius: calc(var(--radius) - 7px);
     background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
-  .reset-all:hover { background: var(--hover); }
+  .explore-btn:hover { background: var(--hover); }
   aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
     font: 16px system-ui, sans-serif; position: relative; }
   .tools { display: flex; gap: 7px; padding: 10px 10px 5px; }
@@ -191,7 +190,6 @@
   .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   .rail li { cursor: grab; }
   .rail img { pointer-events: none; }
-  .header-actions { display: flex; gap: 7px; }
   .explore-btn[aria-pressed="true"] { background: var(--accent); color: var(--white); }
   /* Explore shares the main panel: the quad becomes one frozen row of tiles, still a drop
      target, and Explore scrolls below it at the quad's width */
@@ -316,10 +314,7 @@
       </g>
     </svg>
   </a>
-  <div class="header-actions">
-    <button type="button" class="reset-all explore-btn" aria-pressed="false">Explore</button>
-    <button type="button" class="reset-all unpin-all">Unpin all</button>
-  </div>
+  <button type="button" class="explore-btn" aria-pressed="false">Explore</button>
 </header>
 <aside aria-label="Online streamers">
   <div class="tools">
@@ -887,7 +882,6 @@
   let drag = null;
   let dragged = false;
 
-  document.querySelector('.unpin-all').addEventListener('click', () => act({ action: 'unpin_all' }));
 
   async function act(body) {
     const resp = await fetch('/api/actions', {
