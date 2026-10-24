@@ -14,43 +14,66 @@ EMPTY_SLOTS = ("", "", "", "")
 
 
 @dataclass(frozen=True)
+class Hold:
+    """A tile the operator filled by a drop.
+
+    Attributes:
+        holder: The channel the tile shows while it is in the pool.
+        replaced: Channels the drops put off the tile, oldest first. replaced[0]
+            was on the tile before the first drop and gets it back when the hold
+            ends; while listed, none of them can take any tile.
+    """
+
+    holder: str
+    replaced: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Overrides:
     """Operator adjustments applied on top of the scored selection.
 
     Attributes:
-        pins: Slot (0-3) each pinned channel holds while it is in the pool.
-        benches: Channels kept out of the quad.
-        absent: Consecutive refreshes each pinned or benched channel has been out
-            of the pool; see quadlink.overrides.age.
-        bound: Benched channel -> the pinned channel whose placement benched
-            it. The bench ends when that pin does.
-        extras: Channels the operator added beside the config. They are
-            looked up like configured ones but reach the quad only when pinned.
+        holds: Slot (0-3) -> its hold.
+        absent: Consecutive refreshes each holder has been out of the pool; see
+            quadlink.overrides.age.
+        extras: Channels the operator added beside the config. They are looked up
+            like configured ones but reach the quad only as holders.
     """
 
-    pins: Mapping[str, int] = field(default_factory=dict)
-    benches: frozenset[str] = frozenset()
+    holds: Mapping[int, Hold] = field(default_factory=dict)
     absent: Mapping[str, int] = field(default_factory=dict)
-    bound: Mapping[str, str] = field(default_factory=dict)
     extras: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
-        if both := self.pins.keys() & self.benches:
-            raise ValueError(f"channels both pinned and benched: {sorted(both)}")
-        slots = list(self.pins.values())
-        if any(slot not in range(4) for slot in slots):
-            raise ValueError(f"pin slots out of range 0-3: {slots}")
-        if len(set(slots)) != len(slots):
-            raise ValueError(f"more than one pin per slot: {slots}")
-        if loose := {
-            b: p for b, p in self.bound.items() if b not in self.benches or p not in self.pins
-        }:
-            raise ValueError(f"bindings without their bench or pin: {loose}")
+        if bad := [slot for slot in self.holds if slot not in range(4)]:
+            raise ValueError(f"hold slots out of range 0-3: {bad}")
+        holders = [h.holder for h in self.holds.values()]
+        if len(set(holders)) != len(holders):
+            raise ValueError(f"a channel holds more than one tile: {holders}")
+        listed = [c for h in self.holds.values() for c in h.replaced]
+        if len(set(listed)) != len(listed):
+            raise ValueError(f"a channel is replaced on more than one tile: {listed}")
+        if both := set(holders) & set(listed):
+            raise ValueError(f"channels both holding and replaced: {sorted(both)}")
+        if listed_extras := set(listed) & self.extras:
+            raise ValueError(f"added channels are never replaced: {sorted(listed_extras)}")
 
     @property
-    def channels(self) -> set[str]:
-        """Every pinned or benched channel."""
-        return self.pins.keys() | self.benches
+    def pins(self) -> dict[str, int]:
+        """Slot of each holder."""
+        return {h.holder: slot for slot, h in self.holds.items()}
+
+    @property
+    def replaced(self) -> set[str]:
+        """Every channel on a hold's list."""
+        return {c for h in self.holds.values() for c in h.replaced}
+
+    def replaced_at(self, channel: str) -> tuple[int, int] | None:
+        """(slot, index in its list) of a replaced channel, or None."""
+        for slot, hold in self.holds.items():
+            if channel in hold.replaced:
+                return slot, hold.replaced.index(channel)
+        return None
 
 
 @dataclass(frozen=True)
@@ -83,8 +106,8 @@ def compose(
 ) -> QuadState:
     """Compose the next quad from the live pool, the previous state and the overrides.
 
-    The pool is ordered best first. Benched channels drop out of it; pinned
-    channels in it take their slots; the other slots fill by adjusted priority.
+    The pool is ordered best first. Replaced channels drop out of it; holders
+    in it take their slots; the other slots fill by adjusted priority.
     Channels already on screen keep their slots; newcomers take freed slots
     lowest-first in priority order. The input state is not modified, and an empty
     pool returns it as is, so slots and categories survive a cycle in which every
@@ -104,18 +127,20 @@ def waiting(
     overrides: Overrides,
     config: Config,
 ) -> list[str]:
-    """Channels natural selection would put on screen that pins keep off.
+    """Channels natural selection would put on screen that holders keep off.
 
+    Replaced channels are not waiting: they are off by the operator's drop.
     state is the quad composed from this pool with these overrides.
     """
-    if not pool or not overrides.pins:
+    if not pool or not overrides.holds:
         return []
-    natural, _ = _compose(pool, state, replace(overrides, pins={}, bound={}), config)
+    unheld = [s for s in pool if s.stream.channel not in overrides.replaced]
+    natural, _ = _compose(unheld, state, Overrides(extras=overrides.extras), config)
     return [c for c in natural.channels if c and c not in state.positions]
 
 
 def _eligible(channel: str, overrides: Overrides) -> bool:
-    if channel in overrides.benches:
+    if channel in overrides.replaced:
         return False
     return channel not in overrides.extras or channel in overrides.pins
 

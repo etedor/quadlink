@@ -9,22 +9,25 @@ from typing import Annotated, Literal
 import structlog
 from pydantic import BaseModel, Field
 
-from quadlink.quad import Overrides, QuadState
+from quadlink.quad import Hold, Overrides, QuadState
 
 logger = structlog.get_logger()
 
 DEFAULT_STATE_PATH = Path("/var/lib/quadlink/state.json")
-STATE_VERSION = 2
+STATE_VERSION = 3
 
 Slot = Annotated[int, Field(ge=0, le=3)]
 
 
+class _HoldFile(BaseModel):
+    holder: str
+    replaced: list[str]
+
+
 class _StateFile(BaseModel):
-    version: Literal[2]
-    pins: dict[str, Slot]
-    benches: list[str]
+    version: Literal[3]
+    holds: dict[Slot, _HoldFile]
     absent: dict[str, int]
-    bound: dict[str, str]
     channels: Annotated[list[str], Field(min_length=4, max_length=4)]
     categories: dict[str, str]
 
@@ -57,10 +60,8 @@ class StateStore:
         try:
             data = _StateFile.model_validate_json(text)
             overrides = Overrides(
-                pins=data.pins,
-                benches=frozenset(data.benches),
+                holds={s: Hold(h.holder, tuple(h.replaced)) for s, h in data.holds.items()},
                 absent=data.absent,
-                bound=data.bound,
             )
         except ValueError as e:
             logger.warning("state file invalid, starting empty", path=str(self.path), error=str(e))
@@ -90,10 +91,15 @@ def _serialize(overrides: Overrides, state: QuadState) -> str:
     return json.dumps(
         {
             "version": STATE_VERSION,
-            "pins": dict(sorted(overrides.pins.items())),
-            "benches": sorted(overrides.benches),
-            "absent": dict(sorted(overrides.absent.items())),
-            "bound": dict(sorted(overrides.bound.items())),
+            # added channels end with the process, and their holds with them
+            "holds": {
+                str(slot): {"holder": hold.holder, "replaced": list(hold.replaced)}
+                for slot, hold in sorted(overrides.holds.items())
+                if hold.holder not in overrides.extras
+            },
+            "absent": {
+                c: n for c, n in sorted(overrides.absent.items()) if c not in overrides.extras
+            },
             "channels": list(state.channels),
             "categories": dict(sorted(state.categories.items())),
         },

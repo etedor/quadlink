@@ -323,18 +323,18 @@ class Daemon:
                     candidates=len(candidates),
                 )
 
-        overrides = actions.drop_unconfigured(
-            self.overrides, configured_channels(config) | self.overrides.extras
+        overrides, state = actions.drop_unconfigured(
+            self.overrides, self.quad_state, configured_channels(config) | self.overrides.extras
         )
         # an empty pool usually means every lookup failed (network or proxy down),
-        # which must not run out the grace of every pin and bench
+        # which must not run out the grace of every hold
         if candidates:
-            overrides = actions.age(overrides, {c.stream.channel for c in candidates})
-        if overrides != self.overrides:
-            cleared = sorted(self.overrides.channels - overrides.channels)
-            if cleared:
-                logger.info("overrides cleared", channels=cleared)
-            self.overrides = overrides
+            overrides, state = actions.age(overrides, state, {c.stream.channel for c in candidates})
+        if overrides != self.overrides or state != self.quad_state:
+            ended = sorted(self.overrides.pins.keys() - overrides.pins.keys())
+            if ended:
+                logger.info("holds ended", channels=ended)
+            self.overrides, self.quad_state = overrides, state
             self._save_state()
 
         self._config = config
@@ -403,37 +403,35 @@ class Daemon:
                 await client.send_webhook(config.webhook.url, quad)
 
     async def place(self, channel: str, slot: int) -> None:
-        """Pin channel to slot and bench the channel there.
+        """Make channel hold the tile; what it showed is put off it (see overrides.place).
 
         Every operator action raises OverrideError for invalid input, and
         otherwise saves the overrides and requests one recompose.
         """
         self._apply(
-            actions.place(self.overrides, self.quad_state, channel, slot, self._configured())
+            *actions.place(self.overrides, self.quad_state, channel, slot, self._configured())
         )
 
     async def swap(self, a: int, b: int) -> None:
-        """Swap the channels of two slots; pins move with their channels."""
+        """Swap the channels of two slots; holds move with their holders."""
         # with nothing to recompose from, the moved quad_state would never reach the relay
         if self._config is None or not self._pool:
             raise OverrideError("no live channels yet: wait for a refresh that finds one")
         self._apply(*actions.swap(self.overrides, self.quad_state, a, b))
 
-    async def pin(self, slot: int) -> None:
-        """Pin the channel in slot to that slot."""
-        self._apply(actions.pin(self.overrides, self.quad_state, slot))
-
     async def unpin(self, slot: int) -> None:
-        """Remove the pin on slot."""
-        self._apply(actions.unpin(self.overrides, slot))
+        """End the tile's hold; the first channel it replaced gets the tile back."""
+        self._apply(*actions.unpin(self.overrides, self.quad_state, slot))
 
-    async def bench(self, channel: str) -> None:
-        """Keep channel out of the quad."""
-        self._apply(actions.bench(self.overrides, channel, self._configured()))
+    async def put_back(self, channel: str) -> None:
+        """Return channel's tile to the moment before a drop put it off."""
+        if channel not in {c.stream.channel for c in self._pool}:
+            raise OverrideError(f"{channel} is offline: putting it back would leave the tile empty")
+        self._apply(*actions.put_back(self.overrides, self.quad_state, channel))
 
-    async def unbench(self, channel: str) -> None:
-        """Make channel eligible again."""
-        self._apply(actions.unbench(self.overrides, channel, self._configured()))
+    async def unpin_all(self) -> None:
+        """End every hold."""
+        self._apply(*actions.unpin_all(self.overrides, self.quad_state))
 
     async def add(self, channel: str) -> None:
         """Add a live Twitch channel beside the config, until removed or a restart."""
@@ -461,17 +459,13 @@ class Daemon:
         self._apply(overrides)
 
     async def remove(self, channel: str) -> None:
-        """Remove an added channel, with its pin and bench."""
-        overrides = actions.remove_extra(self.overrides, channel)
+        """Remove an added channel; a tile it holds goes back as Unpin gives it."""
+        overrides, state = actions.remove_extra(self.overrides, self.quad_state, channel)
         if self.processor is not None:
             self.processor.extras = overrides.extras
         self._pool = [c for c in self._pool if c.stream.channel != channel]
         self.channel_statuses = [s for s in self.channel_statuses if s.channel != channel]
-        self._apply(overrides)
-
-    async def reset(self) -> None:
-        """Clear every pin and bench."""
-        self._apply(actions.reset(self.overrides))
+        self._apply(overrides, state)
 
     def snapshot(self) -> Snapshot:
         """The quad and every configured channel's dashboard state."""

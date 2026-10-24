@@ -15,7 +15,7 @@ from quadlink import api
 from quadlink.config.loader import ConfigLoader
 from quadlink.dashboard import QuadStreamLogin, Snapshot, snapshot
 from quadlink.overrides import OverrideError
-from quadlink.quad import Overrides, QuadState
+from quadlink.quad import Hold, Overrides, QuadState
 from quadlink.relay.playlist import Segment
 from quadlink.relay.segments import SegmentProxy
 from quadlink.types import ChannelState, ChannelStatus, Metadata, Stream
@@ -41,7 +41,8 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
         ChannelStatus("c", ChannelState.OFFLINE, [50, 10]),
         ChannelStatus("d", ChannelState.REJECTED, [50], reason="category blocked"),
     ]
-    overrides = Overrides(pins={"a": 0, "c": 1}, benches=frozenset({"d"}))
+    # "a" holds slot 0 over "d"; "c" holds slot 1 while out of the pool
+    overrides = Overrides(holds={0: Hold("a", ("d",)), 1: Hold("c")})
     # "c" is offline to the lookup, so its counts do not show
     stats = {"a": Stats(1108, STARTED), "c": Stats(3, STARTED)}
     return snapshot(
@@ -87,20 +88,14 @@ class FakeDashboard:
     async def swap(self, a: int, b: int) -> None:
         self._act("swap", a=a, b=b)
 
-    async def pin(self, slot: int) -> None:
-        self._act("pin", slot=slot)
-
     async def unpin(self, slot: int) -> None:
         self._act("unpin", slot=slot)
 
-    async def bench(self, channel: str) -> None:
-        self._act("bench", channel=channel)
+    async def put_back(self, channel: str) -> None:
+        self._act("put_back", channel=channel)
 
-    async def unbench(self, channel: str) -> None:
-        self._act("unbench", channel=channel)
-
-    async def reset(self) -> None:
-        self._act("reset")
+    async def unpin_all(self) -> None:
+        self._act("unpin_all")
 
 
 async def _no_fetch(uri: str) -> bytes:  # pragma: no cover - guard
@@ -154,11 +149,11 @@ class TestGuards:
         assert (await client.get("/api/state", headers=_auth(webui))).status == 200
 
     async def test_actions_need_the_token_header(self, client: TestClient, webui: WebUI) -> None:
-        resp = await client.post(f"/api/actions?token={webui.token}", json={"action": "reset"})
+        resp = await client.post(f"/api/actions?token={webui.token}", json={"action": "unpin_all"})
         assert resp.status == 403
         resp = await client.post(
             "/api/actions",
-            data='{"action": "reset"}',
+            data='{"action": "unpin_all"}',
             headers=_auth(webui, **{"Content-Type": "text/plain"}),
         )
         assert resp.status == 415
@@ -217,7 +212,7 @@ class TestState:
         resp = await client.get("/api/state", headers=_auth(webui))
         assert resp.headers["Cache-Control"] == "no-store"
         body = await resp.json()
-        assert body["v"] == 1
+        assert body["v"] == 2
         assert body["refreshed_at"] == 1700000000.5
         assert body["quadstream"] == "failed"
         assert body["slots"] == [
@@ -231,6 +226,7 @@ class TestState:
                 "started_at": 1792774848,
                 "pinned": True,
                 "reserved_for": None,
+                "returns": "d",
                 "still": "/api/slots/0/still.jpg?c=a",
             },
             {
@@ -243,6 +239,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": "c",
+                "returns": None,
                 "still": None,
             },
             {
@@ -255,6 +252,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
+                "returns": None,
                 "still": "/api/slots/2/still.jpg?c=b",
             },
             {
@@ -267,6 +265,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
+                "returns": None,
                 "still": None,
             },
         ]
@@ -280,8 +279,9 @@ class TestState:
             "state": "in quad",
             "slot": 0,
             "pin_slot": 0,
-            "benched": False,
-            "benched_for": None,
+            "replaced_slot": None,
+            "replaced_by": None,
+            "live": True,
             "extra": False,
             "priorities": [100],
             "priority": 100,
@@ -289,13 +289,21 @@ class TestState:
             "thumbnail": THUMB_A,
         }
         rows = [
-            (c["channel"], c["state"], c["pin_slot"], c["benched"], c["priorities"], c["thumbnail"])
+            (
+                c["channel"],
+                c["state"],
+                c["pin_slot"],
+                c["replaced_slot"],
+                c["replaced_by"],
+                c["priorities"],
+                c["thumbnail"],
+            )
             for c in body["channels"][1:]
         ]
         assert rows == [
-            ("b", "in quad", None, False, [100], THUMB_A.replace("_a-", "_b-")),
-            ("c", "offline", 1, False, [50, 10], None),
-            ("d", "benched", None, True, [50], None),
+            ("b", "in quad", None, None, None, [100], THUMB_A.replace("_a-", "_b-")),
+            ("c", "offline", 1, None, None, [50, 10], None),
+            ("d", "replaced", None, 0, "a", [50], None),
         ]
         assert body["channels"][3]["reason"] == "category blocked"
         assert body["channels"][2]["display_name"] == "c"
@@ -418,11 +426,9 @@ class TestActions:
                 ("place", {"channel": "a", "slot": 3}),
             ),
             ({"action": "swap", "a": 0, "b": 2}, ("swap", {"a": 0, "b": 2})),
-            ({"action": "pin", "slot": 1}, ("pin", {"slot": 1})),
             ({"action": "unpin", "slot": 1}, ("unpin", {"slot": 1})),
-            ({"action": "bench", "channel": "b"}, ("bench", {"channel": "b"})),
-            ({"action": "unbench", "channel": "b"}, ("unbench", {"channel": "b"})),
-            ({"action": "reset"}, ("reset", {})),
+            ({"action": "put_back", "channel": "b"}, ("put_back", {"channel": "b"})),
+            ({"action": "unpin_all"}, ("unpin_all", {})),
         ],
     )
     async def test_action_calls_the_daemon_and_returns_the_snapshot(
@@ -435,16 +441,16 @@ class TestActions:
     ) -> None:
         resp = await self._post(client, webui, body)
         assert resp.status == 200
-        assert (await resp.json())["v"] == 1
+        assert (await resp.json())["v"] == 2
         assert dashboard.calls == [call]
 
     async def test_override_error_is_400_with_its_message(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
     ) -> None:
-        dashboard.error = OverrideError("slot 2 is empty: there is no channel to pin")
-        resp = await self._post(client, webui, {"action": "pin", "slot": 2})
+        dashboard.error = OverrideError("e was not replaced on any tile")
+        resp = await self._post(client, webui, {"action": "put_back", "channel": "e"})
         assert resp.status == 400
-        assert await resp.json() == {"error": "slot 2 is empty: there is no channel to pin"}
+        assert await resp.json() == {"error": "e was not replaced on any tile"}
 
     @pytest.mark.parametrize(
         "body,message",
@@ -452,13 +458,13 @@ class TestActions:
             ([], "must be a JSON object"),
             ({}, "does not exist"),
             ({"action": "explode"}, "does not exist"),
-            ({"action": "pin"}, "takes slot"),
-            ({"action": "pin", "slot": 1, "channel": "a"}, "takes slot"),
-            ({"action": "reset", "slot": 1}, "takes no parameters"),
-            ({"action": "pin", "slot": "1"}, "slot must be an integer"),
-            ({"action": "pin", "slot": True}, "slot must be an integer"),
-            ({"action": "pin", "slot": 1.0}, "slot must be an integer"),
-            ({"action": "bench", "channel": 5}, "channel must be a string"),
+            ({"action": "unpin"}, "takes slot"),
+            ({"action": "unpin", "slot": 1, "channel": "a"}, "takes slot"),
+            ({"action": "unpin_all", "slot": 1}, "takes no parameters"),
+            ({"action": "unpin", "slot": "1"}, "slot must be an integer"),
+            ({"action": "unpin", "slot": True}, "slot must be an integer"),
+            ({"action": "unpin", "slot": 1.0}, "slot must be an integer"),
+            ({"action": "put_back", "channel": 5}, "channel must be a string"),
         ],
     )
     async def test_invalid_body_is_400(

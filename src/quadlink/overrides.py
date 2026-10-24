@@ -1,24 +1,28 @@
-"""Operator actions on pins and benches, and their expiry.
+"""Operator actions on tile holds, and their expiry.
 
-Every function is pure: it takes the current overrides (and quad state where the
-action depends on what is on screen) and returns new ones. Invalid input raises
-OverrideError with a message fit for the operator.
+A drop makes a hold: the tile shows the dropped channel, and the channels the
+drops put off the tile wait on the hold's list (see quad.Hold). Every reversal
+returns a tile to a state the operator already saw and never changes another tile.
+
+Every function is pure: it takes the overrides and the quad state and returns new
+ones. Invalid input raises OverrideError with a message fit for the operator.
 """
 
 import re
 from collections.abc import Collection, Mapping
 from dataclasses import replace
 
-from quadlink.quad import Overrides, QuadState
+from quadlink.quad import Hold, Overrides, QuadState
 from quadlink.types import Quad
 
-# refreshes (about 30 s each) a pin or bench outlives its channel leaving the pool;
-# within them a pinned channel that returns takes its slot back
+# refreshes (about 30 s each) a hold outlives its holder leaving the pool; within
+# them a holder that returns takes its tile back
 GRACE_REFRESHES = 2
-
 
 # Twitch logins are 4-25 of [a-z0-9_] today, but legacy accounts go down to 2
 _LOGIN = re.compile(r"[a-z0-9_]{2,25}")
+
+Result = tuple[Overrides, QuadState]
 
 
 class OverrideError(ValueError):
@@ -31,87 +35,91 @@ def place(
     channel: str,
     slot: int,
     configured: Collection[str],
-) -> Overrides:
-    """Pin channel to slot; bench the channel on screen there.
+) -> Result:
+    """Make channel hold the tile; what the tile showed goes on the hold's list.
 
-    The new pin takes over the benches bound to the pin it replaces on this slot:
-    replacing a placed channel is not undoing the placement, so the channel that
-    placement benched stays off. An added channel is only unpinned, never benched:
-    it reaches the quad only pinned anyway.
+    A channel shown on another tile swaps with this one instead, and one already
+    on this tile changes nothing. A holder that drops again on the same tile adds
+    itself to the list, so nobody a drop put off comes back by a later drop. An
+    added channel is never listed: it reaches the quad only as a holder.
     """
     _check_slot(slot)
     _check_channel(channel, configured)
-    occupant = state.channels[slot]
-    replaced = {c for c, s in overrides.pins.items() if s == slot or c == occupant} - {channel}
-    pins = {c: s for c, s in overrides.pins.items() if c != channel and s != slot}
-    pins[channel] = slot
-    benches = set(overrides.benches) - {channel}
-    bound = {b: channel if p in replaced else p for b, p in overrides.bound.items()}
-    if occupant and occupant != channel:
-        pins.pop(occupant, None)
-        if occupant not in overrides.extras:
-            benches.add(occupant)
-            bound[occupant] = channel
-    return _build(overrides, pins, benches, fresh={channel, occupant}, bound=bound)
+    on = state.positions.get(channel)
+    if on == slot:
+        return overrides, state
+    if on is not None:
+        return swap(overrides, state, on, slot)
+    holds = {
+        s: Hold(h.holder, tuple(c for c in h.replaced if c != channel))
+        for s, h in overrides.holds.items()
+    }
+    for held in [s for s, h in holds.items() if h.holder == channel]:
+        holds, state = _end(holds, state, held)
+    old = holds.get(slot)
+    if old is not None:
+        listed = [*old.replaced, old.holder]
+    else:
+        occupant = state.channels[slot]
+        listed = [occupant] if occupant else []
+    listed = [c for c in listed if c != channel and c not in overrides.extras]
+    holds[slot] = Hold(channel, tuple(listed))
+    return _build(overrides, holds, fresh={channel}), state
 
 
-def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> tuple[Overrides, QuadState]:
-    """Swap the channels of two slots; a channel's pin moves with it."""
+def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> Result:
+    """Swap the channels of two slots; a hold moves with its holder, list and all."""
     _check_slot(a)
     _check_slot(b)
     if a == b:
         return overrides, state
-    moved = ((state.channels[a], b), (state.channels[b], a))
-    moving = {c: s for c, s in moved if c in overrides.pins}
-    # a pin moving in replaces one held on that slot for a channel out of the pool
-    pins = {c: s for c, s in overrides.pins.items() if c not in moving and s not in moving.values()}
-    pins |= moving
+    holds = {s: h for s, h in overrides.holds.items() if s not in (a, b)}
+    if a in overrides.holds:
+        holds[b] = overrides.holds[a]
+    if b in overrides.holds:
+        holds[a] = overrides.holds[b]
     channels = list(state.channels)
     urls = state.quad.to_list()
     channels[a], channels[b] = channels[b], channels[a]
     urls[a], urls[b] = urls[b], urls[a]
     new_state = replace(state, quad=Quad(urls), channels=tuple(channels))
-    return _build(overrides, pins, overrides.benches), new_state
+    return _build(overrides, holds), new_state
 
 
-def pin(overrides: Overrides, state: QuadState, slot: int) -> Overrides:
-    """Pin the channel on screen in slot to that slot."""
+def unpin(overrides: Overrides, state: QuadState, slot: int) -> Result:
+    """End the tile's hold: the first channel it replaced gets the tile back."""
     _check_slot(slot)
-    channel = state.channels[slot]
-    if not channel:
-        raise OverrideError(f"slot {slot} is empty: there is no channel to pin")
-    pins = {c: s for c, s in overrides.pins.items() if c != channel and s != slot}
-    pins[channel] = slot
-    return _build(overrides, pins, set(overrides.benches) - {channel}, fresh={channel})
+    if slot not in overrides.holds:
+        return overrides, state
+    holds, state = _end(dict(overrides.holds), state, slot)
+    return _build(overrides, holds), state
 
 
-def unpin(overrides: Overrides, slot: int) -> Overrides:
-    """Remove the pin on slot, if any; its channel stays until selection displaces it."""
-    _check_slot(slot)
-    pins = {c: s for c, s in overrides.pins.items() if s != slot}
-    return _build(overrides, pins, overrides.benches)
+def unpin_all(overrides: Overrides, state: QuadState) -> Result:
+    """End every hold; added channels stay added."""
+    holds = dict(overrides.holds)
+    for slot in list(holds):
+        holds, state = _end(holds, state, slot)
+    return _build(overrides, holds), state
 
 
-def bench(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
-    """Keep channel out of the quad; its pin, if any, is removed.
+def put_back(overrides: Overrides, state: QuadState, channel: str) -> Result:
+    """Return a tile to the moment before the drop that put channel off it.
 
-    A bench set this way is the operator's own, so it is bound to no pin.
+    The first channel on a list gets the tile back as Unpin gives it; a later one
+    was a holder, so it holds the tile again over the channels listed before it.
+    The current holder and the channels listed after go back to selection.
     """
-    _check_channel(channel, configured)
-    pins = {c: s for c, s in overrides.pins.items() if c != channel}
-    bound = {b: p for b, p in overrides.bound.items() if b != channel}
-    return _build(overrides, pins, overrides.benches | {channel}, fresh={channel}, bound=bound)
-
-
-def unbench(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
-    """Make channel eligible again; it returns by priority."""
-    _check_channel(channel, configured)
-    return _build(overrides, overrides.pins, overrides.benches - {channel})
-
-
-def reset(overrides: Overrides) -> Overrides:
-    """Clear every pin and bench; added channels stay."""
-    return Overrides(extras=overrides.extras)
+    at = overrides.replaced_at(channel)
+    if at is None:
+        raise OverrideError(f"{channel} was not replaced on any tile")
+    slot, index = at
+    if index == 0:
+        return unpin(overrides, state, slot)
+    hold = overrides.holds[slot]
+    holds = dict(overrides.holds)
+    holds[slot] = Hold(channel, hold.replaced[:index])
+    return _build(overrides, holds, fresh={channel}), state
 
 
 def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
@@ -123,71 +131,82 @@ def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -
     return replace(overrides, extras=overrides.extras | {channel})
 
 
-def remove_extra(overrides: Overrides, channel: str) -> Overrides:
-    """Remove an added channel, with its pin and bench."""
+def remove_extra(overrides: Overrides, state: QuadState, channel: str) -> Result:
+    """Remove an added channel; a tile it holds goes back as Unpin gives it."""
     if channel not in overrides.extras:
         raise OverrideError(f"{channel} is not an added channel")
-    pins = {c: s for c, s in overrides.pins.items() if c != channel}
-    out = _build(overrides, pins, overrides.benches - {channel})
-    return replace(out, extras=overrides.extras - {channel})
+    holds = dict(overrides.holds)
+    for slot in [s for s, h in holds.items() if h.holder == channel]:
+        holds, state = _end(holds, state, slot)
+    return replace(_build(overrides, holds), extras=overrides.extras - {channel}), state
 
 
-def drop_unconfigured(overrides: Overrides, configured: Collection[str]) -> Overrides:
-    """Clear the pins and benches of channels no longer in the config."""
-    pins = {c: s for c, s in overrides.pins.items() if c in configured}
-    return _build(overrides, pins, {c for c in overrides.benches if c in configured})
+def drop_unconfigured(
+    overrides: Overrides, state: QuadState, configured: Collection[str]
+) -> Result:
+    """End the holds of channels no longer configured and unlist them."""
+    holds = {
+        s: Hold(h.holder, tuple(c for c in h.replaced if c in configured))
+        for s, h in overrides.holds.items()
+    }
+    for slot in [s for s, h in holds.items() if h.holder not in configured]:
+        holds, state = _end(holds, state, slot)
+    return _build(overrides, holds), state
 
 
-def age(overrides: Overrides, pool: Collection[str]) -> Overrides:
-    """Count one refresh for every pinned or benched channel out of the pool.
+def age(overrides: Overrides, state: QuadState, pool: Collection[str]) -> Result:
+    """Count one refresh for every holder out of the pool.
 
-    A channel back in the pool starts over at zero; one out for more than
-    GRACE_REFRESHES refreshes loses its pin or bench.
+    A holder back in the pool starts over at zero; one out for more than
+    GRACE_REFRESHES refreshes loses its tile as Unpin takes it. Replaced
+    channels have no timer: they stay listed until their hold ends.
     """
-    absent = {c: overrides.absent.get(c, 0) + 1 for c in overrides.channels if c not in pool}
-    expired = {c for c, n in absent.items() if n > GRACE_REFRESHES}
-    pins = {c: s for c, s in overrides.pins.items() if c not in expired}
-    benches, bound = _release(pins, overrides.benches - expired, overrides.bound)
-    return Overrides(
-        pins=pins,
-        benches=benches,
-        absent={c: n for c, n in absent.items() if c in pins.keys() | benches},
-        bound=bound,
-        extras=overrides.extras,
-    )
-
-
-def _release(
-    pins: Mapping[str, int], benches: Collection[str], bound: Mapping[str, str]
-) -> tuple[frozenset[str], dict[str, str]]:
-    """Benches and bindings left once every bench bound to an ended pin ends too."""
-    bound = {b: p for b, p in bound.items() if b in benches}
-    released = {b for b, p in bound.items() if p not in pins}
+    absent = {
+        h.holder: overrides.absent.get(h.holder, 0) + 1
+        for h in overrides.holds.values()
+        if h.holder not in pool
+    }
+    holds = dict(overrides.holds)
+    for slot in [s for s, h in holds.items() if absent.get(h.holder, 0) > GRACE_REFRESHES]:
+        holds, state = _end(holds, state, slot)
+    kept = {h.holder for h in holds.values()}
     return (
-        frozenset(set(benches) - released),
-        {b: p for b, p in bound.items() if b not in released},
+        Overrides(
+            holds=holds,
+            absent={c: n for c, n in absent.items() if c in kept},
+            extras=overrides.extras,
+        ),
+        state,
     )
+
+
+def _end(holds: dict[int, Hold], state: QuadState, slot: int) -> tuple[dict[int, Hold], QuadState]:
+    """Drop a hold and seat its first listed channel on the tile.
+
+    Seated there, that channel keeps the tile as any on-screen channel does; one
+    out of the pool leaves it to selection. The rest of the list is released.
+    """
+    hold = holds.pop(slot)
+    if not hold.replaced:
+        return holds, state
+    channels = list(state.channels)
+    urls = state.quad.to_list()
+    channels[slot] = hold.replaced[0]
+    # the next composition mints its playlist URL
+    urls[slot] = ""
+    return holds, replace(state, quad=Quad(urls), channels=tuple(channels))
 
 
 def _build(
     previous: Overrides,
-    pins: Mapping[str, int],
-    benches: Collection[str],
+    holds: Mapping[int, Hold],
     fresh: Collection[str] = (),
-    bound: Mapping[str, str] | None = None,
 ) -> Overrides:
-    """Overrides with absence counts kept for surviving entries, except fresh ones.
-
-    `bound` defaults to the previous bindings; benches bound to a pin that is
-    gone are released.
-    """
-    kept, bindings = _release(pins, benches, previous.bound if bound is None else bound)
-    keep = (pins.keys() | kept) - set(fresh)
+    """Overrides with absence counts kept for surviving holders, except fresh ones."""
+    keep = {h.holder for h in holds.values()} - set(fresh)
     return Overrides(
-        pins=dict(pins),
-        benches=kept,
+        holds=dict(holds),
         absent={c: n for c, n in previous.absent.items() if c in keep},
-        bound=bindings,
         extras=previous.extras,
     )
 

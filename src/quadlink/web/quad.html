@@ -41,7 +41,7 @@
     padding: 0 19px; font: 16px system-ui, sans-serif; }
   .logo { display: flex; align-items: center; }
   .logo svg { width: 143.4px; height: 24.7px; }
-  /* temporary: clears every pin and bench */
+  /* ends every tile hold */
   .reset-all { height: 34px; padding: 0 14px; border: 0; border-radius: calc(var(--radius) - 7px);
     background: var(--field); color: var(--text); font: inherit; cursor: pointer; }
   .reset-all:hover { background: var(--hover); }
@@ -136,6 +136,7 @@
     cursor: pointer; border-radius: calc(var(--radius) - 10px); background: var(--scrim);
     color: var(--accent); }
   .tile-marks .unpin:hover, .tile-marks .unpin:focus-visible { color: var(--error); }
+  .tile-marks .offline { padding: 5px 9px; font: 600 14px/1 system-ui, sans-serif; }
   .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
     gap: 5px; }
   .rail li { display: flex; align-items: center; gap: 12px; padding: 7px; border-radius: var(--radius); }
@@ -153,7 +154,7 @@
   .rail .marks { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
     color: var(--text-quiet); }
   /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
-  /* one chip for everything a row carries: facts (viewers, slot) and actions (bench,
+  /* one chip for everything a row carries: facts (viewers, slot) and actions (put back,
      remove); only colour and behaviour differ */
   .rail .chip { flex: none; display: inline-flex; align-items: center; justify-content: center;
     gap: 5px; height: 22px; min-width: 22px; padding: 0 6px; margin: 0; box-sizing: border-box;
@@ -161,7 +162,9 @@
     background: none; color: var(--text-quiet); font: 600 13px/1 system-ui, sans-serif;
     font-variant-numeric: tabular-nums; }
   .rail .chip svg { width: 13px; height: 13px; }
-  .rail .chip.slot { border-color: var(--accent); color: var(--text); }
+  /* filled: the tile it is on; hollow (back): the tile a drop put it off */
+  .rail .chip.slot { border-color: var(--accent); background: var(--accent); color: var(--white); }
+  .rail .chip.back { border-color: var(--accent); color: var(--text); }
   .rail .chip.viewers { color: var(--text); }
   .rail .chip.viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: var(--live); }
@@ -170,11 +173,16 @@
   .rail button.chip:hover, .rail button.chip:focus-visible { border-color: var(--error);
     color: var(--error); background: var(--popover); }
   .rail button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+  /* put back restores, so it lights up in the accent rather than the red of removal */
+  .rail button.chip.back:hover, .rail button.chip.back:focus-visible {
+    border-color: var(--accent); color: var(--white); background: var(--accent); }
+  .rail button.chip.back:disabled { border-color: var(--chip-edge); color: var(--text-quiet);
+    background: none; cursor: default; }
   /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
   /* a picked row waits for a tile click: the click alternative to dragging */
   .rail li.picked { box-shadow: inset 0 0 0 2px var(--accent); }
-  .rail li.benched > img, .rail li.benched .line .name { opacity: 0.55; }
+  .rail li.replaced > img, .rail li.replaced .line .name { opacity: 0.55; }
   /* category and viewer count share the second line; the category gives way first */
   .rail .meta { display: flex; align-items: center; gap: 10px; color: var(--text-quiet); font-size: 14px; }
   .rail .cat { flex: 1; min-width: 0; }
@@ -225,7 +233,7 @@
       </g>
     </svg>
   </a>
-  <button type="button" class="reset-all">Reset pins &amp; benches</button>
+  <button type="button" class="reset-all">Unpin all</button>
 </header>
 <aside aria-label="Online streamers">
   <div class="tools">
@@ -312,7 +320,7 @@
     hls.attachMedia(video);
   }
 
-  // a slot the server changed (selection, an unbench) shows the incoming channel's
+  // a slot the server changed (selection, an unpin) shows the incoming channel's
   // thumbnail until its video plays, like a drop does
   function coverChanges(before) {
     tiles.forEach((tile, i) => {
@@ -371,21 +379,20 @@
 
   const rail = document.querySelector('.rail');
   const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
-  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['benched', 'Benched'],
+  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['replaced', 'Replaced'],
                   ['in quad', 'In quad'], ['offline', 'Offline']];
   const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
                  ['newest', 'Newest stream'], ['longest', 'Longest stream']];
-  const DEFAULTS = { show: ['in quad', 'live', 'waiting', 'benched'], cats: [], sort: 'priority' };
+  const DEFAULTS = { show: ['in quad', 'live', 'waiting', 'replaced'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
-  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.2') || '{}'), { q: '' }); } catch {}
+  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.3') || '{}'), { q: '' }); } catch {}
   let latest = null;
 
   function save() {
-    try { localStorage.setItem('quadlink.view.2', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+    try { localStorage.setItem('quadlink.view.3', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
   }
 
   const PIN = '<path d="M12 17v5"/><path d="M9 10.76V6h6v4.76l2 3.24H7z"/><path d="M8 6h8"/>';
-  const BENCH = '<path d="M5 7h14"/><path d="M3 12h18"/><path d="M7 7v5M17 7v5"/><path d="M6 12v6M18 12v6"/>';
 
   function glyph(kind, paths, label) {
     const span = document.createElement('span');
@@ -417,7 +424,7 @@
     button.type = 'button';
     button.className = 'unpin';
     button.title = label;
-    button.setAttribute('aria-label', label);
+    button.setAttribute('aria-label', s.returns ? `${label}, bring back ${nameOf(s.returns)}` : label);
     const mark = glyph('pin', PIN, label);
     mark.removeAttribute('role');
     mark.removeAttribute('aria-label');
@@ -438,6 +445,12 @@
       const loud = tile.classList.contains('loud');
       const marks = [];
       if (s?.pinned) marks.push(unpinButton(i, s));
+      if (s?.reserved_for) {
+        const offline = document.createElement('span');
+        offline.className = 'offline';
+        offline.textContent = 'Offline';
+        marks.push(offline);
+      }
       if (loud) marks.push(glyph('sound', SPEAKER, 'Sound on'));
       tile.querySelector('.tile-marks').replaceChildren(...marks);
       const button = tile.querySelector('button');
@@ -457,22 +470,34 @@
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') pick(null); });
 
-  function undo(kind, paths, label, body) {
+  function nameOf(channel) {
+    const c = latest?.channels.find(x => x.channel === channel);
+    return c ? c.display_name || c.channel : channel;
+  }
+
+  function backButton(c, displayName) {
+    const tile = c.replaced_slot + 1;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'chip ' + kind;
-    button.title = label;
-    button.setAttribute('aria-label', label);
-    const mark = glyph('on', paths, label);
-    mark.removeAttribute('role');
-    mark.removeAttribute('aria-label');
-    button.append(mark);
+    button.className = 'chip back';
+    button.textContent = tile;
+    button.title = 'Replaced by ' + nameOf(c.replaced_by);
+    button.setAttribute('aria-label', `Put ${displayName} back on tile ${tile}`);
+    // offline, it would only put filler on the tile
+    button.disabled = !c.live;
+    const target = tiles[c.replaced_slot];
+    const show = on => target.classList.toggle('target', on && !button.disabled);
+    button.addEventListener('mouseenter', () => show(true));
+    button.addEventListener('mouseleave', () => show(false));
+    button.addEventListener('focus', () => show(true));
+    button.addEventListener('blur', () => show(false));
+    button.addEventListener('pointerdown', e => e.stopPropagation());
     button.addEventListener('click', e => {
       e.stopPropagation();
+      show(false);
       button.disabled = true;
-      act(body).catch(() => { button.disabled = false; });
+      act({ action: 'put_back', channel: c.channel }).catch(() => { button.disabled = false; });
     });
-    // Enter on the button must not also pick the row
     button.addEventListener('keydown', e => e.stopPropagation());
     return button;
   }
@@ -549,7 +574,7 @@
     cat.className = 'cat';
     const label = STATES.find(([s]) => s === c.state);
     // glyphs and row shading carry these states, so the line keeps to the category
-    cat.textContent = ['live', 'in quad', 'benched'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
+    cat.textContent = ['live', 'in quad', 'replaced'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.append(cat);
@@ -565,12 +590,7 @@
     line.append(name);
     const marks = [];
     const displayName = c.display_name || c.channel;
-    if (c.benched) {
-      const holder = latest?.channels.find(x => x.channel === c.benched_for);
-      const why = holder ? ' (benched for ' + (holder.display_name || holder.channel) + ')' : '';
-      marks.push(undo('bench', BENCH, 'Unbench ' + displayName + why,
-        { action: 'unbench', channel: c.channel }));
-    }
+    if (c.replaced_slot != null) marks.push(backButton(c, displayName));
     if (c.extra) marks.push(removeButton(c));
     if (c.slot != null) {
       const badge = document.createElement('span');
@@ -585,7 +605,7 @@
       box.append(...marks);
       line.append(box);
     }
-    li.classList.toggle('benched', c.benched);
+    li.classList.toggle('replaced', c.replaced_slot != null);
     who.append(line, meta);
     li.dataset.channel = c.channel;
     li.classList.toggle('in', c.state === 'in quad');
@@ -630,16 +650,22 @@
     // the quad's channels lead in slot order, whatever the filters and sort
     const active = latest.channels.filter(c => c.slot != null && matches(c))
       .sort((a, b) => a.slot - b.slot);
+    // what drops put off the quad, by tile, whatever the filters
+    const replaced = latest.channels.filter(c => c.replaced_slot != null && c.slot == null && matches(c))
+      .sort((a, b) => a.replaced_slot - b.replaced_slot);
     // added channels show whatever their state: they are on the list only by choice
     const added = latest.channels.filter(c => c.extra && c.slot == null && matches(c))
       .sort(ORDER.name);
     const rows = latest.channels
-      .filter(c => !c.extra && c.slot == null)
+      .filter(c => !c.extra && c.slot == null && c.replaced_slot == null)
       .filter(c => show.has(c.state))
       .filter(c => !cats.size || cats.has(c.category))
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
     const head = active.map(row);
+    if (replaced.length) {
+      head.push(section('Replaced'), ...replaced.map(row));
+    }
     if (added.length) {
       head.push(section('Added'), ...added.map(row));
     }
@@ -729,7 +755,7 @@
   let drag = null;
   let dragged = false;
 
-  document.querySelector('.reset-all').addEventListener('click', () => act({ action: 'reset' }));
+  document.querySelector('.reset-all').addEventListener('click', () => act({ action: 'unpin_all' }));
 
   async function act(body) {
     const resp = await fetch('/api/actions', {

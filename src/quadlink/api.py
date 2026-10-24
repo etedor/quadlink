@@ -21,7 +21,7 @@ from quadlink.types import thumbnail_url
 
 logger = structlog.get_logger()
 
-API_VERSION = 1
+API_VERSION = 2
 EVENTS_PATH = "/api/events"
 STILL_PATH = re.compile(r"/api/slots/[^/]+/still\.jpg")
 
@@ -41,11 +41,9 @@ _LOGIN = re.compile(r"[a-z0-9_]+")
 ACTIONS: dict[str, dict[str, type]] = {
     "place": {"channel": str, "slot": int},
     "swap": {"a": int, "b": int},
-    "pin": {"slot": int},
     "unpin": {"slot": int},
-    "bench": {"channel": str},
-    "unbench": {"channel": str},
-    "reset": {},
+    "put_back": {"channel": str},
+    "unpin_all": {},
     "add": {"channel": str},
     "remove": {"channel": str},
 }
@@ -65,15 +63,11 @@ class Dashboard(Protocol):
 
     async def swap(self, a: int, b: int) -> None: ...
 
-    async def pin(self, slot: int) -> None: ...
-
     async def unpin(self, slot: int) -> None: ...
 
-    async def bench(self, channel: str) -> None: ...
+    async def put_back(self, channel: str) -> None: ...
 
-    async def unbench(self, channel: str) -> None: ...
-
-    async def reset(self) -> None: ...
+    async def unpin_all(self) -> None: ...
 
     async def add(self, channel: str) -> None: ...
 
@@ -123,6 +117,7 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
         entry |= {
             "pinned": s.pinned,
             "reserved_for": s.reserved_for,
+            "returns": s.returns,
             # the channel in the URL keeps a browser's cached still from outliving a swap
             "still": f"/api/slots/{s.slot}/still.jpg?c={quote(s.channel)}" if s.channel else None,
         }
@@ -134,8 +129,9 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             "state": str(c.state),
             "slot": c.slot,
             "pin_slot": c.pin_slot,
-            "benched": c.benched,
-            "benched_for": c.benched_for,
+            "replaced_slot": c.replaced_slot,
+            "replaced_by": c.replaced_by,
+            "live": c.live,
             "extra": c.extra,
             "priorities": c.status.priorities,
             "priority": c.status.priority,

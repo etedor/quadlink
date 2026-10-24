@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
         "--state-file",
         type=str,
         help=(
-            "File that keeps pins, benches and slot positions across restarts "
+            "File that keeps tile holds and slot positions across restarts "
             "(default: $QL_STATE_FILE, else /var/lib/quadlink/state.json)"
         ),
     )
