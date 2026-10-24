@@ -252,9 +252,11 @@ class _Slot:
         self.slot = slot
         self.source = SlotState(window=40)
         self.segs: list[_Seg] = []
-        # a slot restarted after idling carries on from its last (seq, dseq): a player
-        # resuming from sleep asks for numbers past those, never for a reset to 0
-        self.next_seq, self.base_dseq = resume or (0, 0)
+        # numbers start from the clock in segment steps, so they only rise across idle
+        # stops and daemon restarts: a player resuming asks for numbers past its last
+        clock = int(time.time() // 2)
+        last_seq, last_dseq = resume or (0, 0)
+        self.next_seq, self.base_dseq = max(clock, last_seq), max(clock, last_dseq)
         self.resumed = resume is not None
         self.target = 2
         self.queue: deque[_Queued] = deque()
