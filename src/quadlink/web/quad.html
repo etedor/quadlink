@@ -1355,11 +1355,11 @@
   }
 
   function showStreams() {
-    const { streams, more, category } = ex.listing;
+    const { streams, category } = ex.listing;
     cards.replaceChildren(...streams.map(card));
     note.replaceChildren();
-    endNote.textContent = !streams.length ? `No one is live${category ? ' in ' + category.name : ''}.`
-      : more ? `Twitch lists the top ${streams.length}.` : "That's everyone.";
+    // the grid's end needs no words; only an empty grid gets a line
+    endNote.textContent = streams.length ? '' : `No one is live${category ? ' in ' + category.name : ''}.`;
     alignQuad();
   }
 
