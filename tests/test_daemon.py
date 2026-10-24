@@ -597,7 +597,7 @@ class TestFirstRefresh:
         assert [c.stream.channel for c in daemon._still_playing(pool)] == ["a"]
 
 
-E_OVER_B = {"1": {"holder": "e", "replaced": ["b"]}}
+E_OVER_B = {"1": {"holder": "e", "replaced": "b"}}
 ACTIONS: dict[str, tuple[Any, Any, dict[str, Any], list[str]]] = {
     # name: (setup action, action, saved holds, slots after)
     "place": (None, lambda d: d.place("e", 1), E_OVER_B, ["a", "e", "c", "d"]),
@@ -674,7 +674,7 @@ class TestOperatorActions:
             twitch.go_offline("e")
             for absent in range(1, GRACE_REFRESHES + 1):
                 await loops.refresh()
-                assert daemon.overrides.holds == {1: Hold("e", ("b",))}
+                assert daemon.overrides.holds == {1: Hold("e", "b")}
                 assert daemon.overrides.absent == {"e": absent}
             with structlog.testing.capture_logs() as logs:
                 await loops.refresh()
@@ -707,7 +707,7 @@ class TestOperatorActions:
             twitch.go_offline("e", *CHANNELS)
             for _ in range(GRACE_REFRESHES + 2):
                 await loops.refresh()
-        assert daemon.overrides.holds == {0: Hold("e", ("a",))}
+        assert daemon.overrides.holds == {0: Hold("e", "a")}
 
     async def test_channel_removed_from_the_config_clears_at_once(
         self, make_daemon, config_path, twitch

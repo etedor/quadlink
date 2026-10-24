@@ -126,7 +126,7 @@ def snapshot(
                 display_name=names.get(channel, channel),
                 pinned=bool(channel) and holder == channel,
                 reserved_for=None if holder == channel else holder,
-                returns=hold.replaced[0] if hold and hold.replaced else None,
+                returns=hold.replaced if hold else None,
             )
         )
     positions = state.positions
@@ -136,8 +136,8 @@ def snapshot(
             state=_state(s, positions, overrides, waiting),
             slot=positions.get(s.channel),
             pin_slot=overrides.pins.get(s.channel),
-            replaced_slot=at[0] if at else None,
-            replaced_by=holds[at[0]].holder if at else None,
+            replaced_slot=at,
+            replaced_by=None if at is None else holds[at].holder,
             live=s.state is ChannelState.LIVE,
             extra=s.channel in overrides.extras,
             status=s,

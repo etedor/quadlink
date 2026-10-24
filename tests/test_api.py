@@ -42,7 +42,7 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
         ChannelStatus("d", ChannelState.REJECTED, [50], reason="category blocked"),
     ]
     # "a" holds slot 0 over "d"; "c" holds slot 1 while out of the pool
-    overrides = Overrides(holds={0: Hold("a", ("d",)), 1: Hold("c")})
+    overrides = Overrides(holds={0: Hold("a", "d"), 1: Hold("c")})
     # "c" is offline to the lookup, so its counts do not show
     stats = {"a": Stats(1108, STARTED), "c": Stats(3, STARTED)}
     return snapshot(

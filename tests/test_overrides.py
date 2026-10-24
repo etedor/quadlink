@@ -93,9 +93,9 @@ def scene() -> Scene:
 
 
 class TestDrop:
-    def test_a_drop_holds_the_tile_and_lists_what_it_showed(self, scene):
+    def test_a_drop_holds_the_tile_and_remembers_what_it_showed(self, scene):
         assert scene.drop("f", 3) == ("a", "b", "c", "f")
-        assert scene.overrides.holds == {3: Hold("f", ("d",))}
+        assert scene.overrides.holds == {3: Hold("f", "d")}
         assert scene.waiting() == []
 
     def test_a_replaced_stream_takes_no_other_tile(self, scene):
@@ -104,11 +104,12 @@ class TestDrop:
         for _ in range(3):
             assert scene.refresh() == ("f", "b", "c", "d")
 
-    def test_a_drop_on_a_held_tile_lists_the_holder_after_the_rest(self, scene):
+    def test_a_drop_on_a_held_tile_keeps_the_original_and_frees_the_holder(self, scene):
         scene.drop("f", 3)
         assert scene.drop("e", 3) == ("a", "b", "c", "e")
-        assert scene.overrides.holds == {3: Hold("e", ("d", "f"))}
+        assert scene.overrides.holds == {3: Hold("e", "d")}
         assert scene.refresh() == ("a", "b", "c", "e")
+        assert scene.waiting() == []
 
     def test_dropping_a_shown_stream_on_another_tile_swaps_them(self, scene):
         assert scene.drop("a", 3) == ("d", "b", "c", "a")
@@ -119,10 +120,10 @@ class TestDrop:
         assert scene.drop("c", 2) == ("a", "b", "c", "d")
         assert (scene.overrides, scene.state) == before
 
-    def test_a_listed_stream_dropped_elsewhere_leaves_its_list(self, scene):
+    def test_a_replaced_stream_dropped_elsewhere_is_forgotten(self, scene):
         scene.drop("f", 3)
         assert scene.drop("d", 0) == ("d", "b", "c", "f")
-        assert scene.overrides.holds == {0: Hold("d", ("a",)), 3: Hold("f", ())}
+        assert scene.overrides.holds == {0: Hold("d", "a"), 3: Hold("f")}
 
     def test_a_holder_out_of_the_pool_dropped_elsewhere_hands_its_old_tile_back(self, scene):
         scene.drop("f", 3)
@@ -130,7 +131,7 @@ class TestDrop:
         assert scene.refresh() == ("a", "b", "c", "e")
         scene.live["f"] = 50
         overrides, state = place(scene.overrides, scene.state, "f", 1, CONFIGURED)
-        assert overrides.holds == {1: Hold("f", ("b",))}
+        assert overrides.holds == {1: Hold("f", "b")}
         assert state.channels[3] == "d"
 
     def test_rejects_an_unknown_channel_and_a_bad_slot(self, scene):
@@ -141,7 +142,7 @@ class TestDrop:
 
 
 class TestUndo:
-    def test_unpin_gives_the_tile_back_to_the_first_replaced(self, scene):
+    def test_unpin_gives_the_tile_back_to_the_replaced(self, scene):
         scene.drop("f", 3)
         assert scene.act(unpin(scene.overrides, scene.state, 3)) == ("a", "b", "c", "d")
         assert scene.overrides.holds == {}
@@ -153,17 +154,11 @@ class TestUndo:
         # E and F go back to selection, which did not choose them before
         assert scene.refresh() == ("a", "b", "c", "d")
 
-    def test_put_back_of_the_first_replaced_is_unpin(self, scene):
+    def test_put_back_unpins_the_tile_that_replaced_it(self, scene):
         scene.drop("f", 3)
         scene.drop("e", 3)
         assert scene.act(put_back(scene.overrides, scene.state, "d")) == ("a", "b", "c", "d")
         assert scene.overrides.holds == {}
-
-    def test_put_back_of_a_later_one_returns_to_before_its_replacement(self, scene):
-        scene.drop("f", 3)
-        scene.drop("e", 3)
-        assert scene.act(put_back(scene.overrides, scene.state, "f")) == ("a", "b", "c", "f")
-        assert scene.overrides.holds == {3: Hold("f", ("d",))}
 
     def test_put_back_of_a_stream_not_replaced_is_an_error(self, scene):
         with pytest.raises(OverrideError):
@@ -178,7 +173,7 @@ class TestUndo:
         assert scene.act(unpin_all(scene.overrides, scene.state)) == ("a", "b", "c", "d")
         assert scene.overrides.holds == {}
 
-    def test_unpin_of_a_tile_whose_first_replaced_is_offline_leaves_it_to_selection(self, scene):
+    def test_unpin_of_a_tile_whose_replaced_is_offline_leaves_it_to_selection(self, scene):
         scene.drop("f", 3)
         del scene.live["d"]
         scene.refresh()
@@ -192,7 +187,7 @@ class TestSwap:
     def test_a_hold_moves_with_its_holder(self, scene):
         scene.drop("f", 3)
         assert scene.act(swap(scene.overrides, scene.state, 3, 0)) == ("f", "b", "c", "a")
-        assert scene.overrides.holds == {0: Hold("f", ("d",))}
+        assert scene.overrides.holds == {0: Hold("f", "d")}
         # put back still restores the tile the hold now sits on
         assert scene.act(unpin(scene.overrides, scene.state, 0)) == ("d", "b", "c", "a")
 
@@ -228,7 +223,7 @@ class TestGrace:
         del scene.live["d"]
         for _ in range(GRACE_REFRESHES + 2):
             scene.refresh()
-        assert scene.overrides.holds == {3: Hold("f", ("d",))}
+        assert scene.overrides.holds == {3: Hold("f", "d")}
 
 
 class TestExtras:
@@ -245,11 +240,11 @@ class TestExtras:
         assert scene.refresh() == ("a", "b", "c", "d")
         assert scene.drop("xy", 1) == ("a", "xy", "c", "d")
 
-    def test_an_added_holder_replaced_by_a_drop_is_not_listed(self, scene):
+    def test_an_added_holder_replaced_by_a_drop_is_not_remembered(self, scene):
         self.added(scene)
         scene.drop("xy", 3)
         assert scene.drop("e", 3) == ("a", "b", "c", "e")
-        assert scene.overrides.holds == {3: Hold("e", ("d",))}
+        assert scene.overrides.holds == {3: Hold("e", "d")}
 
     def test_remove_ends_its_hold_as_unpin(self, scene):
         self.added(scene)
@@ -284,11 +279,11 @@ class TestUnconfigured:
         assert scene.refresh() == ("a", "b", "c", "d")
         assert scene.overrides.holds == {}
 
-    def test_a_listed_channel_removed_from_the_config_is_unlisted(self, scene):
+    def test_a_replaced_channel_removed_from_the_config_is_forgotten(self, scene):
         scene.drop("f", 3)
         scene.configured -= {"d"}
         scene.refresh()
-        assert scene.overrides.holds == {3: Hold("f", ())}
+        assert scene.overrides.holds == {3: Hold("f")}
 
 
 class TestCompose:
@@ -302,7 +297,7 @@ class TestCompose:
 
     def test_holds_for_channels_out_of_the_pool_change_nothing(self, scene):
         natural = compose(scene.pool(), scene.state, Overrides(), scene.config)
-        overrides = Overrides(holds={0: Hold("g", ("h",))})
+        overrides = Overrides(holds={0: Hold("g", "h")})
         assert compose(scene.pool(), scene.state, overrides, scene.config) == natural
 
     def test_a_holder_counts_for_category_saturation(self):
@@ -337,15 +332,15 @@ class TestInvariants:
 
     def test_a_channel_is_listed_at_most_once(self):
         with pytest.raises(ValueError):
-            Overrides(holds={0: Hold("a", ("c",)), 1: Hold("b", ("c",))})
+            Overrides(holds={0: Hold("a", "c"), 1: Hold("b", "c")})
 
     def test_a_holder_is_not_listed(self):
         with pytest.raises(ValueError):
-            Overrides(holds={0: Hold("a", ("b",)), 1: Hold("b")})
+            Overrides(holds={0: Hold("a", "b"), 1: Hold("b")})
 
     def test_added_channels_are_never_listed(self):
         with pytest.raises(ValueError):
-            Overrides(holds={0: Hold("a", ("x",))}, extras=frozenset({"x"}))
+            Overrides(holds={0: Hold("a", "x")}, extras=frozenset({"x"}))
 
     def test_slots_are_0_to_3(self):
         with pytest.raises(ValueError):

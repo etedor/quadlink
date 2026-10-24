@@ -14,18 +14,18 @@ from quadlink.quad import Hold, Overrides, QuadState
 logger = structlog.get_logger()
 
 DEFAULT_STATE_PATH = Path("/var/lib/quadlink/state.json")
-STATE_VERSION = 3
+STATE_VERSION = 4
 
 Slot = Annotated[int, Field(ge=0, le=3)]
 
 
 class _HoldFile(BaseModel):
     holder: str
-    replaced: list[str]
+    replaced: str | None
 
 
 class _StateFile(BaseModel):
-    version: Literal[3]
+    version: Literal[4]
     holds: dict[Slot, _HoldFile]
     absent: dict[str, int]
     channels: Annotated[list[str], Field(min_length=4, max_length=4)]
@@ -60,7 +60,7 @@ class StateStore:
         try:
             data = _StateFile.model_validate_json(text)
             overrides = Overrides(
-                holds={s: Hold(h.holder, tuple(h.replaced)) for s, h in data.holds.items()},
+                holds={s: Hold(h.holder, h.replaced) for s, h in data.holds.items()},
                 absent=data.absent,
             )
         except ValueError as e:
@@ -93,7 +93,7 @@ def _serialize(overrides: Overrides, state: QuadState) -> str:
             "version": STATE_VERSION,
             # added channels end with the process, and their holds with them
             "holds": {
-                str(slot): {"holder": hold.holder, "replaced": list(hold.replaced)}
+                str(slot): {"holder": hold.holder, "replaced": hold.replaced}
                 for slot, hold in sorted(overrides.holds.items())
                 if hold.holder not in overrides.extras
             },

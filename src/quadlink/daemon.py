@@ -420,11 +420,11 @@ class Daemon:
         self._apply(*actions.swap(self.overrides, self.quad_state, a, b))
 
     async def unpin(self, slot: int) -> None:
-        """End the tile's hold; the first channel it replaced gets the tile back."""
+        """End the tile's hold; the channel it replaced gets the tile back."""
         self._apply(*actions.unpin(self.overrides, self.quad_state, slot))
 
     async def put_back(self, channel: str) -> None:
-        """Return channel's tile to the moment before a drop put it off."""
+        """End the hold that replaced channel, so it gets its tile back."""
         if channel not in {c.stream.channel for c in self._pool}:
             raise OverrideError(f"{channel} is offline: putting it back would leave the tile empty")
         self._apply(*actions.put_back(self.overrides, self.quad_state, channel))

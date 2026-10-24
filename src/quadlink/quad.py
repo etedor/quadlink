@@ -19,13 +19,12 @@ class Hold:
 
     Attributes:
         holder: The channel the tile shows while it is in the pool.
-        replaced: Channels the drops put off the tile, oldest first. replaced[0]
-            was on the tile before the first drop and gets it back when the hold
-            ends; while listed, none of them can take any tile.
+        replaced: The channel on the tile before the first drop. It gets the
+            tile back when the hold ends and takes no tile until then.
     """
 
     holder: str
-    replaced: tuple[str, ...] = ()
+    replaced: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,7 +49,7 @@ class Overrides:
         holders = [h.holder for h in self.holds.values()]
         if len(set(holders)) != len(holders):
             raise ValueError(f"a channel holds more than one tile: {holders}")
-        listed = [c for h in self.holds.values() for c in h.replaced]
+        listed = [h.replaced for h in self.holds.values() if h.replaced]
         if len(set(listed)) != len(listed):
             raise ValueError(f"a channel is replaced on more than one tile: {listed}")
         if both := set(holders) & set(listed):
@@ -65,14 +64,14 @@ class Overrides:
 
     @property
     def replaced(self) -> set[str]:
-        """Every channel on a hold's list."""
-        return {c for h in self.holds.values() for c in h.replaced}
+        """Every channel a hold replaced."""
+        return {h.replaced for h in self.holds.values() if h.replaced}
 
-    def replaced_at(self, channel: str) -> tuple[int, int] | None:
-        """(slot, index in its list) of a replaced channel, or None."""
+    def replaced_at(self, channel: str) -> int | None:
+        """Slot of the hold that replaced channel, or None."""
         for slot, hold in self.holds.items():
-            if channel in hold.replaced:
-                return slot, hold.replaced.index(channel)
+            if hold.replaced == channel:
+                return slot
         return None
 
 

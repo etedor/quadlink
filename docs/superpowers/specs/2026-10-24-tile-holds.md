@@ -1,5 +1,7 @@
 # Decision memo: tile holds with put-back
 
+> **Amendment (2026-10-24): a hold remembers one stream.** In use, the ordered list made repeated drops on one tile hard to read: each drop added a row to "Replaced". Now a hold is {holder, replaced}, where replaced is the stream on the tile before the first drop. A drop on a held tile releases the old holder to auto. Put back is the same as Unpin on that tile. Where this memo describes list[1..] or put back with i > 0, the amendment replaces it.
+
 ## 1. Recommendation
 
 A drop on a tile makes a **hold**: "this tile shows X, and these streams were put off it, in order". "Replaced" is not a separate state. A stream is replaced only while it is on a live hold's list, so it comes back when that hold ends. Each reversal returns the tile to a state the user already saw. **Unpin** goes back to the tile as it was before the first drop. **Put back** goes back to the moment just before one chosen stream left. A reversal never changes another tile and never adds a pin the user did not make.

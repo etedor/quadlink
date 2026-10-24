@@ -1,8 +1,8 @@
 """Operator actions on tile holds, and their expiry.
 
-A drop makes a hold: the tile shows the dropped channel, and the channels the
-drops put off the tile wait on the hold's list (see quad.Hold). Every reversal
-returns a tile to a state the operator already saw and never changes another tile.
+A drop makes a hold: the tile shows the dropped channel, and the channel the
+first drop put off the tile waits for it (see quad.Hold). Ending a hold returns
+the tile to what it showed before the first drop and never changes another tile.
 
 Every function is pure: it takes the overrides and the quad state and returns new
 ones. Invalid input raises OverrideError with a message fit for the operator.
@@ -36,12 +36,12 @@ def place(
     slot: int,
     configured: Collection[str],
 ) -> Result:
-    """Make channel hold the tile; what the tile showed goes on the hold's list.
+    """Make channel hold the tile.
 
     A channel shown on another tile swaps with this one instead, and one already
-    on this tile changes nothing. A holder that drops again on the same tile adds
-    itself to the list, so nobody a drop put off comes back by a later drop. An
-    added channel is never listed: it reaches the quad only as a holder.
+    on this tile changes nothing. A tile keeps what it showed before the first
+    drop; a later drop sends the previous holder back to selection. An added
+    channel is never replaced: it reaches the quad only as a holder.
     """
     _check_slot(slot)
     _check_channel(channel, configured)
@@ -51,19 +51,16 @@ def place(
     if on is not None:
         return swap(overrides, state, on, slot)
     holds = {
-        s: Hold(h.holder, tuple(c for c in h.replaced if c != channel))
+        s: Hold(h.holder, None if h.replaced == channel else h.replaced)
         for s, h in overrides.holds.items()
     }
     for held in [s for s, h in holds.items() if h.holder == channel]:
         holds, state = _end(holds, state, held)
     old = holds.get(slot)
-    if old is not None:
-        listed = [*old.replaced, old.holder]
-    else:
-        occupant = state.channels[slot]
-        listed = [occupant] if occupant else []
-    listed = [c for c in listed if c != channel and c not in overrides.extras]
-    holds[slot] = Hold(channel, tuple(listed))
+    replaced = old.replaced if old is not None else state.channels[slot] or None
+    if replaced in overrides.extras:
+        replaced = None
+    holds[slot] = Hold(channel, replaced)
     return _build(overrides, holds, fresh={channel}), state
 
 
@@ -104,22 +101,11 @@ def unpin_all(overrides: Overrides, state: QuadState) -> Result:
 
 
 def put_back(overrides: Overrides, state: QuadState, channel: str) -> Result:
-    """Return a tile to the moment before the drop that put channel off it.
-
-    The first channel on a list gets the tile back as Unpin gives it; a later one
-    was a holder, so it holds the tile again over the channels listed before it.
-    The current holder and the channels listed after go back to selection.
-    """
-    at = overrides.replaced_at(channel)
-    if at is None:
+    """Unpin the tile whose hold replaced channel."""
+    slot = overrides.replaced_at(channel)
+    if slot is None:
         raise OverrideError(f"{channel} was not replaced on any tile")
-    slot, index = at
-    if index == 0:
-        return unpin(overrides, state, slot)
-    hold = overrides.holds[slot]
-    holds = dict(overrides.holds)
-    holds[slot] = Hold(channel, hold.replaced[:index])
-    return _build(overrides, holds, fresh={channel}), state
+    return unpin(overrides, state, slot)
 
 
 def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
@@ -146,7 +132,7 @@ def drop_unconfigured(
 ) -> Result:
     """End the holds of channels no longer configured and unlist them."""
     holds = {
-        s: Hold(h.holder, tuple(c for c in h.replaced if c in configured))
+        s: Hold(h.holder, h.replaced if h.replaced in configured else None)
         for s, h in overrides.holds.items()
     }
     for slot in [s for s, h in holds.items() if h.holder not in configured]:
@@ -158,8 +144,8 @@ def age(overrides: Overrides, state: QuadState, pool: Collection[str]) -> Result
     """Count one refresh for every holder out of the pool.
 
     A holder back in the pool starts over at zero; one out for more than
-    GRACE_REFRESHES refreshes loses its tile as Unpin takes it. Replaced
-    channels have no timer: they stay listed until their hold ends.
+    GRACE_REFRESHES refreshes loses its tile as Unpin takes it. A replaced
+    channel has no timer: it waits until its hold ends.
     """
     absent = {
         h.holder: overrides.absent.get(h.holder, 0) + 1
@@ -181,17 +167,17 @@ def age(overrides: Overrides, state: QuadState, pool: Collection[str]) -> Result
 
 
 def _end(holds: dict[int, Hold], state: QuadState, slot: int) -> tuple[dict[int, Hold], QuadState]:
-    """Drop a hold and seat its first listed channel on the tile.
+    """Drop a hold and seat the channel it replaced on the tile.
 
     Seated there, that channel keeps the tile as any on-screen channel does; one
-    out of the pool leaves it to selection. The rest of the list is released.
+    out of the pool leaves it to selection.
     """
     hold = holds.pop(slot)
-    if not hold.replaced:
+    if hold.replaced is None:
         return holds, state
     channels = list(state.channels)
     urls = state.quad.to_list()
-    channels[slot] = hold.replaced[0]
+    channels[slot] = hold.replaced
     # the next composition mints its playlist URL
     urls[slot] = ""
     return holds, replace(state, quad=Quad(urls), channels=tuple(channels))

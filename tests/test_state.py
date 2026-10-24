@@ -10,7 +10,7 @@ import structlog
 from quadlink.quad import Hold, Overrides, QuadState
 from quadlink.state import StateStore
 
-OVERRIDES = Overrides(holds={3: Hold("f", ("d", "e"))}, absent={"f": 1})
+OVERRIDES = Overrides(holds={3: Hold("f", "d")}, absent={"f": 1})
 STATE = QuadState(channels=("a", "b", "", "f"), categories={"a": "Games", "b": "Chess"})
 
 
@@ -20,7 +20,7 @@ def test_round_trip(state_file: Path):
     assert overrides == OVERRIDES
     assert state.channels == STATE.channels
     assert state.categories == STATE.categories
-    assert json.loads(state_file.read_text())["version"] == 3
+    assert json.loads(state_file.read_text())["version"] == 4
 
 
 def test_missing_file_starts_empty(state_file: Path):
@@ -33,11 +33,11 @@ def test_missing_file_starts_empty(state_file: Path):
     "text",
     [
         "{not json",
-        json.dumps({"version": 4, "holds": {}}),
+        json.dumps({"version": 5, "holds": {}}),
         json.dumps(
             {
-                "version": 3,
-                "holds": {"0": {"holder": "a", "replaced": ["a"]}},
+                "version": 4,
+                "holds": {"0": {"holder": "a", "replaced": "a"}},
                 "absent": {},
                 "channels": ["a", "", "", ""],
                 "categories": {},
@@ -45,8 +45,8 @@ def test_missing_file_starts_empty(state_file: Path):
         ),
         json.dumps(
             {
-                "version": 3,
-                "holds": {"9": {"holder": "a", "replaced": []}},
+                "version": 4,
+                "holds": {"9": {"holder": "a", "replaced": None}},
                 "absent": {},
                 "channels": ["a", "", "", ""],
                 "categories": {},
@@ -112,10 +112,10 @@ def test_loaded_state_is_not_written_back(state_file: Path):
 
 def test_holds_by_added_channels_are_not_saved(state_file: Path):
     overrides = Overrides(
-        holds={0: Hold("xy", ("a",)), 3: Hold("f", ("d",))},
+        holds={0: Hold("xy", "a"), 3: Hold("f", "d")},
         absent={"xy": 1},
         extras=frozenset({"xy"}),
     )
     StateStore(state_file).save(overrides, STATE)
     loaded, _ = StateStore(state_file).load()
-    assert loaded == Overrides(holds={3: Hold("f", ("d",))})
+    assert loaded == Overrides(holds={3: Hold("f", "d")})
