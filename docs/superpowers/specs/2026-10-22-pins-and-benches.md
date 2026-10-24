@@ -28,7 +28,9 @@ A channel is never both pinned and benched. Slot positions of unpinned channels 
 
 - When a pinned channel leaves the pool (offline, no video, rejected by every entry, or lookup failed), its slot refills at once by natural selection; no slot sits on filler. The pin stays on record for 2 more refreshes (about 1 minute): if the channel returns in that time, it takes its slot back and the temporary occupant leaves. After that the pin clears. A bench clears after the same grace.
 - A pin or bench clears when its channel is removed from the config.
-- A bench that a placement causes is bound to the new pin. When that pin ends, the bench also ends. A pin ends by unpin, by grace expiry, when its channel is benched, or when another placement takes its slot. When the operator benches or unbenches the channel, the bind is removed.
+- A bench that a placement causes is bound to the new pin. When that pin ends, the bench also ends. A pin ends by unpin, by grace expiry, or when its channel is benched. When the operator benches or unbenches the channel, the bind is removed.
+- When a placement replaces a pin on the same slot, the new pin takes over the benches bound to the old pin. The operator did not touch those channels, so they stay off the quad.
+- A channel added from the dashboard is not benched when a placement displaces it. It is only unpinned, because it reaches the quad only when pinned.
 - **Reset** clears every pin and bench.
 - Pins, benches and the sticky slot positions survive a daemon restart: they are saved to a state file under the service's state directory (`/var/lib/quadlink`), written atomically after every change.
 

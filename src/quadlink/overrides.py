@@ -32,18 +32,26 @@ def place(
     slot: int,
     configured: Collection[str],
 ) -> Overrides:
-    """Pin channel to slot; bench the channel on screen there."""
+    """Pin channel to slot; bench the channel on screen there.
+
+    The new pin takes over the benches bound to the pin it replaces on this slot:
+    replacing a placed channel is not undoing the placement, so the channel that
+    placement benched stays off. An added channel is only unpinned, never benched:
+    it reaches the quad only pinned anyway.
+    """
     _check_slot(slot)
     _check_channel(channel, configured)
     occupant = state.channels[slot]
+    replaced = {c for c, s in overrides.pins.items() if s == slot or c == occupant} - {channel}
     pins = {c: s for c, s in overrides.pins.items() if c != channel and s != slot}
     pins[channel] = slot
     benches = set(overrides.benches) - {channel}
-    bound = dict(overrides.bound)
+    bound = {b: channel if p in replaced else p for b, p in overrides.bound.items()}
     if occupant and occupant != channel:
         pins.pop(occupant, None)
-        benches.add(occupant)
-        bound[occupant] = channel
+        if occupant not in overrides.extras:
+            benches.add(occupant)
+            bound[occupant] = channel
     return _build(overrides, pins, benches, fresh={channel, occupant}, bound=bound)
 
 

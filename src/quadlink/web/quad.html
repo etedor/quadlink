@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- a round tile, so the Q reads on light and dark browser chrome alike; the Q's nail
      is shorter than the logo's to hold up at 16px. An icon cannot read the
-     page's tokens: the tile is --twitch 30% into --black, the Q 55% into --white -->
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2232%22 fill=%22%232a1150%22/%3E%3Cg fill=%22%23c8a6ff%22 transform=%22translate%280 -3%29%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.65 14.65 0 1 0 38.45 15.19Z%22/%3E%3Cpath d=%22M24.5 31H39.5L37 35.5H35.4L34.3 54L32 59L29.7 54L28.6 35.5H27Z%22/%3E%3C/g%3E%3C/svg%3E">
+     page's tokens: the tile is --twitch, the Q --white -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2232%22 fill=%22%239147ff%22/%3E%3Cg fill=%22%23ffffff%22 transform=%22translate%280 -3%29%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.65 14.65 0 1 0 38.45 15.19Z%22/%3E%3Cpath d=%22M24.5 31H39.5L37 35.5H35.4L34.3 54L32 59L29.7 54L28.6 35.5H27Z%22/%3E%3C/g%3E%3C/svg%3E">
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
@@ -21,6 +21,9 @@
     --ground: color-mix(in oklab, var(--twitch) 22%, var(--black));
     --hover: color-mix(in oklab, var(--twitch) 36%, var(--black));
     --current: color-mix(in oklab, var(--twitch) 29%, var(--black));
+    --chip-edge: color-mix(in oklab, var(--text-quiet) 40%, var(--clear));
+    --tile-hover: color-mix(in oklab, var(--white) 45%, var(--clear));
+    --drop-wash: color-mix(in oklab, var(--twitch) 22%, var(--clear));
     --well: var(--black);
     --scrim: color-mix(in oklab, var(--black) 65%, var(--clear));
     --text: color-mix(in oklab, var(--twitch) 6%, var(--white));
@@ -94,14 +97,23 @@
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; align-items: flex-start; justify-content: center; }
   /* the whole quad is 16:9, so each 16:9 stream fills its tile uncropped and the
-     tiles touch. it takes 92% of the stage width when the height allows, and sits
-     as far below the top bar as it is in from the sides (never past the bottom) */
-  .quad { --w: min(92cqw, (100cqh - 8cqw) * 16 / 9);
+     tiles touch. its top lines up with the rail's first channel (--quad-top, set by
+     alignQuad); it takes 92% of the stage width when the height allows */
+  .quad { --top: var(--quad-top, 4cqw); --w: min(92cqw, (100cqh - var(--top) - 4cqw) * 16 / 9);
     display: grid; grid-template: 1fr 1fr / 1fr 1fr;
     width: var(--w); aspect-ratio: 16 / 9;
-    margin-top: min((100cqw - var(--w)) / 2, 100cqh - var(--w) * 9 / 16);
+    margin-top: var(--top);
     border-radius: var(--radius); overflow: hidden; }
   .tile { position: relative; background: var(--well); overflow: hidden; }
+  /* outlines are drawn on ::after; each takes the quad's corner radius where it sits,
+     or the quad's rounded clip would thin the outline at its outer corners */
+  .tile:nth-child(1)::after { border-top-left-radius: var(--radius); }
+  .tile:nth-child(2)::after { border-top-right-radius: var(--radius); }
+  .tile:nth-child(3)::after { border-bottom-left-radius: var(--radius); }
+  .tile:nth-child(4)::after { border-bottom-right-radius: var(--radius); }
+  /* first among the outline rules: sound, pending and failure outrank a plain hover */
+  .tile:hover::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+    box-shadow: inset 0 0 0 2px var(--tile-hover); }
   .tile.loud::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     box-shadow: inset 0 0 0 2px var(--accent); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -115,11 +127,15 @@
   body.picking .tile:hover::after { content: ""; position: absolute; inset: 0; pointer-events: none;
     box-shadow: inset 0 0 0 3px var(--accent); }
   /* pin and sound marks sit on a scrim, so they read over any video */
-  .tile-marks { position: absolute; top: 10px; left: 10px; display: flex; gap: 5px;
+  /* above the tile's full-size sound button; only the unpin button takes clicks */
+  .tile-marks { position: absolute; z-index: 1; top: 10px; left: 10px; display: flex; gap: 5px;
     pointer-events: none; }
-  .tile-marks span { display: inline-flex; padding: 5px; border-radius: calc(var(--radius) - 10px);
+  .tile-marks > * { display: inline-flex; padding: 5px; border-radius: calc(var(--radius) - 10px);
     background: var(--scrim); color: var(--text); }
-  .tile-marks .pin { color: var(--accent); }
+  .tile-marks .unpin { all: unset; display: inline-flex; padding: 5px; pointer-events: auto;
+    cursor: pointer; border-radius: calc(var(--radius) - 10px); background: var(--scrim);
+    color: var(--accent); }
+  .tile-marks .unpin:hover, .tile-marks .unpin:focus-visible { color: var(--error); }
   .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
     gap: 5px; }
   .rail li { display: flex; align-items: center; gap: 12px; padding: 7px; border-radius: var(--radius); }
@@ -133,21 +149,28 @@
   .rail .name { font-weight: 600; }
   /* override glyphs follow the name; the name gives way first */
   .rail .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .rail .marks { flex: none; display: inline-flex; gap: 5px; color: var(--text-quiet); }
-  .rail .marks .pin { color: var(--accent); }
+  /* every glyph sits at the line's end, so the name keeps the rest of the row */
+  .rail .marks { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+    color: var(--text-quiet); }
   /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
-  .rail .undo { all: unset; display: inline-flex; align-items: center; justify-content: center;
-    width: 29px; height: 29px; margin: -6px -4px; border-radius: 50%; cursor: pointer; }
-  .rail .undo:hover { background: var(--popover); }
-  .rail .undo:focus-visible { outline: 2px solid var(--text); }
-  /* hover previews the result: the glyph gets struck through */
-  .rail .undo .off, .rail .undo:hover .on, .rail .undo:focus-visible .on { display: none; }
-  .rail .undo:hover .off, .rail .undo:focus-visible .off { display: inline-flex; }
+  /* one chip for everything a row carries: facts (viewers, slot) and actions (bench,
+     remove); only colour and behaviour differ */
+  .rail .chip { flex: none; display: inline-flex; align-items: center; justify-content: center;
+    gap: 5px; height: 22px; min-width: 22px; padding: 0 6px; margin: 0; box-sizing: border-box;
+    border: 1.5px solid var(--chip-edge); border-radius: calc(var(--radius) - 9px);
+    background: none; color: var(--text-quiet); font: 600 13px/1 system-ui, sans-serif;
+    font-variant-numeric: tabular-nums; }
+  .rail .chip svg { width: 13px; height: 13px; }
+  .rail .chip.slot { border-color: var(--accent); color: var(--text); }
+  .rail .chip.viewers { color: var(--text); }
+  .rail .chip.viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--live); }
+  /* red on hover says a click takes it away, as the quad's unpin does */
+  .rail button.chip { cursor: pointer; appearance: none; }
+  .rail button.chip:hover, .rail button.chip:focus-visible { border-color: var(--error);
+    color: var(--error); background: var(--popover); }
+  .rail button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
   /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
-  .rail .slot { display: inline-flex; align-items: center; justify-content: center;
-    min-width: 19px; height: 19px; padding: 0 3px; box-sizing: border-box;
-    border: 1.5px solid var(--accent); border-radius: calc(var(--radius) - 11px);
-    color: var(--text); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
   /* a picked row waits for a tile click: the click alternative to dragging */
   .rail li.picked { box-shadow: inset 0 0 0 2px var(--accent); }
@@ -155,10 +178,6 @@
   /* category and viewer count share the second line; the category gives way first */
   .rail .meta { display: flex; align-items: center; gap: 10px; color: var(--text-quiet); font-size: 14px; }
   .rail .cat { flex: 1; min-width: 0; }
-  .rail .viewers { flex: none; display: inline-flex; align-items: center; gap: 5px;
-    color: var(--text); font-variant-numeric: tabular-nums; }
-  .rail .viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--live); }
   /* drag: rows and tiles can be picked up; long-press callouts would steal touch drags */
   .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   .rail li { cursor: grab; }
@@ -169,7 +188,7 @@
     transform: translate(-50%, -50%); }
   .tile.target::after, .tile.pending::after, .tile.failed::after { content: ""; position: absolute;
     inset: 0; pointer-events: none; }
-  .tile.target::after { box-shadow: inset 0 0 0 3px var(--accent); }
+  .tile.target::after { box-shadow: inset 0 0 0 4px var(--accent); background: var(--drop-wash); }
   .tile.pending::after { box-shadow: inset 0 0 0 3px var(--accent); animation: pulse 1s infinite alternate; }
   .tile.failed::after { box-shadow: inset 0 0 0 3px var(--error); }
   .tile.lifted { opacity: 0.5; }
@@ -392,12 +411,33 @@
     });
   }
 
+  function unpinButton(slot, s) {
+    const label = 'Unpin ' + (s.display_name || s.channel);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'unpin';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const mark = glyph('pin', PIN, label);
+    mark.removeAttribute('role');
+    mark.removeAttribute('aria-label');
+    button.append(mark);
+    // the tile under it toggles sound on click and starts a drag on press
+    button.addEventListener('pointerdown', e => e.stopPropagation());
+    button.addEventListener('click', e => {
+      e.stopPropagation();
+      button.disabled = true;
+      act({ action: 'unpin', slot }).catch(() => { button.disabled = false; });
+    });
+    return button;
+  }
+
   function markTiles() {
     tiles.forEach((tile, i) => {
       const s = latest?.slots[i];
       const loud = tile.classList.contains('loud');
       const marks = [];
-      if (s?.pinned) marks.push(glyph('pin', PIN, 'Pinned'));
+      if (s?.pinned) marks.push(unpinButton(i, s));
       if (loud) marks.push(glyph('sound', SPEAKER, 'Sound on'));
       tile.querySelector('.tile-marks').replaceChildren(...marks);
       const button = tile.querySelector('button');
@@ -417,21 +457,16 @@
   });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') pick(null); });
 
-  const STRIKE = '<path d="M3 3l18 18"/>';
-
   function undo(kind, paths, label, body) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'undo ' + kind;
+    button.className = 'chip ' + kind;
     button.title = label;
     button.setAttribute('aria-label', label);
-    const on = glyph('on', paths, label);
-    const off = glyph('off', paths + STRIKE, label);
-    on.removeAttribute('role');
-    off.removeAttribute('role');
-    on.removeAttribute('aria-label');
-    off.removeAttribute('aria-label');
-    button.append(on, off);
+    const mark = glyph('on', paths, label);
+    mark.removeAttribute('role');
+    mark.removeAttribute('aria-label');
+    button.append(mark);
     button.addEventListener('click', e => {
       e.stopPropagation();
       button.disabled = true;
@@ -456,7 +491,7 @@
     const label = 'Remove ' + (c.display_name || c.channel);
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'undo remove';
+    button.className = 'chip remove';
     button.title = label;
     button.setAttribute('aria-label', label);
     const mark = glyph('on', CROSS, label);
@@ -480,6 +515,7 @@
     addInput.classList.toggle('bad', Boolean(message));
     addError.textContent = message || '';
     addError.hidden = !message;
+    alignQuad();
   }
   addInput.addEventListener('input', () => addFailed(null));
   addForm.addEventListener('submit', async e => {
@@ -519,7 +555,7 @@
     meta.append(cat);
     if (c.viewers != null) {
       const viewers = document.createElement('span');
-      viewers.className = 'viewers';
+      viewers.className = 'chip viewers';
       viewers.textContent = compact.format(c.viewers);
       viewers.title = c.viewers.toLocaleString() + ' viewers';
       meta.append(viewers);
@@ -528,18 +564,7 @@
     line.className = 'line';
     line.append(name);
     const marks = [];
-    if (c.slot != null) {
-      const badge = document.createElement('span');
-      badge.className = 'slot';
-      badge.textContent = c.slot + 1;
-      badge.title = 'On tile ' + (c.slot + 1);
-      marks.push(badge);
-    }
     const displayName = c.display_name || c.channel;
-    if (c.pin_slot != null) {
-      marks.push(undo('pin', PIN, 'Unpin ' + displayName + ' from slot ' + (c.pin_slot + 1),
-        { action: 'unpin', slot: c.pin_slot }));
-    }
     if (c.benched) {
       const holder = latest?.channels.find(x => x.channel === c.benched_for);
       const why = holder ? ' (benched for ' + (holder.display_name || holder.channel) + ')' : '';
@@ -547,6 +572,13 @@
         { action: 'unbench', channel: c.channel }));
     }
     if (c.extra) marks.push(removeButton(c));
+    if (c.slot != null) {
+      const badge = document.createElement('span');
+      badge.className = 'chip slot';
+      badge.textContent = c.slot + 1;
+      badge.title = 'Slot ' + (c.slot + 1);
+      marks.push(badge);
+    }
     if (marks.length) {
       const box = document.createElement('span');
       box.className = 'marks';
@@ -573,6 +605,21 @@
     longest: (a, b) => (a.started_at ?? Infinity) - (b.started_at ?? Infinity),
   };
 
+  const stage = document.querySelector('.stage');
+  const aside = document.querySelector('aside');
+  const phone = matchMedia('(max-width: 720px)');
+  // offsetTop is a layout position, so scrolling the rail leaves the quad still
+  function alignQuad() {
+    const first = rail.querySelector('li[data-channel]');
+    if (phone.matches || !first) {
+      stage.style.removeProperty('--quad-top');
+      return;
+    }
+    const top = aside.getBoundingClientRect().top + first.offsetTop - stage.getBoundingClientRect().top;
+    stage.style.setProperty('--quad-top', Math.max(0, top) + 'px');
+  }
+  addEventListener('resize', alignQuad);
+
   function render() {
     if (!latest) return;
     const q = view.q.trim().toLowerCase();
@@ -580,21 +627,25 @@
     const cats = new Set(view.cats);
     const matches = c => !q || [c.display_name, c.channel, c.category, c.title]
       .some(v => v && v.toLowerCase().includes(q));
+    // the quad's channels lead in slot order, whatever the filters and sort
+    const active = latest.channels.filter(c => c.slot != null && matches(c))
+      .sort((a, b) => a.slot - b.slot);
     // added channels show whatever their state: they are on the list only by choice
-    const added = latest.channels.filter(c => c.extra && matches(c))
+    const added = latest.channels.filter(c => c.extra && c.slot == null && matches(c))
       .sort(ORDER.name);
     const rows = latest.channels
-      .filter(c => !c.extra)
+      .filter(c => !c.extra && c.slot == null)
       .filter(c => show.has(c.state))
       .filter(c => !cats.size || cats.has(c.category))
-      .filter(c => !q || [c.display_name, c.channel, c.category, c.title]
-        .some(v => v && v.toLowerCase().includes(q)))
+      .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
-    const head = [];
+    const head = active.map(row);
     if (added.length) {
-      head.push(section('Added'), ...added.map(row), section('', true));
+      head.push(section('Added'), ...added.map(row));
     }
+    if (head.length && rows.length) head.push(section('', true));
     rail.replaceChildren(...head, ...rows.map(row));
+    alignQuad();
     document.querySelector('.filter-btn').classList.toggle('changed',
       cats.size > 0 || view.show.slice().sort().join() !== DEFAULTS.show.slice().sort().join());
     document.querySelector('.sort-btn').classList.toggle('changed', view.sort !== DEFAULTS.sort);

@@ -459,12 +459,15 @@ class TestBoundBench:
         overrides = unbench(scene.overrides, "d", CONFIGURED)
         assert overrides == Overrides(pins={"f": 3})
 
-    def test_a_new_place_on_the_slot_releases_the_old_pins_bench(self, scene):
+    def test_a_new_place_on_the_slot_carries_the_old_pins_bench(self, scene):
+        """Replacing a placed channel keeps the slot's earlier bench: nobody touched D."""
         scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
         overrides = place(scene.overrides, scene.state, "e", 3, CONFIGURED)
         assert overrides.pins == {"e": 3}
-        assert overrides.benches == {"f"}
-        assert overrides.bound == {"f": "e"}
+        assert overrides.benches == {"d", "f"}
+        assert overrides.bound == {"d": "e", "f": "e"}
+        # unpinning the slot's latest pin brings both back to compete
+        assert unpin(overrides, 3).benches == frozenset()
 
     def test_placing_the_bound_channel_unbinds_it(self, scene):
         scene.act(place(scene.overrides, scene.state, "f", 3, CONFIGURED))
@@ -542,4 +545,14 @@ class TestExtras:
         for _ in range(GRACE_REFRESHES + 2):
             overrides = age(overrides, pool={"a"})
         overrides = bench(overrides, "a", CONFIGURED)
+        assert overrides.extras == {"xy"}
+
+    def test_a_displaced_added_channel_is_not_benched(self, scene):
+        """It never enters on its own, so a bench would only hide it from the rail."""
+        self.added(scene)
+        scene.act(place(scene.overrides, scene.state, "xy", 3, scene.configured))
+        overrides = place(scene.overrides, scene.state, "e", 3, scene.configured)
+        assert overrides.pins == {"e": 3}
+        assert overrides.benches == {"d"}
+        assert overrides.bound == {"d": "e"}
         assert overrides.extras == {"xy"}
