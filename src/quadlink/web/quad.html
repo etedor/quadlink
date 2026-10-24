@@ -217,7 +217,7 @@
   /* phones: top bar, a short quad, then the list. the quad fills the width at a fixed
      height, so tiles crop their streams instead of keeping 16:9 */
   @media (max-width: 720px) {
-    body { grid-template: 58px 32svh 1fr / 1fr; grid-template-areas: "top" "quad" "rail"; }
+    body { grid-template: 58px 32svh minmax(0, 1fr) / minmax(0, 1fr); grid-template-areas: "top" "quad" "rail"; }
     .stage { container-type: normal; padding: 0 19px; }
     .quad { width: 100%; height: 100%; aspect-ratio: auto; margin: 0; }
     video, .cover { object-fit: cover; }
