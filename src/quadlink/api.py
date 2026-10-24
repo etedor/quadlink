@@ -35,9 +35,6 @@ STILL_TTL = 5.0
 # seconds one ffmpeg frame grab may take
 STILL_WAIT = 3.0
 
-# categories of our own that Explore suggests before Twitch's top ones
-OUR_CATEGORIES = 8
-
 # Twitch logins; any other channel key is a URL, which has no preview image
 _LOGIN = re.compile(r"[a-z0-9_]+")
 
@@ -380,12 +377,7 @@ class DashboardAPI:
         query = request.query.get("q", "").strip()
         directory = self.dashboard.directory
         try:
-            if query:
-                found = await directory.search(query)
-            else:
-                # what the quad and the config already show, then what Twitch watches most
-                ours = await directory.named(_our_categories(self.dashboard.snapshot()))
-                found = _unique([*ours, *await directory.top()])
+            found = await directory.search(query) if query else await directory.top()
         except DirectoryError as e:
             logger.warning("explore categories failed", query=query, error=str(e))
             return web.json_response({"error": "Twitch did not answer"}, status=502)
@@ -417,30 +409,6 @@ class DashboardAPI:
             },
             headers={"Cache-Control": "no-store"},
         )
-
-
-def _our_categories(snap: Snapshot) -> list[str]:
-    """Categories on the quad, by slot, then the live config channels' by how many share each."""
-    views = {c.channel: c for c in snap.channels}
-
-    def category(channel: str) -> str | None:
-        view = views.get(channel)
-        stream = view.status.stream if view is not None else None
-        return stream.metadata.category if stream is not None else None
-
-    on_quad = [category(s.channel) for s in snap.slots if s.channel]
-    counts: dict[str, int] = {}
-    for c in snap.channels:
-        name = category(c.channel)
-        if name and c.live and not c.extra:
-            counts[name] = counts.get(name, 0) + 1
-    by_count = sorted(counts, key=lambda n: -counts[n])
-    return list(dict.fromkeys(n for n in [*on_quad, *by_count] if n))[:OUR_CATEGORIES]
-
-
-def _unique(categories: list[Category]) -> list[Category]:
-    # a dict keeps each ID where it first appears
-    return list({c.id: c for c in categories}.values())
 
 
 def _category_json(c: Category) -> dict[str, Any]:

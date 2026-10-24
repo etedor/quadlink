@@ -72,8 +72,7 @@ class Twitch:
                     }
                 }
         else:
-            known = {"Chess": _node("5", "Chess", 800), "Games": _node("6", "Games", 10)}
-            data = {f"c{i}": known.get(variables[f"n{i}"]) for i in range(len(variables))}
+            raise AssertionError(query)
         return httpx.Response(200, json={"data": data})
 
 
@@ -105,21 +104,6 @@ async def test_top_is_the_most_watched_by_the_reported_counts(directory: GQLDire
     top = [c.viewers for c in await directory.top()]
     assert top[:4] == [90, 80, 70, TOP_FETCH - 4]
     assert top == sorted(top, reverse=True) and len(top) == TOP_LIMIT
-
-
-async def test_named_keeps_order_and_drops_unknown_names(
-    directory: GQLDirectory, twitch: Twitch
-) -> None:
-    found = await directory.named(["Games", "Nope", "Chess"])
-    assert [c.name for c in found] == ["Games", "Chess"]
-    # one request for every name
-    assert len(twitch.requests) == 1
-
-
-async def test_named_splits_past_the_alias_limit(directory: GQLDirectory, twitch: Twitch) -> None:
-    names = ["Chess", *(f"x{i}" for i in range(15)), "Games"]
-    assert [c.name for c in await directory.named(names)] == ["Chess", "Games"]
-    assert [len(r["variables"]) for r in twitch.requests] == [15, 2]
 
 
 async def test_streams(directory: GQLDirectory, twitch: Twitch) -> None:

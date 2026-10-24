@@ -72,7 +72,6 @@ class FakeDirectory:
     def __init__(self) -> None:
         self.calls: list[tuple[Any, ...]] = []
         self.error: DirectoryError | None = None
-        self.known = {"Chess": _category("5", "Chess"), "Games": _category("6", "Games")}
 
     def _call(self, *call: Any) -> None:
         self.calls.append(call)
@@ -86,10 +85,6 @@ class FakeDirectory:
     async def search(self, query: str) -> list[Category]:
         self._call("search", query)
         return [_category("2", "Destiny 2")]
-
-    async def named(self, names: list[str]) -> list[Category]:
-        self._call("named", names)
-        return [self.known[n] for n in names if n in self.known]
 
     async def streams(self, category_id: str, sort: Sort) -> Listing | None:
         self._call("streams", category_id, sort)
@@ -785,14 +780,13 @@ class TestExplore:
         }
         assert dashboard.directory.calls == [("search", "destiny")]
 
-    async def test_suggestions_lead_with_the_quad_then_the_config_then_top(
+    async def test_suggestions_are_twitchs_top_categories(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
     ) -> None:
         resp = await self._get(client, webui, "/api/explore/categories")
         names = [c["name"] for c in (await resp.json())["categories"]]
-        # Chess is on the quad and among the top: it shows once, where it first appears
-        assert names == ["Chess", "Games", "Just Chatting"]
-        assert dashboard.directory.calls[0] == ("named", ["Chess", "Games"])
+        assert names == ["Just Chatting", "Chess"]
+        assert dashboard.directory.calls == [("top",)]
 
     async def test_streams(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard

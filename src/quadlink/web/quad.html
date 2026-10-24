@@ -215,6 +215,8 @@
      room, which stays ragged as in justified text */
   .explore-cats .chip { color: var(--text); }
   .explore-cats::after { content: ""; flex-grow: 1; }
+  /* cut to whole rows, the last row is full too */
+  .explore-cats.cut::after { display: none; }
   .explore-cats .chip .count { color: var(--text-quiet); font-weight: 400; }
   .explore-cats button.chip:hover, .explore-cats button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
@@ -1043,6 +1045,7 @@
   const scroller = explore.querySelector('.explore-scroll');
   scroller.addEventListener('scroll', () => scroller.classList.toggle('under', scroller.scrollTop > 0), { passive: true });
   const SEARCH_AFTER = 250;
+  const CHIP_ROWS = 3;
   const SKELETONS = 6;
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
   const HOURGLASS = '<path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"/>';
@@ -1124,6 +1127,26 @@
     markPills();
   }
 
+  // shows the chips that fill CHIP_ROWS rows at this width; the chosen one always shows
+  function fitRows() {
+    const chips = [...cats.querySelectorAll('.chip')];
+    chips.forEach(c => { c.style.display = ''; });
+    cats.classList.remove('cut');
+    const tops = [...new Set(chips.map(c => c.offsetTop))];
+    if (tops.length <= CHIP_ROWS) return;
+    const last = tops[CHIP_ROWS - 1];
+    const extra = chips.filter(c => c.offsetTop > last);
+    const chosen = extra.find(c => c.getAttribute('aria-pressed') === 'true');
+    if (chosen) {
+      cats.prepend(chosen);
+      fitRows();
+      return;
+    }
+    extra.forEach(c => { c.style.display = 'none'; });
+    cats.classList.add('cut');
+  }
+  addEventListener('resize', () => { if (exploring()) fitRows(); });
+
   function markPills() {
     cats.querySelectorAll('.chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
   }
@@ -1146,6 +1169,7 @@
         return;
       }
       cats.replaceChildren(...body.categories.map(categoryChip));
+      fitRows();
     } catch (err) {
       if (request !== ex.catRequest) return;
       cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));

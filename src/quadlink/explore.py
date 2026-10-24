@@ -16,13 +16,11 @@ REQUEST_WAIT = 4.0
 # GQL refuses a second page without a browser integrity token, so one request is the
 # whole listing; 100 is the largest page it serves
 STREAMS_LIMIT = 100
-TOP_LIMIT = 24
+TOP_LIMIT = 40
 # Twitch ranks its top categories by a count older than the one it reports, so a few
 # extra let the reported order pick the top ones
-TOP_FETCH = 32
+TOP_FETCH = 48
 SEARCH_LIMIT = 10
-# GQL refuses a query with more than 15 aliased root fields
-ALIAS_LIMIT = 15
 # seconds an answer serves every request with the same arguments
 SEARCH_TTL = 300.0
 LISTING_TTL = 60.0
@@ -128,10 +126,6 @@ class Directory(Protocol):
         """Categories matching query, live ones first."""
         ...
 
-    async def named(self, names: list[str]) -> list[Category]:
-        """The categories with these exact names, in order; unknown names are left out."""
-        ...
-
     async def streams(self, category_id: str, sort: Sort) -> Listing | None:
         """The category's live streams, or None when the category does not exist."""
         ...
@@ -155,11 +149,6 @@ class GQLDirectory:
         return await self._cached(
             ("search", query.lower()), SEARCH_TTL, lambda: self._search(query)
         )
-
-    async def named(self, names: list[str]) -> list[Category]:
-        if not names:
-            return []
-        return await self._cached(("named", tuple(names)), LISTING_TTL, lambda: self._named(names))
 
     async def streams(self, category_id: str, sort: Sort) -> Listing | None:
         return await self._cached(
@@ -206,23 +195,6 @@ class GQLDirectory:
         found = [_category(e["node"]) for e in data["searchCategories"]["edges"]]
         # Twitch ranks by name match; a live category beats a dead namesake
         return sorted(found, key=lambda c: c.viewers, reverse=True)
-
-    async def _named(self, names: list[str]) -> list[Category]:
-        found: list[Category] = []
-        for i in range(0, len(names), ALIAS_LIMIT):
-            found += await self._named_batch(names[i : i + ALIAS_LIMIT])
-        return found
-
-    async def _named_batch(self, names: list[str]) -> list[Category]:
-        # one aliased lookup per name, in a single request
-        fields = " ".join(
-            f"c{i}: game(name: $n{i}) {{ {_CATEGORY_FIELDS} }}" for i in range(len(names))
-        )
-        params = ", ".join(f"$n{i}: String" for i in range(len(names)))
-        data = await self._query(
-            f"query({params}) {{ {fields} }}", {f"n{i}": n for i, n in enumerate(names)}
-        )
-        return [_category(data[f"c{i}"]) for i in range(len(names)) if data.get(f"c{i}")]
 
     async def _streams(self, category_id: str, sort: Sort) -> Listing | None:
         data = await self._query(
