@@ -209,19 +209,26 @@
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
     background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
-  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
-  /* category chips choose, so they light up in the accent rather than the red of removal */
   /* the gaps grow so every row is flush at both edges; the spacer takes the last row's
      room, which stays ragged as in justified text */
-  .explore-cats .chip { color: var(--text); }
+  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
   .explore-cats::after { content: ""; flex-grow: 1; }
   /* cut to whole rows, the last row is full too */
   .explore-cats.cut::after { display: none; }
+  /* each quad tile's category, under the tile */
+  .quad-cats { display: none; }
+  body.exploring .quad-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 92cqw; padding-top: 6px; flex: none; }
+  .quad-cats > div { display: flex; justify-content: center; min-width: 0; padding: 0 5px; }
+  .quad-cats .chip { display: block; max-width: 100%; line-height: 19px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  /* category chips choose, so they light up in the accent rather than the red of removal */
+  :is(.explore-cats, .quad-cats) .chip { color: var(--text); }
   .explore-cats .chip .count { color: var(--text-quiet); font-weight: 400; }
-  .explore-cats button.chip:hover, .explore-cats button.chip:focus-visible {
+  :is(.explore-cats, .quad-cats) button.chip:hover, :is(.explore-cats, .quad-cats) button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
-  .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent);
-    color: var(--white); }
+  :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] { border-color: var(--accent);
+    background: var(--accent); color: var(--white); }
   .explore-cats .chip[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
@@ -286,6 +293,7 @@
     /* no room for a row of tiles: the 2x2 quad stays and Explore takes the rail's place */
     body.exploring aside { display: none; }
     body.exploring .stage { display: contents; }
+    body.exploring .quad-cats { display: none; }
     body.exploring .quad { grid-area: quad; grid-template: 1fr 1fr / 1fr 1fr; width: auto;
       aspect-ratio: auto; margin: 0 19px; }
     body.exploring .tile:nth-child(n)::after { border-radius: 0; }
@@ -370,6 +378,7 @@
     <button aria-label="Slot 4" aria-pressed="false"></button>
   </div>
 </div>
+<div class="quad-cats" aria-label="Categories on the quad"></div>
 <section class="explore" aria-label="Explore" hidden>
   <div class="tools">
     <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
@@ -1038,6 +1047,7 @@
   const exploreBtn = document.querySelector('.explore-btn');
   const exploreQ = document.getElementById('explore-q');
   const cats = explore.querySelector('.explore-cats');
+  const quadCats = document.querySelector('.quad-cats');
   const cards = explore.querySelector('.cards');
   const note = explore.querySelector('.explore-note');
   const endNote = explore.querySelector('.explore-end');
@@ -1076,6 +1086,7 @@
     try { history.replaceState(null, '', on ? '#explore' : location.pathname + location.search); } catch {}
     if (on) {
       ex.opened = Date.now();
+      markQuadCats();
       showCats();
       if (ex.category) loadStreams(); else cards.replaceChildren();
     } else {
@@ -1112,8 +1123,41 @@
   function choose(c) {
     ex.category = { id: c.id, name: c.name, box_art: c.box_art, live: c.live };
     saveExplore();
-    if (exploreQ.value) { exploreQ.value = ''; showCats(); } else markPills();
+    // the suggestions may not hold it, so they are rebuilt with it in front
+    exploreQ.value = '';
+    showCats();
+    markQuadCats();
     loadStreams();
+  }
+
+  // the snapshot names each tile's category; Twitch's search finds its ID
+  async function chooseNamed(name) {
+    try {
+      const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(name));
+      const c = body.categories.find(x => x.name.toLowerCase() === name.toLowerCase()) || body.categories[0];
+      if (c) choose(c);
+    } catch (err) {
+      note.replaceChildren(retryNote('Twitch did not answer.', () => chooseNamed(name)));
+    }
+  }
+
+  function markQuadCats() {
+    if (!exploring()) return;
+    quadCats.replaceChildren(...[0, 1, 2, 3].map(i => {
+      const cell = document.createElement('div');
+      const name = latest?.slots[i]?.category;
+      if (!name) return cell;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'chip';
+      b.textContent = name;
+      b.title = name;
+      const chosen = ex.category?.name === name;
+      b.setAttribute('aria-pressed', String(chosen));
+      b.addEventListener('click', () => (chosen ? unchoose() : chooseNamed(name)));
+      cell.append(b);
+      return cell;
+    }));
   }
 
   function unchoose() {
@@ -1125,6 +1169,7 @@
     note.textContent = '';
     endNote.textContent = '';
     markPills();
+    markQuadCats();
   }
 
   // shows the chips that fill CHIP_ROWS rows at this width; the chosen one always shows
@@ -1407,6 +1452,7 @@
     render();
     markTiles();
     markCards();
+    markQuadCats();
     showAdded();
     if (before) coverChanges(before);
   };
