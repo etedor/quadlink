@@ -198,22 +198,11 @@
   body.exploring .tile:nth-child(2)::after, body.exploring .tile:nth-child(3)::after { border-radius: 0; }
   body.exploring .tile:nth-child(4)::after { border-radius: 0 var(--radius) var(--radius) 0; }
   .explore { flex: 1; min-height: 0; width: 92cqw; display: flex; flex-direction: column;
-    font: 16px system-ui, sans-serif; }
+    position: relative; font: 16px system-ui, sans-serif; }
+  /* the rail's menu width, under the buttons that open it */
+  .explore .pop { left: auto; right: 0; width: min(320px, 100%); }
   .explore[hidden] { display: none; }
   .explore .tools { padding: 10px 0 5px; }
-  .explore .tools { align-items: center; }
-  .lang { position: relative; flex: none; }
-  .lang select { height: 38px; padding: 0 30px 0 12px; border: 0; appearance: none;
-    border-radius: calc(var(--radius) - 7px); background: var(--field); color: var(--text);
-    font: inherit; font-size: 15px; cursor: pointer; }
-  .lang select:hover { background: var(--hover); }
-  .lang::after { content: "▾"; position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
-    color: var(--text-quiet); pointer-events: none; }
-  .sorts { display: flex; flex: none; height: 38px; padding: 3px; gap: 3px; box-sizing: border-box;
-    border-radius: calc(var(--radius) - 7px); background: var(--field); }
-  .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
-    background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
-  .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
   /* the gaps grow so every row, the last too, is flush at both edges */
   .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
@@ -315,9 +304,6 @@
     .card .tags { display: none; }
     /* phones keep the chips to one row that scrolls sideways */
     .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
-    .explore .tools { flex-wrap: wrap; }
-    .explore .tools input { flex-basis: 100%; }
-    .sorts button { padding: 0 9px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
@@ -398,11 +384,16 @@
   <div class="tools">
     <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
       autocomplete="off" spellcheck="false">
-    <span class="lang"><select id="explore-lang" aria-label="Language"></select></span>
-    <div class="sorts" role="group" aria-label="Sort streams">
-      <button type="button" data-sort="viewers" aria-pressed="true">Viewers</button>
-      <button type="button" data-sort="new" aria-pressed="false">New</button>
-    </div>
+    <button type="button" class="ex-filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
+    <button type="button" class="ex-sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
+  </div>
+  <div class="pop ex-filter-pop" hidden>
+    <div class="pop-head"><span aria-hidden="true">Language</span><button type="button" class="reset" aria-label="Reset language" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-body"><fieldset class="ex-langs"><legend class="sr-only">Language</legend></fieldset></div>
+  </div>
+  <div class="pop ex-sort-pop" hidden>
+    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+    <div class="pop-body"><fieldset class="ex-sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
   </div>
   <div class="explore-cats"></div>
   <p class="explore-note"></p>
@@ -1067,7 +1058,11 @@
   const cards = explore.querySelector('.cards');
   const note = explore.querySelector('.explore-note');
   const endNote = explore.querySelector('.explore-end');
-  const sortBtns = [...explore.querySelectorAll('.sorts button')];
+  const exFilterBtn = explore.querySelector('.ex-filter-btn');
+  const exSortBtn = explore.querySelector('.ex-sort-btn');
+  const exFilterPop = explore.querySelector('.ex-filter-pop');
+  const exSortPop = explore.querySelector('.ex-sort-pop');
+  const EX_SORTS = [['viewers', 'Viewers'], ['new', 'New']];
   const scroller = explore.querySelector('.explore-scroll');
   scroller.addEventListener('scroll', () => scroller.classList.toggle('under', scroller.scrollTop > 0), { passive: true });
   const SEARCH_AFTER = 250;
@@ -1306,17 +1301,26 @@
     return p;
   }
 
-  sortBtns.forEach(b => b.addEventListener('click', () => {
-    if (ex.sort === b.dataset.sort) return;
-    ex.sort = b.dataset.sort;
+  function setSort(sort) {
+    if (ex.sort === sort) return;
+    ex.sort = sort;
     saveExplore();
-    markSort();
+    markExploreTools();
     loadStreams();
-  }));
-  function markSort() {
-    sortBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.sort === ex.sort)));
   }
-  markSort();
+  function fillExSorts() {
+    const field = exSortPop.querySelector('.ex-sorts');
+    field.replaceChildren(field.querySelector('legend'), ...EX_SORTS.map(([key, text]) =>
+      option('radio', 'ex-sort', key, text, ex.sort === key, () => setSort(key))));
+  }
+  exSortBtn.addEventListener('click', () => toggle(exSortBtn, exSortPop, fillExSorts));
+  exSortPop.querySelector('.reset').addEventListener('click', () => { setSort('viewers'); fillExSorts(); });
+
+  // the rail's dot: a menu's choice differs from its default
+  function markExploreTools() {
+    exFilterBtn.classList.toggle('changed', ex.lang !== ownLang());
+    exSortBtn.classList.toggle('changed', ex.sort !== 'viewers');
+  }
 
   function skeleton() {
     const li = document.createElement('li');
@@ -1392,22 +1396,33 @@
     try { return new Intl.DisplayNames([navigator.language], { type: 'language' }).of(code.toLowerCase()); } catch { return code; }
   }
 
-  const langSelect = document.getElementById('explore-lang');
-  function fillLangs() {
-    const ownCode = own?.language.toUpperCase();
-    if (ex.lang === null) ex.lang = LANGS.includes(ownCode) ? ownCode : '';
+  // the default: the viewer's own language when Twitch has it, else all
+  function ownLang() {
+    const code = own?.language.toUpperCase();
+    return LANGS.includes(code) ? code : '';
+  }
+  if (ex.lang === null) ex.lang = ownLang();
+
+  function setLang(code) {
+    if (ex.lang === code) return;
+    ex.lang = code;
+    saveExplore();
+    markExploreTools();
+    loadStreams();
+  }
+  function fillExLangs() {
+    const ownCode = ownLang();
     const label = code => [flag(code), languageName(code)].filter(Boolean).join(' ');
     const rest = LANGS.filter(c => c !== ownCode).sort((a, b) => languageName(a).localeCompare(languageName(b)));
-    const options = [['', 'All languages'], ...(LANGS.includes(ownCode) ? [[ownCode, label(ownCode)]] : []),
+    const choices = [['', 'All languages'], ...(ownCode ? [[ownCode, label(ownCode)]] : []),
       ...rest.map(c => [c, label(c)])];
-    langSelect.replaceChildren(...options.map(([value, text]) => new Option(text, value, false, value === ex.lang)));
+    const field = exFilterPop.querySelector('.ex-langs');
+    field.replaceChildren(field.querySelector('legend'), ...choices.map(([code, text]) =>
+      option('radio', 'ex-lang', code, text, ex.lang === code, () => setLang(code))));
   }
-  fillLangs();
-  langSelect.addEventListener('change', () => {
-    ex.lang = langSelect.value;
-    saveExplore();
-    loadStreams();
-  });
+  exFilterBtn.addEventListener('click', () => toggle(exFilterBtn, exFilterPop, fillExLangs));
+  exFilterPop.querySelector('.reset').addEventListener('click', () => { setLang(ownLang()); fillExLangs(); });
+  markExploreTools();
 
   function languageNames(code) {
     const names = new Set([code.toLowerCase()]);
