@@ -4,6 +4,7 @@ import asyncio
 import re
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 
 import pytest
 from aiohttp import web
@@ -267,3 +268,19 @@ async def test_a_restarted_slot_carries_on_its_numbering(setup):
     assert first > last
     assert int(re.search(r"DISCONTINUITY-SEQUENCE:(\d+)", text)[1]) >= dseq
     assert ll.slot(1).segs[0].disc
+
+
+async def test_program_date_times_follow_segment_durations(setup):
+    relay, add, client, _ = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    await asyncio.sleep(6.5)
+    text = await _playlist(client)
+    stamps = [
+        datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+        for t in re.findall(r"PROGRAM-DATE-TIME:(\S+)", text)
+    ]
+    durations = [float(d) for d in re.findall(r"#EXTINF:([0-9.]+),", text)]
+    assert len(durations) >= 2
+    for a, b, d in zip(stamps, stamps[1:], durations, strict=False):
+        assert b - a == pytest.approx(d, abs=0.002)

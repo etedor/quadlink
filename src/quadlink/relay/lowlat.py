@@ -116,7 +116,8 @@ class _Seg:
     parts: list[_Part] = field(default_factory=list)
     filler: bool = False
     complete: bool = False
-    # wall clock when its first part was released
+    # PROGRAM-DATE-TIME (epoch seconds): the release clock after a discontinuity,
+    # else the previous segment's plus its duration
     wall: float = 0.0
 
     def released(self, now: float) -> int:
@@ -504,7 +505,7 @@ class _Slot:
             prev = seg.parts[-1] if seg.parts else self._last_part()
             # releases stay in order, so a burst after a paced one queues behind it
             release = now if prev is None else max(now, prev.release + prev.duration * PACE)
-            if not seg.parts:
+            if not seg.parts and not seg.wall:
                 seg.wall = time.time() + (release - now)
             seg.parts.append(_Part(part.data, part.duration, part.independent, release))
             if part.last:
@@ -532,6 +533,10 @@ class _Slot:
             seg = _Seg(seq, disc, prev.dseq + disc, filler=filler)
         else:
             seg = _Seg(seq, self.resumed, self.base_dseq + self.resumed, filler=filler)
+        if prev is not None and not seg.disc:
+            # HLS times a segment as its predecessor's PROGRAM-DATE-TIME plus duration;
+            # release times jitter with Twitch's delivery and would overlap
+            seg.wall = prev.wall + prev.duration
         self.segs.append(seg)
         self.pending_disc = False
         self.need_independent = False
@@ -592,7 +597,6 @@ class _Slot:
         live = [s for s in self.segs if s.released(now) > 0]
         if not live:
             return ""
-        wall = time.time() - now
         lines = [
             "#EXTM3U",
             "#EXT-X-VERSION:9",
@@ -607,7 +611,7 @@ class _Slot:
         for seg in live:
             if seg.disc and seg is not live[0]:
                 lines.append("#EXT-X-DISCONTINUITY")
-            stamp = datetime.fromtimestamp(seg.parts[0].release + wall, UTC)
+            stamp = datetime.fromtimestamp(seg.wall, UTC)
             lines.append(
                 f"#EXT-X-PROGRAM-DATE-TIME:{stamp.isoformat(timespec='milliseconds')[:-6]}Z"
             )
