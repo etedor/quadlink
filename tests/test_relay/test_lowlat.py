@@ -315,6 +315,28 @@ async def test_a_restarted_slot_carries_on_its_numbering(setup):
     assert ll.slot(1).segs[0].disc
 
 
+async def test_a_segment_listed_again_with_a_later_time_is_fed_once(setup):
+    _, _, _, ll = setup
+    state = ll.slot(1)
+
+    def listing(media_seq: int, start: str, uris: list[str]) -> str:
+        lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", f"#EXT-X-MEDIA-SEQUENCE:{media_seq}"]
+        for k, uri in enumerate(uris):
+            lines += [
+                f"#EXT-X-PROGRAM-DATE-TIME:{start}:{10 + 2 * k:02d}.000Z",
+                "#EXTINF:2.000,live",
+                uri,
+            ]
+        return "\n".join(lines) + "\n"
+
+    state._take("chan", listing(5, "2026-10-24T19:00", ["http://x/a.ts?t=1", "http://x/b.ts?t=1"]))
+    queued = len(state.queue)
+    # the same media again, its seq at the watermark but its time later: ingest's
+    # test for a restarted broadcast passes, and only the URI shows it is a repeat
+    state._take("chan", listing(5, "2026-10-24T19:05", ["http://x/a.ts?t=2", "http://x/b.ts?t=2"]))
+    assert len(state.queue) == queued
+
+
 async def test_program_date_times_follow_segment_durations(setup):
     relay, add, client, _ = setup
     relay.source = add("chan")

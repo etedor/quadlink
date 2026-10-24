@@ -69,8 +69,11 @@ PROBE_MAX = 1 << 20
 # a part released after a burst (an fMP4 segment arrives whole) follows the one
 # before at this fraction of real time: smooth, and still catching up
 PACE = 0.8
-# seconds between two "nothing released" reports for one slot
+# seconds between two "nothing released" reports for one slot, and between two
+# reports of skipped repeats
 EMPTY_REPORT = 10.0
+# source segments a slot remembers by URI, to skip one listed again (about 2 minutes)
+TAKEN_MEMORY = 64
 
 
 def next_release(now: float, prev: "_Part | None") -> float:
@@ -294,6 +297,10 @@ class _Slot:
         self._init: tuple[str, bytes] | None = None
         # loop time of the last "nothing released" report
         self._empty_logged = -math.inf
+        # source URIs (without query) queued lately, newest last; see _take
+        self._taken: deque[str] = deque(maxlen=TAKEN_MEMORY)
+        self._repeats = 0
+        self._repeats_logged = -math.inf
 
     def start(self) -> None:
         self.tasks = [
@@ -347,6 +354,10 @@ class _Slot:
         if switched:
             # a new channel starts at its live edge: the first prefetch segment
             start = next((s for s in new if s.uri in prefetch), new[-1])
+            self._taken.clear()
+            # the older segments skipped here count as taken, or one listed again
+            # would be fed behind the edge, back in time
+            self._taken.extend(s.uri.split("?", 1)[0] for s in new if s.seq < start.seq)
             new = [s for s in new if s.seq >= start.seq]
             self.gen += 1
             for queued in [*self.queue, *([self.current] if self.current else [])]:
@@ -354,9 +365,26 @@ class _Slot:
                     queued.fetch.cancel()
             self.queue.clear()
         for seg in new:
+            # ingest takes a segment again when it returns with a later time, its test
+            # for a restarted broadcast; a playlist whose times run ahead of the
+            # prefetch guess then feeds media twice, the pacing runs ahead of the
+            # clock and the tile lists nothing. a restart brings new URIs
+            path = seg.uri.split("?", 1)[0]
+            if path in self._taken:
+                self._repeats += 1
+                continue
+            self._taken.append(path)
             self.queue.append(_Queued(seg, identity, self.gen))
+        self._report_repeats()
         self._fetch_ahead()
         self.wake.set()
+
+    def _report_repeats(self) -> None:
+        now = time.monotonic()
+        if self._repeats and now - self._repeats_logged >= EMPTY_REPORT:
+            logger.info("relay ll repeated segments skipped", slot=self.slot, count=self._repeats)
+            self._repeats = 0
+            self._repeats_logged = now
 
     def _fetch_ahead(self) -> None:
         for queued in list(self.queue)[:FETCH_AHEAD]:
