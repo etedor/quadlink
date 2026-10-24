@@ -209,15 +209,15 @@
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
     background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
-  .cats { display: flex; flex-wrap: wrap; gap: 7px; padding: 5px 0; }
-  .pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 5px;
-    border: 0; border-radius: 17px; background: var(--field); color: var(--text); font: inherit;
-    font-size: 15px; cursor: pointer; }
-  .pill:hover, .pill:focus-visible { background: var(--hover); }
-  .pill img { width: 18px; height: 24px; border-radius: 3px; object-fit: cover; }
-  .pill .count { color: var(--text-quiet); font-size: 13px; }
-  .pill[aria-pressed="true"] { background: var(--accent); color: var(--white); }
-  .pill[aria-pressed="true"] .count { color: var(--white); }
+  .explore-cats { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 0; }
+  /* category chips choose, so they light up in the accent rather than the red of removal */
+  .explore-cats .chip { color: var(--text); }
+  .explore-cats .chip .count { color: var(--text-quiet); font-weight: 400; }
+  .explore-cats button.chip:hover, .explore-cats button.chip:focus-visible {
+    border-color: var(--accent); color: var(--text); background: var(--hover); }
+  .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent);
+    color: var(--white); }
+  .explore-cats .chip[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
   .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
@@ -288,8 +288,7 @@
     .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .card .title { -webkit-line-clamp: 1; }
     .card .tags { display: none; }
-    .cats { flex-wrap: nowrap; overflow-x: auto; }
-    .pill { flex: none; }
+    .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
     .sorts button { padding: 0 9px; }
   }
 </style>
@@ -375,7 +374,7 @@
       <button type="button" data-sort="new" aria-pressed="false">New</button>
     </div>
   </div>
-  <div class="cats"></div>
+  <div class="explore-cats"></div>
   <p class="explore-note"></p>
   <div class="explore-scroll"><ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p></div>
 </section>
@@ -1033,7 +1032,7 @@
   // Explore: browse a Twitch category for streams the config does not know
   const exploreBtn = document.querySelector('.explore-btn');
   const exploreQ = document.getElementById('explore-q');
-  const cats = explore.querySelector('.cats');
+  const cats = explore.querySelector('.explore-cats');
   const cards = explore.querySelector('.cards');
   const note = explore.querySelector('.explore-note');
   const endNote = explore.querySelector('.explore-end');
@@ -1087,26 +1086,19 @@
   }
   exploreBtn.addEventListener('click', () => setExploring(!exploring()));
 
-  function categoryImage(c) {
-    const img = document.createElement('img');
-    img.alt = '';
-    if (c.box_art) img.src = c.box_art;
-    return img;
-  }
-
-  function pill(c) {
+  function categoryChip(c) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'pill';
+    b.className = 'chip';
     const name = document.createElement('span');
     name.textContent = c.name;
     const count = document.createElement('span');
     count.className = 'count';
     count.textContent = c.live ? c.live.toLocaleString() + ' live' : 'none live';
-    b.append(categoryImage(c), name, count);
+    b.append(name, count);
     b.dataset.id = c.id;
     b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
-    // the chosen category's pill clears the choice
+    // the chosen category's chip clears the choice
     b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
     return b;
   }
@@ -1130,7 +1122,7 @@
   }
 
   function markPills() {
-    cats.querySelectorAll('.pill').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
+    cats.querySelectorAll('.chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
   }
 
   // the field's results, else suggestions with the chosen category among them
@@ -1150,7 +1142,7 @@
         cats.replaceChildren(none);
         return;
       }
-      cats.replaceChildren(...body.categories.map(pill));
+      cats.replaceChildren(...body.categories.map(categoryChip));
     } catch (err) {
       if (request !== ex.catRequest) return;
       cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));
@@ -1162,7 +1154,7 @@
     ex.searchTimer = setTimeout(showCats, SEARCH_AFTER);
   });
   exploreQ.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); cats.querySelector('.pill')?.click(); }
+    if (e.key === 'Enter') { e.preventDefault(); cats.querySelector('.chip')?.click(); }
     if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; showCats(); }
   });
 
