@@ -11,7 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from quadlink.relay import lowlat
-from quadlink.relay.lowlat import LowLatency, with_prefetch
+from quadlink.relay.lowlat import PACE, PART_TARGET, LowLatency, _Part, next_release, with_prefetch
 from quadlink.relay.tsinfo import audio_sample_rate
 
 SOURCE = """#EXTM3U
@@ -56,6 +56,21 @@ class TestWithPrefetch:
     def test_a_playlist_without_prefetch_is_unchanged(self):
         plain = "\n".join(x for x in SOURCE.splitlines() if "PREFETCH" not in x) + "\n"
         assert with_prefetch(plain) == (plain, set())
+
+
+class TestNextRelease:
+    def test_a_part_follows_the_one_before_at_the_pace(self):
+        prev = _Part(b"", 0.5, False, release=100.0)
+        assert next_release(99.0, prev) == pytest.approx(100.0 + 0.5 * PACE)
+
+    def test_a_late_part_goes_out_now(self):
+        assert next_release(200.0, _Part(b"", 0.5, False, release=100.0)) == 200.0
+        assert next_release(5.0, None) == 5.0
+
+    def test_a_timestamp_jump_holds_the_next_part_back_one_part_at_most(self):
+        # a PTS wrap reads as a part lasting about a day
+        prev = _Part(b"", 95_000.0, False, release=100.0)
+        assert next_release(100.0, prev) == pytest.approx(100.0 + PART_TARGET * PACE)
 
 
 class Source:

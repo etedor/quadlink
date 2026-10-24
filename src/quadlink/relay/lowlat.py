@@ -71,6 +71,19 @@ PROBE_MAX = 1 << 20
 PACE = 0.8
 
 
+def next_release(now: float, prev: "_Part | None") -> float:
+    """When a new part goes out: paced behind the one before, so a burst queues.
+
+    The pace counts at most PART_TARGET per part. A source timestamp jump, such as
+    a PTS wrap on a day-long stream, gives one part a duration of hours, and pacing
+    by it would hold every later part back that long: the playlist would list
+    nothing, and QuadStream rebuilds a player on each 503.
+    """
+    if prev is None:
+        return now
+    return max(now, prev.release + min(prev.duration, PART_TARGET) * PACE)
+
+
 def with_prefetch(text: str) -> tuple[str, set[str]]:
     """The source playlist with Twitch's prefetch segments listed as ordinary ones.
 
@@ -503,8 +516,7 @@ class _Slot:
                 self._open(now)
             seg = self.segs[-1]
             prev = seg.parts[-1] if seg.parts else self._last_part()
-            # releases stay in order, so a burst after a paced one queues behind it
-            release = now if prev is None else max(now, prev.release + prev.duration * PACE)
+            release = next_release(now, prev)
             if not seg.parts and not seg.wall:
                 seg.wall = time.time() + (release - now)
             seg.parts.append(_Part(part.data, part.duration, part.independent, release))
