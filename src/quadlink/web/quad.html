@@ -1427,7 +1427,8 @@
     name.className = 'name';
     name.textContent = s.display_name;
     line.append(name);
-    if (s.language) {
+    // the viewer's own language goes without saying
+    if (s.language && s.language.toLowerCase() !== own?.language) {
       const lang = document.createElement('span');
       lang.className = 'chip';
       lang.textContent = flag(s.language) || s.language;
