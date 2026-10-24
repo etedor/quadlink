@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- the logo's Q; an icon cannot read the page's tokens, so this is --twitch's value -->
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22 fill=%22%239147ff%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39A15.61 15.61 0 1 0 39.53 12.39Z%22/%3E%3Cpath d=%22M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z%22/%3E%3C/svg%3E">
+<!-- a round tile, so the Q reads on light and dark browser chrome alike; the Q's nail
+     is shorter than the logo's to hold up at 16px. An icon cannot read the
+     page's tokens: the tile is --twitch 30% into --black, the Q 55% into --white -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2232%22 fill=%22%232a1150%22/%3E%3Cg fill=%22%23c8a6ff%22 transform=%22translate%280 -3%29%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.65 14.65 0 1 0 38.45 15.19Z%22/%3E%3Cpath d=%22M24.5 31H39.5L37 35.5H35.4L34.3 54L32 59L29.7 54L28.6 35.5H27Z%22/%3E%3C/g%3E%3C/svg%3E">
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · quad</title>
 <style>
@@ -193,10 +195,10 @@
   <a class="logo" href="/quad" aria-label="QuadLink">
     <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
       <g style="fill: var(--logo)">
-        <!-- Q: a crescent (two circles crossing at the gap) with a nail through its foot,
+        <!-- Q: a crescent with 3-unit tips at the gap, a nail through its foot,
              weighted to Play Bold's stem; 64 units span the ring's 42-unit cap height -->
         <g transform="scale(0.3863)">
-        <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39A15.61 15.61 0 1 0 39.53 12.39Z"/>
+        <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.03 14.03 0 1 0 38.45 15.19Z"/>
         <path d="M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z"/>
         </g>
         <!-- UADLINK in Play Bold (SIL OFL), as outlines so no font is needed -->
