@@ -86,8 +86,10 @@ class FakeDirectory:
         self._call("search", query)
         return [_category("2", "Destiny 2")]
 
-    async def streams(self, category_id: str, sort: Sort) -> Listing | None:
-        self._call("streams", category_id, sort)
+    async def streams(
+        self, category_id: str, sort: Sort, language: str | None = None
+    ) -> Listing | None:
+        self._call("streams", category_id, sort, language)
         if category_id == "404":
             return None
         streams = [_explore_stream(login) for login in ("zed", "a", "b")]
@@ -807,11 +809,25 @@ class TestExplore:
             "tags": ["Chill"],
             "thumbnail": "https://p/zed.jpg",
         }
-        assert dashboard.directory.calls == [("streams", "5", Sort.NEW)]
+        assert dashboard.directory.calls == [("streams", "5", Sort.NEW, None)]
+
+    async def test_streams_in_a_language(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+    ) -> None:
+        resp = await self._get(client, webui, "/api/explore/streams?category=5&language=DE")
+        assert resp.status == 200
+        assert dashboard.directory.calls == [("streams", "5", Sort.VIEWERS, "DE")]
 
     @pytest.mark.parametrize(
         "query,status",
-        [("category=5&sort=top", 400), ("category=abc", 400), ("", 400), ("category=404", 404)],
+        [
+            ("category=5&sort=top", 400),
+            ("category=abc", 400),
+            ("", 400),
+            ("category=5&language=de", 400),
+            ("category=5&language=EN}", 400),
+            ("category=404", 404),
+        ],
     )
     async def test_bad_listing_requests(
         self, client: TestClient, webui: WebUI, query: str, status: int

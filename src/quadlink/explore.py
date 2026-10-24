@@ -53,9 +53,12 @@ _SEARCH_QUERY = (
 )
 
 _STREAMS_QUERY = (
-    "query($id: ID, $first: Int, $sort: StreamSort) { game(id: $id) { "
+    "query($id: ID, $first: Int, $sort: StreamSort, $languages: [Language!]) { game(id: $id) { "
     f"{_CATEGORY_FIELDS} "
-    "streams(first: $first, options: {sort: $sort}) { edges { node { "
+    # Twitch filters by the broadcaster's language setting, which a stream's own
+    # language tag disagrees with about one time in ten
+    "streams(first: $first, options: {sort: $sort, broadcasterLanguages: $languages}) "
+    "{ edges { node { "
     "title viewersCount createdAt language "
     f"previewImageURL(width: {THUMBNAIL[0]}, height: {THUMBNAIL[1]}) "
     "broadcaster { login displayName } freeformTags { name } } } "
@@ -126,8 +129,11 @@ class Directory(Protocol):
         """Categories matching query, live ones first."""
         ...
 
-    async def streams(self, category_id: str, sort: Sort) -> Listing | None:
-        """The category's live streams, or None when the category does not exist."""
+    async def streams(
+        self, category_id: str, sort: Sort, language: str | None = None
+    ) -> Listing | None:
+        """The category's live streams, in one language when given (a Twitch code such as
+        "EN"), or None when the category does not exist."""
         ...
 
 
@@ -150,9 +156,13 @@ class GQLDirectory:
             ("search", query.lower()), SEARCH_TTL, lambda: self._search(query)
         )
 
-    async def streams(self, category_id: str, sort: Sort) -> Listing | None:
+    async def streams(
+        self, category_id: str, sort: Sort, language: str | None = None
+    ) -> Listing | None:
         return await self._cached(
-            ("streams", category_id, sort), LISTING_TTL, lambda: self._streams(category_id, sort)
+            ("streams", category_id, sort, language),
+            LISTING_TTL,
+            lambda: self._streams(category_id, sort, language),
         )
 
     async def _cached(
@@ -196,9 +206,15 @@ class GQLDirectory:
         # Twitch ranks by name match; a live category beats a dead namesake
         return sorted(found, key=lambda c: c.viewers, reverse=True)
 
-    async def _streams(self, category_id: str, sort: Sort) -> Listing | None:
+    async def _streams(self, category_id: str, sort: Sort, language: str | None) -> Listing | None:
         data = await self._query(
-            _STREAMS_QUERY, {"id": category_id, "first": STREAMS_LIMIT, "sort": _GQL_SORT[sort]}
+            _STREAMS_QUERY,
+            {
+                "id": category_id,
+                "first": STREAMS_LIMIT,
+                "sort": _GQL_SORT[sort],
+                "languages": [language] if language else None,
+            },
         )
         game = data.get("game")
         if not game:

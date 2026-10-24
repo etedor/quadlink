@@ -121,7 +121,18 @@ async def test_streams(directory: GQLDirectory, twitch: Twitch) -> None:
     )
     assert s.started_at == datetime(2026, 10, 24, 16, 9, 40, tzinfo=UTC)
     assert s.tags == ("English", "Chill")
-    assert twitch.requests[0]["variables"] == {"id": "497057", "first": 100, "sort": "RECENT"}
+    assert twitch.requests[0]["variables"] == {
+        "id": "497057",
+        "first": 100,
+        "sort": "RECENT",
+        "languages": None,
+    }
+
+
+async def test_streams_in_a_language(directory: GQLDirectory, twitch: Twitch) -> None:
+    await directory.streams("497057", Sort.VIEWERS, "DE")
+    await directory.streams("497057", Sort.VIEWERS)
+    assert [r["variables"]["languages"] for r in twitch.requests] == [["DE"], None]
 
 
 async def test_unknown_category_is_none(directory: GQLDirectory) -> None:

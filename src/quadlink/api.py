@@ -35,6 +35,9 @@ STILL_TTL = 5.0
 # seconds one ffmpeg frame grab may take
 STILL_WAIT = 3.0
 
+# Twitch's Language enum: two-letter codes, plus ASL and OTHER
+_LANGUAGE = re.compile(r"[A-Z]{2}|ASL|OTHER")
+
 # Twitch logins; any other channel key is a URL, which has no preview image
 _LOGIN = re.compile(r"[a-z0-9_]+")
 
@@ -394,8 +397,13 @@ class DashboardAPI:
             return web.json_response({"error": "sort must be viewers or new"}, status=400)
         if not category.isdigit():
             return web.json_response({"error": "category must be a Twitch category ID"}, status=400)
+        language = request.query.get("language") or None
+        if language is not None and not _LANGUAGE.fullmatch(language):
+            return web.json_response(
+                {"error": "language must be a Twitch language code such as EN"}, status=400
+            )
         try:
-            listing = await self.dashboard.directory.streams(category, sort)
+            listing = await self.dashboard.directory.streams(category, sort, language)
         except DirectoryError as e:
             logger.warning("explore streams failed", category=category, error=str(e))
             return web.json_response({"error": "Twitch did not answer"}, status=502)

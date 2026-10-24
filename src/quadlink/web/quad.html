@@ -204,6 +204,13 @@
   .explore[hidden] { display: none; }
   .explore .tools { padding: 10px 0 5px; }
   .explore .tools { align-items: center; }
+  .lang { position: relative; flex: none; }
+  .lang select { height: 38px; padding: 0 30px 0 12px; border: 0; appearance: none;
+    border-radius: calc(var(--radius) - 7px); background: var(--field); color: var(--text);
+    font: inherit; font-size: 15px; cursor: pointer; }
+  .lang select:hover { background: var(--hover); }
+  .lang::after { content: "▾"; position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+    color: var(--text-quiet); pointer-events: none; }
   .sorts { display: flex; flex: none; height: 38px; padding: 3px; gap: 3px; box-sizing: border-box;
     border-radius: calc(var(--radius) - 7px); background: var(--field); }
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
@@ -220,19 +227,19 @@
   body.exploring .quad-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
     width: 92cqw; padding-top: 6px; flex: none; }
   .quad-cats > div { display: flex; justify-content: center; min-width: 0; padding: 0 5px; }
-  .quad-cats .chip { display: block; max-width: 100%; line-height: 19px; white-space: nowrap;
-    overflow: hidden; text-overflow: ellipsis; }
+  .quad-cats .chip { max-width: 100%; }
+  .quad-cats .chip .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* category chips choose, so they light up in the accent rather than the red of removal */
   :is(.explore-cats, .quad-cats) .chip { color: var(--text); }
-  .explore-cats .chip .count { display: inline-flex; align-items: center; gap: 5px;
-    color: var(--text-quiet); font-weight: 400; }
-  .explore-cats .chip .count::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
-    background: var(--live); }
+  :is(.explore-cats, .quad-cats) .chip .count { flex: none; display: inline-flex; align-items: center;
+    gap: 5px; color: var(--text-quiet); font-weight: 400; }
+  :is(.explore-cats, .quad-cats) .chip .count::before { content: ""; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--live); }
   :is(.explore-cats, .quad-cats) button.chip:hover, :is(.explore-cats, .quad-cats) button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
   :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] { border-color: var(--accent);
     background: var(--accent); color: var(--white); }
-  .explore-cats .chip[aria-pressed="true"] .count { color: var(--white); }
+  :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
   .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
@@ -305,6 +312,8 @@
     .card .title { -webkit-line-clamp: 1; }
     .card .tags { display: none; }
     .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
+    .explore .tools { flex-wrap: wrap; }
+    .explore .tools input { flex-basis: 100%; }
     .sorts button { padding: 0 9px; }
   }
 </style>
@@ -386,6 +395,7 @@
   <div class="tools">
     <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
       autocomplete="off" spellcheck="false">
+    <span class="lang"><select id="explore-lang" aria-label="Language"></select></span>
     <div class="sorts" role="group" aria-label="Sort streams">
       <button type="button" data-sort="viewers" aria-pressed="true">Viewers</button>
       <button type="button" data-sort="new" aria-pressed="false">New</button>
@@ -1062,16 +1072,19 @@
   const SKELETONS = 6;
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
   const HOURGLASS = '<path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"/>';
-  const ex = { category: null, sort: 'viewers', listing: null, opened: 0,
+  // via: which chip chose the category, 'list' or 'tile:N'; lang: a Twitch code, '' for all
+  const ex = { category: null, via: 'list', lang: null, sort: 'viewers', listing: null, opened: 0,
     adding: new Set(), failed: new Map(), searchTimer: null, request: 0, catRequest: 0 };
   let lastAdded = null;
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
     if (saved.category?.id) ex.category = saved.category;
     if (saved.sort === 'new') ex.sort = 'new';
+    if (typeof saved.via === 'string') ex.via = saved.via;
+    if (typeof saved.lang === 'string') ex.lang = saved.lang;
   } catch {}
   function saveExplore() {
-    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort })); } catch {}
+    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort, via: ex.via, lang: ex.lang })); } catch {}
   }
 
   async function getJSON(path) {
@@ -1118,30 +1131,41 @@
     count.title = c.viewers.toLocaleString() + ' viewers';
     b.append(name, count);
     b.dataset.id = c.id;
-    b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
-    // the chosen category's chip clears the choice
-    b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
+    b.setAttribute('aria-pressed', String(ex.via === 'list' && ex.category?.id === c.id));
+    // the chip that chose the category clears the choice
+    b.addEventListener('click', () => (b.getAttribute('aria-pressed') === 'true' ? unchoose() : choose(c, 'list')));
     return b;
   }
 
-  function choose(c) {
+  function choose(c, via) {
+    const same = ex.category?.id === c.id;
     ex.category = { id: c.id, name: c.name, box_art: c.box_art, live: c.live };
+    ex.via = via;
     saveExplore();
     // the suggestions may not hold it, so they are rebuilt with it in front
     exploreQ.value = '';
     showCats();
     markQuadCats();
-    loadStreams();
+    if (!same || !ex.listing) loadStreams();
   }
 
-  // the snapshot names each tile's category; Twitch's search finds its ID
-  async function chooseNamed(name) {
+  // the snapshot names each tile's category; Twitch's search finds its ID and viewers
+  const named = new Map();
+  async function lookUp(name) {
+    if (named.has(name)) return named.get(name);
+    const found = getJSON('/api/explore/categories?q=' + encodeURIComponent(name)).then(body =>
+      body.categories.find(x => x.name.toLowerCase() === name.toLowerCase()) || body.categories[0] || null);
+    named.set(name, found);
+    found.catch(() => named.delete(name));
+    return found;
+  }
+
+  async function chooseNamed(name, via) {
     try {
-      const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(name));
-      const c = body.categories.find(x => x.name.toLowerCase() === name.toLowerCase()) || body.categories[0];
-      if (c) choose(c);
+      const c = await lookUp(name);
+      if (c) choose(c, via);
     } catch (err) {
-      note.replaceChildren(retryNote('Twitch did not answer.', () => chooseNamed(name)));
+      note.replaceChildren(retryNote('Twitch did not answer.', () => chooseNamed(name, via)));
     }
   }
 
@@ -1151,14 +1175,23 @@
       const cell = document.createElement('div');
       const name = latest?.slots[i]?.category;
       if (!name) return cell;
+      const via = 'tile:' + i;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'chip';
-      b.textContent = name;
       b.title = name;
-      const chosen = ex.category?.name === name;
+      const label = document.createElement('span');
+      label.className = 'name';
+      label.textContent = name;
+      const count = document.createElement('span');
+      count.className = 'count';
+      b.append(label, count);
+      lookUp(name).then(c => {
+        if (c) count.textContent = compact.format(c.viewers);
+      }).catch(() => {});
+      const chosen = ex.via === via && ex.category?.name === name;
       b.setAttribute('aria-pressed', String(chosen));
-      b.addEventListener('click', () => (chosen ? unchoose() : chooseNamed(name)));
+      b.addEventListener('click', () => (chosen ? unchoose() : chooseNamed(name, via)));
       cell.append(b);
       return cell;
     }));
@@ -1197,7 +1230,8 @@
   addEventListener('resize', () => { if (exploring()) fitRows(); });
 
   function markPills() {
-    cats.querySelectorAll('.chip').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
+    cats.querySelectorAll('.chip').forEach(b =>
+      b.setAttribute('aria-pressed', String(ex.via === 'list' && b.dataset.id === ex.category?.id)));
   }
 
   // the field's results, else suggestions with the chosen category among them
@@ -1207,9 +1241,8 @@
     try {
       const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
       if (request !== ex.catRequest) return;
-      // a category from search joins the chips while chosen; a quad tile's has its chip under the tile
-      const onQuad = (latest?.slots || []).some(t => t.category === ex.category?.name);
-      if (!q && ex.category && !onQuad && !body.categories.some(c => c.id === ex.category.id)) {
+      // a category from search joins the chips while chosen; a tile's has its chip under the tile
+      if (!q && ex.category && ex.via === 'list' && !body.categories.some(c => c.id === ex.category.id)) {
         body.categories.unshift(ex.category);
       }
       if (!body.categories.length) {
@@ -1285,7 +1318,7 @@
     scroller.scrollTop = 0;
     scroller.classList.remove('under');
     try {
-      const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}`);
+      const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}&language=${ex.lang}`);
       if (request !== ex.request) return;
       ex.listing = listing;
       ex.category.live = listing.category.live;
@@ -1310,6 +1343,46 @@
       : more ? 'Twitch lists the top 100.' : "That's everyone.";
     alignQuad();
   }
+
+  // Twitch knows a stream's language, not its country: each language shows the flag of
+  // the country most of its Twitch streams come from, and the viewer's own language their
+  // own country's. Windows draws no flag emoji, so it keeps the code
+  const FLAG_COUNTRY = { EN: 'US', ES: 'ES', PT: 'BR', DE: 'DE', FR: 'FR', IT: 'IT', JA: 'JP',
+    KO: 'KR', ZH: 'TW', RU: 'RU', PL: 'PL', TR: 'TR', NL: 'NL', SV: 'SE', NO: 'NO', DA: 'DK',
+    FI: 'FI', CS: 'CZ', SK: 'SK', HU: 'HU', EL: 'GR', UK: 'UA', RO: 'RO', BG: 'BG', TH: 'TH',
+    VI: 'VN', ID: 'ID', MS: 'MY', TL: 'PH', HI: 'IN' };
+  const LANGS = [...Object.keys(FLAG_COUNTRY), 'AR', 'CA', 'ASL', 'OTHER'];
+  const own = (() => { try { return new Intl.Locale(navigator.language).maximize(); } catch { return null; } })();
+  const drawsFlags = !/Windows/.test(navigator.userAgent);
+
+  function flag(code) {
+    const country = own && code.toLowerCase() === own.language && own.region ? own.region : FLAG_COUNTRY[code];
+    if (!drawsFlags || !country) return null;
+    return String.fromCodePoint(...[...country].map(ch => 0x1f1e6 + ch.charCodeAt(0) - 65));
+  }
+
+  function languageName(code) {
+    if (code === 'ASL') return 'Sign language';
+    if (code === 'OTHER') return 'Other';
+    try { return new Intl.DisplayNames([navigator.language], { type: 'language' }).of(code.toLowerCase()); } catch { return code; }
+  }
+
+  const langSelect = document.getElementById('explore-lang');
+  function fillLangs() {
+    const ownCode = own?.language.toUpperCase();
+    if (ex.lang === null) ex.lang = LANGS.includes(ownCode) ? ownCode : '';
+    const label = code => [flag(code), languageName(code)].filter(Boolean).join(' ');
+    const rest = LANGS.filter(c => c !== ownCode).sort((a, b) => languageName(a).localeCompare(languageName(b)));
+    const options = [['', 'All languages'], ...(LANGS.includes(ownCode) ? [[ownCode, label(ownCode)]] : []),
+      ...rest.map(c => [c, label(c)])];
+    langSelect.replaceChildren(...options.map(([value, text]) => new Option(text, value, false, value === ex.lang)));
+  }
+  fillLangs();
+  langSelect.addEventListener('change', () => {
+    ex.lang = langSelect.value;
+    saveExplore();
+    if (ex.category) loadStreams();
+  });
 
   function languageNames(code) {
     const names = new Set([code.toLowerCase()]);
@@ -1357,8 +1430,8 @@
     if (s.language) {
       const lang = document.createElement('span');
       lang.className = 'chip';
-      lang.textContent = s.language;
-      lang.title = 'Language';
+      lang.textContent = flag(s.language) || s.language;
+      lang.title = languageName(s.language);
       line.append(lang);
     }
     const title = document.createElement('div');
