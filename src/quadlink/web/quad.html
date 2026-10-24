@@ -234,9 +234,9 @@
     border-radius: 50%; background: var(--live); }
   :is(.explore-cats, .quad-cats) button.chip:hover, :is(.explore-cats, .quad-cats) button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
-  :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] { border-color: var(--accent);
+  .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent);
     background: var(--accent); color: var(--white); }
-  :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] .count { color: var(--white); }
+  .explore-cats .chip[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
   .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
@@ -1071,19 +1071,19 @@
   const SKELETONS = 6;
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
   const HOURGLASS = '<path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"/>';
-  // via: which chip chose the category, 'list' or 'tile:N'; lang: a Twitch code, '' for all
-  const ex = { category: null, via: 'list', lang: null, sort: 'viewers', listing: null, opened: 0,
+  // lang: a Twitch code, '' for all
+  const ex = { category: null, lang: null, sort: 'viewers', listing: null, opened: 0,
     adding: new Set(), failed: new Map(), searchTimer: null, request: 0, catRequest: 0 };
   let lastAdded = null;
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
     if (saved.category?.id) ex.category = saved.category;
     if (saved.sort === 'new') ex.sort = 'new';
-    if (typeof saved.via === 'string') ex.via = saved.via;
+    if (typeof saved.q === 'string') exploreQ.value = saved.q;
     if (typeof saved.lang === 'string') ex.lang = saved.lang;
   } catch {}
   function saveExplore() {
-    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort, via: ex.via, lang: ex.lang })); } catch {}
+    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort, q: exploreQ.value, lang: ex.lang })); } catch {}
   }
 
   async function getJSON(path) {
@@ -1133,21 +1133,17 @@
     }
     b.append(name, count);
     b.dataset.id = c.id;
-    b.setAttribute('aria-pressed', String(ex.via === 'list' && ex.category?.id === c.id));
-    // the chip that chose the category clears the choice
-    b.addEventListener('click', () => (b.getAttribute('aria-pressed') === 'true' ? unchoose() : choose(c, 'list')));
+    b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
+    // the chosen category's chip clears the choice
+    b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
     return b;
   }
 
-  function choose(c, via) {
+  function choose(c) {
     const same = ex.category?.id === c.id;
     ex.category = { id: c.id, name: c.name, viewers: c.viewers };
-    ex.via = via;
     saveExplore();
-    // the suggestions may not hold it, so they are rebuilt with it in front
-    exploreQ.value = '';
-    showCats();
-    markQuadCats();
+    markPills();
     if (!same || !ex.listing) loadStreams();
   }
 
@@ -1162,13 +1158,12 @@
     return found;
   }
 
-  async function chooseNamed(name, via) {
-    try {
-      const c = await lookUp(name);
-      if (c) choose(c, via);
-    } catch (err) {
-      note.replaceChildren(retryNote('Twitch did not answer.', () => chooseNamed(name, via)));
-    }
+  async function chooseNamed(name) {
+    clearTimeout(ex.searchTimer);
+    exploreQ.value = name;
+    const found = await showCats();
+    const c = found?.find(x => x.name.toLowerCase() === name.toLowerCase()) || found?.[0];
+    if (c) choose(c);
   }
 
   function markQuadCats() {
@@ -1177,7 +1172,6 @@
       const cell = document.createElement('div');
       const name = latest?.slots[i]?.category;
       if (!name) return cell;
-      const via = 'tile:' + i;
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'chip';
@@ -1191,9 +1185,7 @@
       lookUp(name).then(c => {
         if (c) count.textContent = compact.format(c.viewers);
       }).catch(() => {});
-      const chosen = ex.via === via && ex.category?.name === name;
-      b.setAttribute('aria-pressed', String(chosen));
-      b.addEventListener('click', () => (chosen ? unchoose() : chooseNamed(name, via)));
+      b.addEventListener('click', () => chooseNamed(name));
       cell.append(b);
       return cell;
     }));
@@ -1206,9 +1198,7 @@
     saveExplore();
     note.textContent = '';
     showEmpty();
-    // a category from search drops out of the chips with the choice
-    showCats();
-    markQuadCats();
+    markPills();
   }
 
   function showEmpty() {
@@ -1262,43 +1252,49 @@
 
   function markPills() {
     cats.querySelectorAll('.chip').forEach(b =>
-      b.setAttribute('aria-pressed', String(ex.via === 'list' && b.dataset.id === ex.category?.id)));
+      b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
   }
 
-  // the field's results, else suggestions with the chosen category among them
+  // the search's results, else Twitch's top categories; returns what it listed
   async function showCats() {
     const q = exploreQ.value.trim();
     const request = ++ex.catRequest;
+    let found = null;
     try {
       const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
-      if (request !== ex.catRequest) return;
-      // a category from search joins the chips while chosen; a tile's has its chip under the tile
-      if (!q && ex.category && ex.via === 'list' && !body.categories.some(c => c.id === ex.category.id)) {
-        body.categories.unshift(ex.category);
-      }
-      if (!body.categories.length) {
+      if (request !== ex.catRequest) return null;
+      found = body.categories;
+      if (!found.length) {
         const none = document.createElement('p');
         none.className = 'explore-note';
         none.textContent = `No category matches "${q}".`;
         cats.replaceChildren(none);
-        return;
+      } else {
+        cats.replaceChildren(...found.map(categoryChip));
+        fitRows();
       }
-      cats.replaceChildren(...body.categories.map(categoryChip));
-      fitRows();
     } catch (err) {
-      if (request !== ex.catRequest) return;
+      if (request !== ex.catRequest) return null;
       cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));
     }
     alignQuad();
+    return found;
   }
   exploreQ.addEventListener('input', () => {
     clearTimeout(ex.searchTimer);
-    ex.searchTimer = setTimeout(showCats, SEARCH_AFTER);
+    ex.searchTimer = setTimeout(searched, SEARCH_AFTER);
   });
   exploreQ.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); cats.querySelector('.chip')?.click(); }
-    if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; showCats(); }
+    if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; searched(); }
   });
+
+  // the search persists until cleared; clearing it ends a choice the top categories do not hold
+  async function searched() {
+    saveExplore();
+    const found = await showCats();
+    if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
+  }
 
   function retryNote(text, again) {
     const p = document.createElement('p');
