@@ -320,14 +320,24 @@
     border-color: var(--clear); background: var(--hover); color: var(--text); }
   html.calm .card .tags { display: none; }
   html.calm .explore.filtered .card .cat { display: none; }
-  html.calm .card .title { color: var(--text-quiet); font-weight: 400; }
+  /* the title is opt-in: a cleaned copy fades in over the picture on hover, focus or
+     a pick, so the grid never shifts */
+  .card .peek { display: none; }
+  html.calm .card .title { display: none; }
+  html.calm .card .peek { display: flex; position: absolute; inset: 0; align-items: flex-end;
+    padding: 34px 10px 36px; box-sizing: border-box; background: var(--scrim); color: var(--text);
+    font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity 0.12s;
+    overflow: hidden; overflow-wrap: anywhere; }
+  html.calm .card:is(:hover, :focus-within, .picked) .peek { opacity: 1; }
+  html.calm .card .pic .chip { z-index: 1; }
+  @media (prefers-reduced-motion: reduce) { html.calm .card .peek { transition: none; } }
   html.calm .cards { gap: 24px 12px; }
   html.calm .explore-btn[aria-pressed="true"] { background: var(--current); color: var(--text); }
   html.calm .explore-btn[aria-pressed="true"] svg { color: var(--accent); }
   /* uptime and the add chip wait for the pointer; slot, back and viewers always show */
   @media (hover: hover) {
     html.calm .card .pic :is(.uptime, .act:not(.slot):not(.back)) { opacity: 0; transition: opacity 0.12s; }
-    html.calm .card:is(:hover, :focus-within) .pic :is(.uptime, .act) { opacity: 1; }
+    html.calm .card:is(:hover, :focus-within, .picked) .pic :is(.uptime, .act) { opacity: 1; }
   }
   @media (hover: none) {
     html.calm .card .pic .uptime { display: none; }
@@ -1454,6 +1464,29 @@
   exFilterPop.querySelector('.reset').addEventListener('click', () => { setLang(ownLang()); fillExLangs(); });
   markExploreTools();
 
+  // a title as a person would write it: no emoji, no !commands, no shouting
+  function cleanTitle(text) {
+    let t = text
+      .replace(/\p{Extended_Pictographic}|\uFE0F|\u200D/gu, '')
+      .replace(/(^|\s)![\w-]+/g, '$1')
+      .replace(/\s*([|•·~\-–—/])(\s*[|•·~\-–—/])+\s*/g, ' $1 ')
+      .replace(/^\s*[|•·~\-–—/]\s*|\s*[|•·~\-–—/]\s*$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    // shouting goes to lower case. in a mostly-capitals title every all-caps word does,
+    // but words with digits (G2, BO1); elsewhere only words of 4+ capitals, so short
+    // names in mixed titles (LOS, IG) stay
+    const letters = t.match(/\p{L}/gu) || [];
+    const capitals = letters.filter(ch => ch !== ch.toLowerCase()).length;
+    const shouted = letters.length >= 8 && capitals / letters.length > 0.6
+      ? /\b\p{Lu}{2,}\b/gu : /\b\p{Lu}{4,}\b/gu;
+    if (shouted.test(t)) {
+      t = t.replace(shouted, w => w.toLowerCase())
+        .replace(/(^|[.!?]\s+)(\p{Ll})/gu, (_, a, b) => a + b.toUpperCase());
+    }
+    return t;
+  }
+
   function languageNames(code) {
     const names = new Set([code.toLowerCase()]);
     for (const locale of [code, 'en']) {
@@ -1490,7 +1523,10 @@
     up.className = 'chip uptime';
     up.textContent = uptime(s.started_at);
     up.title = 'Live for';
-    pic.append(img, viewers, up, action(s));
+    const peek = document.createElement('div');
+    peek.className = 'peek';
+    peek.textContent = cleanTitle(s.title);
+    pic.append(img, peek, viewers, up, action(s));
     const line = document.createElement('div');
     line.className = 'line';
     const name = document.createElement('span');
