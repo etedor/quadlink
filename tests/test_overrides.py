@@ -6,11 +6,13 @@ from quadlink.config.models import Config, Credentials
 from quadlink.overrides import (
     GRACE_REFRESHES,
     OverrideError,
+    add_extra,
     age,
     bench,
     drop_unconfigured,
     pin,
     place,
+    remove_extra,
     reset,
     swap,
     unbench,
@@ -362,7 +364,7 @@ class TestBench:
         scene.act(bench(scene.overrides, "a", CONFIGURED))
         assert scene.state.channels == ("e", "b", "c", "f")
         # A (100) outranks F (50 + 30); the channels that stay keep their slots
-        assert scene.act(reset()) == ("e", "b", "c", "a")
+        assert scene.act(reset(scene.overrides)) == ("e", "b", "c", "a")
         assert scene.overrides == Overrides()
 
 
@@ -487,3 +489,57 @@ class TestBoundBench:
             Overrides(pins={"f": 3}, bound={"d": "f"})
         with pytest.raises(ValueError):
             Overrides(benches=frozenset({"d"}), bound={"d": "f"})
+
+
+class TestExtras:
+    """Channels added beside the config reach the quad only when pinned."""
+
+    def added(self, scene: Scene) -> None:
+        # the daemon counts added channels as configured
+        scene.configured = scene.configured | {"xy"}
+        scene.act(add_extra(scene.overrides, "xy", CONFIGURED))
+        scene.live["xy"] = 500
+
+    def test_an_added_channel_stays_off_screen_until_placed(self, scene):
+        self.added(scene)
+        assert scene.refresh() == ("a", "b", "c", "d")
+        assert scene.waiting() == []
+        overrides = place(scene.overrides, scene.state, "xy", 1, scene.configured)
+        assert scene.act(overrides) == ("a", "xy", "c", "d")
+
+    def test_unpinned_it_leaves_the_quad(self, scene):
+        self.added(scene)
+        scene.act(place(scene.overrides, scene.state, "xy", 1, scene.configured))
+        assert scene.act(unpin(scene.overrides, 1)) == ("a", "b", "c", "d")
+
+    def test_remove_drops_its_pin(self, scene):
+        self.added(scene)
+        scene.act(place(scene.overrides, scene.state, "xy", 1, scene.configured))
+        overrides = remove_extra(scene.overrides, "xy")
+        assert overrides.extras == frozenset()
+        assert "xy" not in overrides.pins
+        # no longer looked up, it leaves the pool
+        del scene.live["xy"]
+        assert scene.act(overrides) == ("a", "b", "c", "d")
+
+    def test_reset_keeps_added_channels(self, scene):
+        overrides = add_extra(scene.overrides, "xy", CONFIGURED)
+        assert reset(overrides).extras == {"xy"}
+
+    def test_add_rejects_bad_names_and_listed_channels(self, scene):
+        with pytest.raises(OverrideError):
+            add_extra(scene.overrides, "not a name", CONFIGURED)
+        with pytest.raises(OverrideError):
+            add_extra(scene.overrides, "a", CONFIGURED)
+        once = add_extra(scene.overrides, "xy", CONFIGURED)
+        with pytest.raises(OverrideError):
+            add_extra(once, "xy", CONFIGURED)
+        with pytest.raises(OverrideError):
+            remove_extra(scene.overrides, "xy")
+
+    def test_extras_survive_ageing_and_other_actions(self, scene):
+        overrides = add_extra(scene.overrides, "xy", CONFIGURED)
+        for _ in range(GRACE_REFRESHES + 2):
+            overrides = age(overrides, pool={"a"})
+        overrides = bench(overrides, "a", CONFIGURED)
+        assert overrides.extras == {"xy"}

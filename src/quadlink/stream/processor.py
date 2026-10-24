@@ -19,6 +19,11 @@ from quadlink.types import (
 logger = structlog.get_logger()
 
 
+# priority of a channel added beside the config; it reaches the quad only pinned,
+# so its priority never competes
+EXTRA_PRIORITY = 0
+
+
 class StreamProcessor:
     """Processes stream groups with filtering, deduplication, and prioritization."""
 
@@ -64,6 +69,8 @@ class StreamProcessor:
         self._failures: dict[str, str] = {}
         # channel key -> priority of the entry that put it in the live pool
         self._accepted: dict[str, int] = {}
+        # channels added beside the config, looked up with no filters
+        self.extras: frozenset[str] = frozenset()
 
     def close(self) -> None:
         """Release the lookup threads; a lookup still running finishes on its own."""
@@ -87,6 +94,9 @@ class StreamProcessor:
             for group in self.config.priorities[priority]:
                 for url in group.urls:
                     priorities.setdefault(channel_login(url), []).append(priority)
+
+        for channel in sorted(self.extras):
+            priorities.setdefault(channel, [])
 
         rows = []
         for channel, entries in priorities.items():
@@ -146,6 +156,11 @@ class StreamProcessor:
             for priority in sorted(self.config.priorities, reverse=True)
             for group in self.config.priorities[priority]
             for url in group.urls
+        ]
+        configured = {channel_login(url) for _, url, _ in entries}
+        entries += [
+            (EXTRA_PRIORITY, f"https://twitch.tv/{channel}", [])
+            for channel in sorted(self.extras - configured)
         ]
         for _, url, _ in entries:
             self._start_lookup(url)
@@ -251,6 +266,10 @@ class StreamProcessor:
             self._unresolved.add(channel)
             self._failures.setdefault(channel, str(e))
             return None
+
+    async def look_up(self, channel: str) -> Stream | None:
+        """One lookup of a channel outside any run."""
+        return await self._fetch(f"https://twitch.tv/{channel}")
 
     def _start_lookup(self, url: str) -> asyncio.Future[Stream | None]:
         """Start this run's one lookup of the channel, unless an entry already did."""

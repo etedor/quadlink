@@ -754,6 +754,14 @@ class LowLatency:
                 self._miss("relay ll block timeout", request, state, msn=msn, part=part)
                 return web.Response(status=503, text="not yet available")
         else:
+            # AVPlayer blocks on every reload after its first, so a plain request is a
+            # player starting: QuadStream rebuilds one after any stall
+            logger.info(
+                "relay ll player start",
+                slot=state.slot,
+                last=state.last_seq(),
+                agent=request.headers.get("User-Agent", "")[:60],
+            )
             # a fresh slot needs its first parts; QuadStream retries a 503 itself
             deadline = loop.time() + 10
             while not state.render(loop.time()) and loop.time() < deadline:

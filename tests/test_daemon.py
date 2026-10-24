@@ -1372,3 +1372,64 @@ class TestFetchSegment:
         with patch("quadlink.daemon.SEGMENT_FETCH_WAIT", 0.3):
             with pytest.raises(TimeoutError):
                 await daemon._fetch_segment("http://cdn/slow.ts")
+
+
+class TestAddedChannels:
+    """Channels added from the dashboard beside the config."""
+
+    async def test_a_live_channel_is_listed_at_once_and_placeable(self, make_daemon, twitch):
+        twitch.go_live("zed")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.add("Zed")
+            views = {c.channel: c for c in daemon.snapshot().channels}
+            assert views["zed"].extra
+            assert str(views["zed"].state) == "live"
+            await settle()
+            # never chosen on its own
+            assert "zed" not in daemon.quad_state.channels
+            await daemon.place("zed", 2)
+            await settle()
+            assert daemon.quad_state.channels[2] == "zed"
+            # the next refresh keeps looking it up
+            await loops.refresh()
+            assert daemon.quad_state.channels[2] == "zed"
+
+    async def test_an_offline_or_listed_channel_is_refused(self, make_daemon, twitch):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            with pytest.raises(OverrideError, match="not live"):
+                await daemon.add("zed")
+            with pytest.raises(OverrideError, match="already"):
+                await daemon.add("a")
+        assert daemon.overrides.extras == frozenset()
+
+    async def test_remove_takes_it_off_screen(self, make_daemon, twitch):
+        twitch.go_live("zed")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.add("zed")
+            await daemon.place("zed", 2)
+            await settle()
+            await daemon.remove("zed")
+            await settle()
+            assert "zed" not in daemon.quad_state.channels
+            assert "zed" not in {c.channel for c in daemon.snapshot().channels}
+
+    async def test_added_channels_do_not_survive_a_restart(self, make_daemon, twitch):
+        twitch.go_live("zed")
+        first = make_daemon()
+        async with stepped(first) as loops:
+            await loops.refresh()
+            await first.add("zed")
+            await first.place("zed", 2)
+            await settle()
+        second = make_daemon()
+        async with stepped(second) as loops:
+            await loops.refresh()
+            await settle()
+        assert second.overrides.extras == frozenset()
+        assert "zed" not in second.quad_state.channels

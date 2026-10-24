@@ -5,6 +5,7 @@ action depends on what is on screen) and returns new ones. Invalid input raises
 OverrideError with a message fit for the operator.
 """
 
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import replace
 
@@ -14,6 +15,10 @@ from quadlink.types import Quad
 # refreshes (about 30 s each) a pin or bench outlives its channel leaving the pool;
 # within them a pinned channel that returns takes its slot back
 GRACE_REFRESHES = 2
+
+
+# Twitch logins are 4-25 of [a-z0-9_] today, but legacy accounts go down to 2
+_LOGIN = re.compile(r"[a-z0-9_]{2,25}")
 
 
 class OverrideError(ValueError):
@@ -96,9 +101,27 @@ def unbench(overrides: Overrides, channel: str, configured: Collection[str]) -> 
     return _build(overrides, overrides.pins, overrides.benches - {channel})
 
 
-def reset() -> Overrides:
-    """Clear every pin and bench."""
-    return Overrides()
+def reset(overrides: Overrides) -> Overrides:
+    """Clear every pin and bench; added channels stay."""
+    return Overrides(extras=overrides.extras)
+
+
+def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
+    """Add a channel beside the config; the caller has checked it is live."""
+    if channel in configured or channel in overrides.extras:
+        raise OverrideError(f"{channel} is already in the list")
+    if not _LOGIN.fullmatch(channel):
+        raise OverrideError(f"{channel!r} is not a Twitch channel name")
+    return replace(overrides, extras=overrides.extras | {channel})
+
+
+def remove_extra(overrides: Overrides, channel: str) -> Overrides:
+    """Remove an added channel, with its pin and bench."""
+    if channel not in overrides.extras:
+        raise OverrideError(f"{channel} is not an added channel")
+    pins = {c: s for c, s in overrides.pins.items() if c != channel}
+    out = _build(overrides, pins, overrides.benches - {channel})
+    return replace(out, extras=overrides.extras - {channel})
 
 
 def drop_unconfigured(overrides: Overrides, configured: Collection[str]) -> Overrides:
@@ -122,6 +145,7 @@ def age(overrides: Overrides, pool: Collection[str]) -> Overrides:
         benches=benches,
         absent={c: n for c, n in absent.items() if c in pins.keys() | benches},
         bound=bound,
+        extras=overrides.extras,
     )
 
 
@@ -156,6 +180,7 @@ def _build(
         benches=kept,
         absent={c: n for c, n in previous.absent.items() if c in keep},
         bound=bindings,
+        extras=previous.extras,
     )
 
 

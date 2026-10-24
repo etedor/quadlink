@@ -46,6 +46,8 @@ ACTIONS: dict[str, dict[str, type]] = {
     "bench": {"channel": str},
     "unbench": {"channel": str},
     "reset": {},
+    "add": {"channel": str},
+    "remove": {"channel": str},
 }
 
 
@@ -72,6 +74,10 @@ class Dashboard(Protocol):
     async def unbench(self, channel: str) -> None: ...
 
     async def reset(self) -> None: ...
+
+    async def add(self, channel: str) -> None: ...
+
+    async def remove(self, channel: str) -> None: ...
 
 
 def snapshot_json(snap: Snapshot) -> dict[str, Any]:
@@ -130,6 +136,7 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             "pin_slot": c.pin_slot,
             "benched": c.benched,
             "benched_for": c.benched_for,
+            "extra": c.extra,
             "priorities": c.status.priorities,
             "priority": c.status.priority,
             "reason": c.status.reason,

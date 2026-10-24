@@ -25,8 +25,8 @@ from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
 from quadlink.relay.store import SlotStore
 from quadlink.state import DEFAULT_STATE_PATH, StateStore
-from quadlink.stream.processor import StreamProcessor
-from quadlink.types import ChannelStatus, PrioritizedStream, channel_login
+from quadlink.stream.processor import EXTRA_PRIORITY, StreamProcessor
+from quadlink.types import ChannelState, ChannelStatus, PrioritizedStream, channel_login
 from quadlink.viewers import GQLStats, ViewerCounts, provider_for
 from quadlink.webui import WebUI
 
@@ -302,6 +302,7 @@ class Daemon:
             self.quadstream_client = None
         if not self.one_shot:
             self._start_viewer_counts(config)
+        self.processor.extras = self.overrides.extras
         candidates = await self.processor.process_stream_groups()
         self.channel_statuses = self.processor.statuses()
         self.statuses_at = time.time()
@@ -322,7 +323,9 @@ class Daemon:
                     candidates=len(candidates),
                 )
 
-        overrides = actions.drop_unconfigured(self.overrides, configured_channels(config))
+        overrides = actions.drop_unconfigured(
+            self.overrides, configured_channels(config) | self.overrides.extras
+        )
         # an empty pool usually means every lookup failed (network or proxy down),
         # which must not run out the grace of every pin and bench
         if candidates:
@@ -432,9 +435,43 @@ class Daemon:
         """Make channel eligible again."""
         self._apply(actions.unbench(self.overrides, channel, self._configured()))
 
+    async def add(self, channel: str) -> None:
+        """Add a live Twitch channel beside the config, until removed or a restart."""
+        channel = channel.strip().lower()
+        # names and duplicates fail before the lookup, which takes seconds
+        actions.add_extra(self.overrides, channel, self._configured())
+        if self.processor is None:
+            raise OverrideError("no config is loaded yet: wait for the first refresh")
+        try:
+            stream = await self.processor.look_up(channel)
+        except Exception as e:
+            raise OverrideError(f"the Twitch lookup of {channel} failed: {e}") from e
+        if stream is None:
+            raise OverrideError(f"{channel} is not live on Twitch, or does not exist")
+        if not stream.has_video:
+            raise OverrideError(f"{channel} is live without video")
+        overrides = actions.add_extra(self.overrides, channel, self._configured())
+        self.processor.extras = overrides.extras
+        # listed at once instead of after the next refresh's lookups
+        self._pool = [*self._pool, PrioritizedStream(stream, EXTRA_PRIORITY, 0.0)]
+        self.channel_statuses = [
+            *self.channel_statuses,
+            ChannelStatus(channel, ChannelState.LIVE, [], stream=stream, priority=EXTRA_PRIORITY),
+        ]
+        self._apply(overrides)
+
+    async def remove(self, channel: str) -> None:
+        """Remove an added channel, with its pin and bench."""
+        overrides = actions.remove_extra(self.overrides, channel)
+        if self.processor is not None:
+            self.processor.extras = overrides.extras
+        self._pool = [c for c in self._pool if c.stream.channel != channel]
+        self.channel_statuses = [s for s in self.channel_statuses if s.channel != channel]
+        self._apply(overrides)
+
     async def reset(self) -> None:
         """Clear every pin and bench."""
-        self._apply(actions.reset())
+        self._apply(actions.reset(self.overrides))
 
     def snapshot(self) -> Snapshot:
         """The quad and every configured channel's dashboard state."""
@@ -471,7 +508,7 @@ class Daemon:
     def _configured(self) -> set[str]:
         if self._config is None:
             raise OverrideError("no config is loaded yet: wait for the first refresh")
-        return configured_channels(self._config)
+        return configured_channels(self._config) | self.overrides.extras
 
     def _apply(self, overrides: Overrides, state: QuadState | None = None) -> None:
         # swap moves channels between slots ahead of the recompose that seats them

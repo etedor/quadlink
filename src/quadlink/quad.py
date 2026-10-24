@@ -24,12 +24,15 @@ class Overrides:
             of the pool; see quadlink.overrides.age.
         bound: Benched channel -> the pinned channel whose placement benched
             it. The bench ends when that pin does.
+        extras: Channels the operator added beside the config. They are
+            looked up like configured ones but reach the quad only when pinned.
     """
 
     pins: Mapping[str, int] = field(default_factory=dict)
     benches: frozenset[str] = frozenset()
     absent: Mapping[str, int] = field(default_factory=dict)
     bound: Mapping[str, str] = field(default_factory=dict)
+    extras: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if both := self.pins.keys() & self.benches:
@@ -111,6 +114,12 @@ def waiting(
     return [c for c in natural.channels if c and c not in state.positions]
 
 
+def _eligible(channel: str, overrides: Overrides) -> bool:
+    if channel in overrides.benches:
+        return False
+    return channel not in overrides.extras or channel in overrides.pins
+
+
 def _compose(
     pool: list[PrioritizedStream],
     state: QuadState,
@@ -120,7 +129,7 @@ def _compose(
     """The composed state and its on-screen streams in slot order."""
     # reversed: candidates arrive best first, and the first of a duplicate channel wins
     candidate_map = {
-        s.stream.channel: s for s in reversed(pool) if s.stream.channel not in overrides.benches
+        s.stream.channel: s for s in reversed(pool) if _eligible(s.stream.channel, overrides)
     }
     pinned = _reclaimed(overrides, candidate_map)
     existing_streams = _existing_streams(state, candidate_map, pinned)
