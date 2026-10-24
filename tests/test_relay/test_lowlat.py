@@ -249,3 +249,19 @@ async def test_a_channel_change_splices_at_once(setup):
     assert new, text
     assert new[0].parts[0].independent
     assert "#EXT-X-DISCONTINUITY" in text
+
+
+async def test_a_restarted_slot_carries_on_its_numbering(setup):
+    relay, add, client, ll = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    await asyncio.sleep(2.5)
+    old = ll.slot(1)
+    last, dseq = old.segs[-1].seq, old.segs[-1].dseq
+    await ll.retire(old)
+    await asyncio.sleep(0.2)
+    text = await _playlist(client)
+    first = int(re.search(r"MEDIA-SEQUENCE:(\d+)", text)[1])
+    assert first == last + 1
+    assert int(re.search(r"DISCONTINUITY-SEQUENCE:(\d+)", text)[1]) == dseq
+    assert ll.slot(1).segs[0].disc

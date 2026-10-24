@@ -247,12 +247,15 @@ class _Queued:
 class _Slot:
     """One slot's LL-HLS: follows its source, converts, cuts and lists parts."""
 
-    def __init__(self, ll: "LowLatency", slot: int) -> None:
+    def __init__(self, ll: "LowLatency", slot: int, resume: tuple[int, int] | None = None) -> None:
         self.ll = ll
         self.slot = slot
         self.source = SlotState(window=40)
         self.segs: list[_Seg] = []
-        self.next_seq = 0
+        # a slot restarted after idling carries on from its last (seq, dseq): a player
+        # resuming from sleep asks for numbers past those, never for a reset to 0
+        self.next_seq, self.base_dseq = resume or (0, 0)
+        self.resumed = resume is not None
         self.target = 2
         self.queue: deque[_Queued] = deque()
         # the segment being fed
@@ -523,8 +526,10 @@ class _Slot:
         disc = self.pending_disc or filler or bool(self.segs and self.segs[-1].filler)
         prev = self.segs[-1] if self.segs else None
         seq = prev.seq + 1 if prev is not None else self.next_seq
-        dseq = (prev.dseq if prev is not None else 0) + disc
-        seg = _Seg(seq, disc and prev is not None, dseq if prev is not None else 0, filler=filler)
+        if prev is not None:
+            seg = _Seg(seq, disc, prev.dseq + disc, filler=filler)
+        else:
+            seg = _Seg(seq, self.resumed, self.base_dseq + self.resumed, filler=filler)
         self.segs.append(seg)
         self.pending_disc = False
         self.need_independent = False
@@ -661,6 +666,7 @@ class LowLatency:
         self._filler = filler
         self._filler_parts: list[Part] | None = None
         self._slots: dict[int, _Slot] = {}
+        self._resume: dict[int, tuple[int, int]] = {}
         self._session: aiohttp.ClientSession | None = None
 
     def session(self) -> aiohttp.ClientSession:
@@ -684,13 +690,15 @@ class LowLatency:
     def slot(self, n: int) -> _Slot:
         state = self._slots.get(n - 1)
         if state is None:
-            state = self._slots[n - 1] = _Slot(self, n - 1)
+            state = self._slots[n - 1] = _Slot(self, n - 1, self._resume.get(n - 1))
             state.start()
             logger.info("relay ll slot started", slot=n - 1)
         state.seen = time.monotonic()
         return state
 
     async def retire(self, state: _Slot) -> None:
+        if state.segs:
+            self._resume[state.slot] = (state.segs[-1].seq + 1, state.segs[-1].dseq)
         if self._slots.get(state.slot) is state:
             del self._slots[state.slot]
             logger.info("relay ll slot stopped", slot=state.slot)
