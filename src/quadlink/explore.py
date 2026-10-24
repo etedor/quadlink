@@ -16,6 +16,8 @@ REQUEST_WAIT = 4.0
 # GQL refuses a second page without a browser integrity token, so one request is the
 # whole listing; 100 is the largest page it serves
 STREAMS_LIMIT = 100
+# GQL serves at most 30 streams across all categories
+ALL_LIMIT = 30
 TOP_LIMIT = 40
 # Twitch ranks its top categories by a count older than the one it reports, so a few
 # extra let the reported order pick the top ones
@@ -52,18 +54,22 @@ _SEARCH_QUERY = (
     f"{{ edges {{ node {{ {_CATEGORY_FIELDS} }} }} }} }}"
 )
 
-_STREAMS_QUERY = (
-    "query($id: ID, $first: Int, $sort: StreamSort, $languages: [Language!]) { game(id: $id) { "
-    f"{_CATEGORY_FIELDS} "
-    # Twitch filters by the broadcaster's language setting, which a stream's own
-    # language tag disagrees with about one time in ten
+# Twitch filters by the broadcaster's language setting, which a stream's own language
+# tag disagrees with about one time in ten
+_STREAMS = (
     "streams(first: $first, options: {sort: $sort, broadcasterLanguages: $languages}) "
     "{ edges { node { "
-    "title viewersCount createdAt language "
+    "title viewersCount createdAt language game { name } "
     f"previewImageURL(width: {THUMBNAIL[0]}, height: {THUMBNAIL[1]}) "
     "broadcaster { login displayName } freeformTags { name } } } "
-    "pageInfo { hasNextPage } } } }"
+    "pageInfo { hasNextPage } }"
 )
+_STREAMS_VARS = "$first: Int, $sort: StreamSort, $languages: [Language!]"
+
+_STREAMS_QUERY = (
+    f"query($id: ID, {_STREAMS_VARS}) {{ game(id: $id) {{ {_CATEGORY_FIELDS} {_STREAMS} }} }}"
+)
+_ALL_STREAMS_QUERY = f"query({_STREAMS_VARS}) {{ {_STREAMS} }}"
 
 
 @dataclass(frozen=True)
@@ -87,11 +93,12 @@ class Category:
 
 @dataclass(frozen=True)
 class Stream:
-    """A live stream in a category listing."""
+    """A live stream in a listing."""
 
     login: str
     display_name: str
     title: str
+    category: str
     viewers: int
     started_at: datetime
     language: str
@@ -101,15 +108,16 @@ class Stream:
 
 @dataclass(frozen=True)
 class Listing:
-    """A category's live streams.
+    """Live streams, of one category or of all.
 
     Attributes:
-        category: The category.
-        streams: Its streams in the requested order, at most STREAMS_LIMIT.
+        category: The category, or None for all of Twitch.
+        streams: The streams in the requested order, at most STREAMS_LIMIT (ALL_LIMIT
+            for all of Twitch).
         more: Whether Twitch has more than the listing holds.
     """
 
-    category: Category
+    category: Category | None
     streams: list[Stream]
     more: bool
 
@@ -130,10 +138,11 @@ class Directory(Protocol):
         ...
 
     async def streams(
-        self, category_id: str, sort: Sort, language: str | None = None
+        self, category_id: str | None, sort: Sort, language: str | None = None
     ) -> Listing | None:
-        """The category's live streams, in one language when given (a Twitch code such as
-        "EN"), or None when the category does not exist."""
+        """Live streams of the category, or of all of Twitch when category_id is None, in
+        one language when given (a Twitch code such as "EN"); None when the category
+        does not exist."""
         ...
 
 
@@ -157,7 +166,7 @@ class GQLDirectory:
         )
 
     async def streams(
-        self, category_id: str, sort: Sort, language: str | None = None
+        self, category_id: str | None, sort: Sort, language: str | None = None
     ) -> Listing | None:
         return await self._cached(
             ("streams", category_id, sort, language),
@@ -206,22 +215,28 @@ class GQLDirectory:
         # Twitch ranks by name match; a live category beats a dead namesake
         return sorted(found, key=lambda c: c.viewers, reverse=True)
 
-    async def _streams(self, category_id: str, sort: Sort, language: str | None) -> Listing | None:
+    async def _streams(
+        self, category_id: str | None, sort: Sort, language: str | None
+    ) -> Listing | None:
+        variables: dict[str, Any] = {
+            "sort": _GQL_SORT[sort],
+            "languages": [language] if language else None,
+        }
+        if category_id is None:
+            data = await self._query(_ALL_STREAMS_QUERY, {**variables, "first": ALL_LIMIT})
+            return _listing(None, data["streams"])
         data = await self._query(
-            _STREAMS_QUERY,
-            {
-                "id": category_id,
-                "first": STREAMS_LIMIT,
-                "sort": _GQL_SORT[sort],
-                "languages": [language] if language else None,
-            },
+            _STREAMS_QUERY, {**variables, "id": category_id, "first": STREAMS_LIMIT}
         )
         game = data.get("game")
         if not game:
             return None
-        page = game["streams"]
-        streams = [_stream(e["node"]) for e in page["edges"] if e["node"].get("broadcaster")]
-        return Listing(_category(game), streams, bool(page["pageInfo"]["hasNextPage"]))
+        return _listing(_category(game), game["streams"])
+
+
+def _listing(category: Category | None, page: dict[str, Any]) -> Listing:
+    streams = [_stream(e["node"]) for e in page["edges"] if e["node"].get("broadcaster")]
+    return Listing(category, streams, bool(page["pageInfo"]["hasNextPage"]))
 
 
 def _category(node: dict[str, Any]) -> Category:
@@ -240,6 +255,7 @@ def _stream(node: dict[str, Any]) -> Stream:
         login=who["login"],
         display_name=who.get("displayName") or who["login"],
         title=node.get("title") or "",
+        category=(node.get("game") or {}).get("name") or "",
         viewers=node.get("viewersCount") or 0,
         # Twitch sends "2026-10-23T17:00:48Z"
         started_at=datetime.fromisoformat(node["createdAt"]),

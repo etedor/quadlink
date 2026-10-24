@@ -1103,7 +1103,7 @@
       ex.opened = Date.now();
       markQuadCats();
       showCats();
-      if (ex.category) loadStreams(); else showEmpty();
+      loadStreams();
     } else {
       pick(null);
       // back in the rail, the newest stream Explore added gets quick add's outline
@@ -1191,19 +1191,13 @@
     }));
   }
 
+  // back to the default view: no search, all of Twitch
   function unchoose() {
     ex.category = null;
-    ex.listing = null;
-    ex.request++;
+    exploreQ.value = '';
     saveExplore();
-    note.textContent = '';
-    showEmpty();
-    markPills();
-  }
-
-  function showEmpty() {
-    cards.replaceChildren();
-    endNote.textContent = 'Choose a category to see its live streams.';
+    showCats();
+    loadStreams();
   }
 
   // shows the chips that fill CHIP_ROWS rows at this width; the chosen one always shows
@@ -1313,7 +1307,7 @@
     ex.sort = b.dataset.sort;
     saveExplore();
     markSort();
-    if (ex.category) loadStreams();
+    loadStreams();
   }));
   function markSort() {
     sortBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.sort === ex.sort)));
@@ -1337,7 +1331,7 @@
 
   async function loadStreams() {
     const request = ++ex.request;
-    const { id } = ex.category;
+    const id = ex.category?.id ?? '';
     ex.listing = null;
     note.textContent = '';
     endNote.textContent = '';
@@ -1345,10 +1339,10 @@
     scroller.scrollTop = 0;
     scroller.classList.remove('under');
     try {
-      const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}&language=${ex.lang}`);
+      const listing = await getJSON(`/api/explore/streams?category=${id}&sort=${ex.sort}&language=${ex.lang}`);
       if (request !== ex.request) return;
       ex.listing = listing;
-      ex.category.viewers = listing.category.viewers;
+      if (ex.category && listing.category) ex.category.viewers = listing.category.viewers;
       showStreams();
     } catch (err) {
       if (request !== ex.request) return;
@@ -1366,8 +1360,8 @@
     const { streams, more, category } = ex.listing;
     cards.replaceChildren(...streams.map(card));
     note.replaceChildren();
-    endNote.textContent = !streams.length ? `No one is live in ${category.name}.`
-      : more ? 'Twitch lists the top 100.' : "That's everyone.";
+    endNote.textContent = !streams.length ? `No one is live${category ? ' in ' + category.name : ''}.`
+      : more ? `Twitch lists the top ${streams.length}.` : "That's everyone.";
     alignQuad();
   }
 
@@ -1408,7 +1402,7 @@
   langSelect.addEventListener('change', () => {
     ex.lang = langSelect.value;
     saveExplore();
-    if (ex.category) loadStreams();
+    loadStreams();
   });
 
   function languageNames(code) {
@@ -1469,7 +1463,9 @@
     li.append(pic, line, title);
     // Twitch tags most streams with their language's name, which the chip already shows
     const spoken = languageNames(s.language);
-    const tags = s.tags.filter(t => !spoken.has(t.toLowerCase())).slice(0, 3);
+    // across all of Twitch, the stream's category leads its chips
+    const tags = [...(ex.category ? [] : [s.category].filter(Boolean)),
+      ...s.tags.filter(t => !spoken.has(t.toLowerCase()))].slice(0, 3);
     if (tags.length) {
       const t = document.createElement('div');
       t.className = 'tags';

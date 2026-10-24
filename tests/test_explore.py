@@ -27,6 +27,7 @@ STREAM = {
     "language": "en",
     "previewImageURL": "https://static-cdn.jtvnw.net/previews-ttv/live_user_zed-440x248.jpg",
     "broadcaster": {"login": "zed", "displayName": "Zed"},
+    "game": {"name": "Destiny 2"},
     "freeformTags": [{"name": "English"}, {"name": "Chill"}],
 }
 
@@ -60,6 +61,9 @@ class Twitch:
             counts = [90, 70, 80, *range(TOP_FETCH - 3)]
             nodes = [_node(str(i), f"c{i}", v) for i, v in enumerate(counts)]
             data = {"games": {"edges": [{"node": n} for n in nodes]}}
+        elif query.startswith("query($first"):
+            edges = [{"node": STREAM}]
+            data = {"streams": {"edges": edges, "pageInfo": {"hasNextPage": False}}}
         elif "streams(" in query:
             if variables["id"] == "404":
                 data = {"game": None}
@@ -121,6 +125,7 @@ async def test_streams(directory: GQLDirectory, twitch: Twitch) -> None:
     )
     assert s.started_at == datetime(2026, 10, 24, 16, 9, 40, tzinfo=UTC)
     assert s.tags == ("English", "Chill")
+    assert s.category == "Destiny 2"
     assert twitch.requests[0]["variables"] == {
         "id": "497057",
         "first": 100,
@@ -133,6 +138,21 @@ async def test_streams_in_a_language(directory: GQLDirectory, twitch: Twitch) ->
     await directory.streams("497057", Sort.VIEWERS, "DE")
     await directory.streams("497057", Sort.VIEWERS)
     assert [r["variables"]["languages"] for r in twitch.requests] == [["DE"], None]
+
+
+async def test_streams_of_all_categories(directory: GQLDirectory, twitch: Twitch) -> None:
+    listing = await directory.streams(None, Sort.VIEWERS, "EN")
+    assert listing is not None
+    assert (listing.category, [s.login for s in listing.streams], listing.more) == (
+        None,
+        ["zed"],
+        False,
+    )
+    assert twitch.requests[0]["variables"] == {
+        "sort": "VIEWER_COUNT",
+        "languages": ["EN"],
+        "first": 30,
+    }
 
 
 async def test_unknown_category_is_none(directory: GQLDirectory) -> None:

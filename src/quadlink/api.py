@@ -395,7 +395,8 @@ class DashboardAPI:
             sort = Sort(request.query.get("sort", Sort.VIEWERS))
         except ValueError:
             return web.json_response({"error": "sort must be viewers or new"}, status=400)
-        if not category.isdigit():
+        # no category lists all of Twitch
+        if category and not category.isdigit():
             return web.json_response({"error": "category must be a Twitch category ID"}, status=400)
         language = request.query.get("language") or None
         if language is not None and not _LANGUAGE.fullmatch(language):
@@ -403,7 +404,7 @@ class DashboardAPI:
                 {"error": "language must be a Twitch language code such as EN"}, status=400
             )
         try:
-            listing = await self.dashboard.directory.streams(category, sort, language)
+            listing = await self.dashboard.directory.streams(category or None, sort, language)
         except DirectoryError as e:
             logger.warning("explore streams failed", category=category, error=str(e))
             return web.json_response({"error": "Twitch did not answer"}, status=502)
@@ -411,7 +412,7 @@ class DashboardAPI:
             return web.json_response({"error": "the category does not exist"}, status=404)
         return web.json_response(
             {
-                "category": _category_json(listing.category),
+                "category": listing.category and _category_json(listing.category),
                 "streams": [_stream_json(s) for s in listing.streams],
                 "more": listing.more,
             },
@@ -428,6 +429,7 @@ def _stream_json(s: Stream) -> dict[str, Any]:
         "channel": s.login,
         "display_name": s.display_name,
         "title": s.title,
+        "category": s.category,
         "viewers": s.viewers,
         # epoch seconds, like the snapshot's started_at
         "started_at": int(s.started_at.timestamp()),
