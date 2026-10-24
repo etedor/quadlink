@@ -409,12 +409,10 @@ class DashboardAPI:
             return web.json_response({"error": "Twitch did not answer"}, status=502)
         if listing is None:
             return web.json_response({"error": "the category does not exist"}, status=404)
-        snap = self.dashboard.snapshot()
-        known = {c.channel: c for c in snap.channels}
         return web.json_response(
             {
                 "category": _category_json(listing.category),
-                "streams": [_stream_json(s, known.get(s.login)) for s in listing.streams],
+                "streams": [_stream_json(s) for s in listing.streams],
                 "more": listing.more,
             },
             headers={"Cache-Control": "no-store"},
@@ -449,8 +447,7 @@ def _category_json(c: Category) -> dict[str, Any]:
     return {"id": c.id, "name": c.name, "box_art": c.box_art, "viewers": c.viewers, "live": c.live}
 
 
-def _stream_json(s: Stream, view: Any) -> dict[str, Any]:
-    known = None if view is None else "added" if view.extra else "config"
+def _stream_json(s: Stream) -> dict[str, Any]:
     return {
         "channel": s.login,
         "display_name": s.display_name,
@@ -461,8 +458,6 @@ def _stream_json(s: Stream, view: Any) -> dict[str, Any]:
         "language": s.language,
         "tags": list(s.tags),
         "thumbnail": s.thumbnail,
-        "known": known,
-        "slot": None if view is None else view.slot,
     }
 
 

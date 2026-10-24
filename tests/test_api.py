@@ -794,7 +794,7 @@ class TestExplore:
         assert names == ["Chess", "Games", "Just Chatting"]
         assert dashboard.directory.calls[0] == ("named", ["Chess", "Games"])
 
-    async def test_streams_mark_what_the_dashboard_knows(
+    async def test_streams(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
     ) -> None:
         resp = await self._get(client, webui, "/api/explore/streams?category=5&sort=new")
@@ -802,8 +802,7 @@ class TestExplore:
         body = await resp.json()
         assert body["category"]["name"] == "Chess"
         assert body["more"] is True
-        marks = [(s["channel"], s["known"], s["slot"]) for s in body["streams"]]
-        assert marks == [("zed", None, None), ("a", "config", 0), ("b", "config", 2)]
+        assert [s["channel"] for s in body["streams"]] == ["zed", "a", "b"]
         assert body["streams"][0] == {
             "channel": "zed",
             "display_name": "ZED",
@@ -813,8 +812,6 @@ class TestExplore:
             "language": "EN",
             "tags": ["Chill"],
             "thumbnail": "https://p/zed.jpg",
-            "known": None,
-            "slot": None,
         }
         assert dashboard.directory.calls == [("streams", "5", Sort.NEW)]
 
