@@ -1347,8 +1347,10 @@
   }
 
   function showStreams() {
-    const { streams, category } = ex.listing;
-    cards.replaceChildren(...streams.map(card));
+    const { streams, more, category } = ex.listing;
+    // a top-N cut ends on a full row: 4 columns on desktop, 2 on phones
+    const shown = more ? streams.slice(0, streams.length - (streams.length % 4)) : streams;
+    cards.replaceChildren(...shown.map(card));
     note.replaceChildren();
     // the grid's end needs no words; only an empty grid gets a line
     endNote.textContent = streams.length ? '' : `No one is live${category ? ' in ' + category.name : ''}.`;
