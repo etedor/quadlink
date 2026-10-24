@@ -209,12 +209,12 @@
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
     background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
-  .explore-cats { display: flex; flex-wrap: wrap; gap: 5px; padding: 5px 0; }
+  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
   /* category chips choose, so they light up in the accent rather than the red of removal */
-  /* chips grow to fill each row, so every row is flush at both edges; the spacer takes
-     the last row's room, which stays ragged as in justified text */
-  .explore-cats .chip { flex-grow: 1; color: var(--text); }
-  .explore-cats::after { content: ""; flex-grow: 1000; }
+  /* the gaps grow so every row is flush at both edges; the spacer takes the last row's
+     room, which stays ragged as in justified text */
+  .explore-cats .chip { color: var(--text); }
+  .explore-cats::after { content: ""; flex-grow: 1; }
   .explore-cats .chip .count { color: var(--text-quiet); font-weight: 400; }
   .explore-cats button.chip:hover, .explore-cats button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
