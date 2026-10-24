@@ -216,11 +216,8 @@
   .pill:hover, .pill:focus-visible { background: var(--hover); }
   .pill img { width: 18px; height: 24px; border-radius: 3px; object-fit: cover; }
   .pill .count { color: var(--text-quiet); font-size: 13px; }
-  .current { display: flex; align-items: center; gap: 12px; padding: 5px 0; width: 100%; box-sizing: border-box; }
-  .current img { width: 30px; height: 40px; border-radius: 4px; object-fit: cover; }
-  .current .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .current .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .current .count { color: var(--text-quiet); font-size: 14px; }
+  .pill[aria-pressed="true"] { background: var(--accent); color: var(--white); }
+  .pill[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
   .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
@@ -1048,7 +1045,7 @@
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
   const HOURGLASS = '<path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"/>';
   const ex = { category: null, sort: 'viewers', listing: null, opened: 0,
-    adding: new Set(), failed: new Map(), searchTimer: null, request: 0 };
+    adding: new Set(), failed: new Map(), searchTimer: null, request: 0, catRequest: 0 };
   let lastAdded = null;
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
@@ -1107,59 +1104,45 @@
     count.className = 'count';
     count.textContent = c.live ? c.live.toLocaleString() + ' live' : 'none live';
     b.append(categoryImage(c), name, count);
-    b.addEventListener('click', () => choose(c));
+    b.dataset.id = c.id;
+    b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
+    // the chosen category's pill clears the choice
+    b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
     return b;
   }
 
   function choose(c) {
     ex.category = { id: c.id, name: c.name, box_art: c.box_art, live: c.live };
-    exploreQ.value = '';
     saveExplore();
-    showCats();
+    if (exploreQ.value) { exploreQ.value = ''; showCats(); } else markPills();
     loadStreams();
   }
 
-  // the field's results, else the chosen category, else suggestions
+  function unchoose() {
+    ex.category = null;
+    ex.listing = null;
+    ex.request++;
+    saveExplore();
+    cards.replaceChildren();
+    note.textContent = '';
+    endNote.textContent = '';
+    markPills();
+  }
+
+  function markPills() {
+    cats.querySelectorAll('.pill').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
+  }
+
+  // the field's results, else suggestions with the chosen category among them
   async function showCats() {
     const q = exploreQ.value.trim();
-    if (!q && ex.category) {
-      const box = document.createElement('div');
-      box.className = 'current';
-      const what = document.createElement('div');
-      what.className = 'what';
-      const name = document.createElement('span');
-      name.className = 'name';
-      name.textContent = ex.category.name;
-      const count = document.createElement('span');
-      count.className = 'count';
-      const live = ex.listing?.category?.live ?? ex.category.live;
-      count.textContent = live != null ? live.toLocaleString() + ' live' : '';
-      what.append(name, count);
-      const clear = document.createElement('button');
-      clear.type = 'button';
-      clear.className = 'chip';
-      clear.setAttribute('aria-label', 'Choose another category');
-      clear.title = 'Choose another category';
-      clear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">' + CROSS + '</svg>';
-      clear.addEventListener('click', () => {
-        ex.category = null;
-        ex.listing = null;
-        saveExplore();
-        cards.replaceChildren();
-        note.textContent = '';
-        endNote.textContent = '';
-        showCats();
-        exploreQ.focus();
-      });
-      box.append(categoryImage(ex.category), what, clear);
-      cats.replaceChildren(box);
-      return;
-    }
-    const request = ++ex.request;
-    exploreQ.classList.remove('bad');
+    const request = ++ex.catRequest;
     try {
       const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
-      if (request !== ex.request) return;
+      if (request !== ex.catRequest) return;
+      if (!q && ex.category && !body.categories.some(c => c.id === ex.category.id)) {
+        body.categories.unshift(ex.category);
+      }
       if (!body.categories.length) {
         const none = document.createElement('p');
         none.className = 'explore-note';
@@ -1169,7 +1152,7 @@
       }
       cats.replaceChildren(...body.categories.map(pill));
     } catch (err) {
-      if (request !== ex.request) return;
+      if (request !== ex.catRequest) return;
       cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));
     }
     alignQuad();
@@ -1236,7 +1219,6 @@
       if (request !== ex.request) return;
       ex.listing = listing;
       ex.category.live = listing.category.live;
-      showCats();
       showStreams();
     } catch (err) {
       if (request !== ex.request) return;
