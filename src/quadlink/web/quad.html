@@ -224,7 +224,10 @@
     overflow: hidden; text-overflow: ellipsis; }
   /* category chips choose, so they light up in the accent rather than the red of removal */
   :is(.explore-cats, .quad-cats) .chip { color: var(--text); }
-  .explore-cats .chip .count { color: var(--text-quiet); font-weight: 400; }
+  .explore-cats .chip .count { display: inline-flex; align-items: center; gap: 5px;
+    color: var(--text-quiet); font-weight: 400; }
+  .explore-cats .chip .count::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--live); }
   :is(.explore-cats, .quad-cats) button.chip:hover, :is(.explore-cats, .quad-cats) button.chip:focus-visible {
     border-color: var(--accent); color: var(--text); background: var(--hover); }
   :is(.explore-cats, .quad-cats) .chip[aria-pressed="true"] { border-color: var(--accent);
@@ -1111,7 +1114,8 @@
     name.textContent = c.name;
     const count = document.createElement('span');
     count.className = 'count';
-    count.textContent = c.live ? c.live.toLocaleString() + ' live' : 'none live';
+    count.textContent = compact.format(c.viewers);
+    count.title = c.viewers.toLocaleString() + ' viewers';
     b.append(name, count);
     b.dataset.id = c.id;
     b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
