@@ -190,8 +190,9 @@
   /* Explore shares the main panel: the quad becomes one frozen row of tiles, still a drop
      target, and Explore scrolls below it at the quad's width */
   body.exploring .stage { flex-direction: column; align-items: center; }
+  /* the row sits just under the top bar, not level with the rail's first channel */
   body.exploring .quad { grid-template: 1fr / repeat(4, 1fr); width: 92cqw; aspect-ratio: 64 / 9;
-    flex: none; }
+    flex: none; margin-top: 5px; }
   body.exploring .tile:nth-child(1)::after { border-radius: var(--radius) 0 0 var(--radius); }
   body.exploring .tile:nth-child(2)::after, body.exploring .tile:nth-child(3)::after { border-radius: 0; }
   body.exploring .tile:nth-child(4)::after { border-radius: 0 var(--radius) var(--radius) 0; }
