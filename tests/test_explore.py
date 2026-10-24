@@ -56,7 +56,9 @@ class Twitch:
             ]
             data = {"searchCategories": {"edges": [{"node": n} for n in nodes]}}
         elif "games(" in query:
-            data = {"games": {"edges": [{"node": _node("9", "Just Chatting", 394653)}]}}
+            assert variables == {"first": 20}
+            nodes = [_node(str(i), f"c{i}", v) for i, v in enumerate([90, 70, 80, *range(17)])]
+            data = {"games": {"edges": [{"node": n} for n in nodes]}}
         elif "streams(" in query:
             if variables["id"] == "404":
                 data = {"game": None}
@@ -98,8 +100,11 @@ async def test_empty_search_asks_nothing(directory: GQLDirectory, twitch: Twitch
     assert twitch.requests == []
 
 
-async def test_top(directory: GQLDirectory) -> None:
-    assert [c.name for c in await directory.top()] == ["Just Chatting"]
+async def test_top_is_the_twelve_most_watched_by_the_reported_counts(
+    directory: GQLDirectory,
+) -> None:
+    top = await directory.top()
+    assert [c.viewers for c in top] == [90, 80, 70, 16, 15, 14, 13, 12, 11, 10, 9, 8]
 
 
 async def test_named_keeps_order_and_drops_unknown_names(

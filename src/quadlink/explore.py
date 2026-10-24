@@ -17,6 +17,9 @@ REQUEST_WAIT = 4.0
 # whole listing; 100 is the largest page it serves
 STREAMS_LIMIT = 100
 TOP_LIMIT = 12
+# Twitch ranks its top categories by a count older than the one it reports, so a few
+# extra let the reported order pick the top ones
+TOP_FETCH = 20
 SEARCH_LIMIT = 10
 # GQL refuses a query with more than 15 aliased root fields
 ALIAS_LIMIT = 15
@@ -194,8 +197,9 @@ class GQLDirectory:
         return data
 
     async def _top(self) -> list[Category]:
-        data = await self._query(_TOP_QUERY, {"first": TOP_LIMIT})
-        return [_category(e["node"]) for e in data["games"]["edges"]]
+        data = await self._query(_TOP_QUERY, {"first": TOP_FETCH})
+        found = [_category(e["node"]) for e in data["games"]["edges"]]
+        return sorted(found, key=lambda c: c.viewers, reverse=True)[:TOP_LIMIT]
 
     async def _search(self, query: str) -> list[Category]:
         data = await self._query(_SEARCH_QUERY, {"query": query, "first": SEARCH_LIMIT})
