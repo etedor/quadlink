@@ -301,6 +301,40 @@
     /* phones keep the chips to one row that scrolls sideways */
     .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
   }
+  /* calm pass: color, edges and fills only for state and actions; plain facts are
+     quiet text. scoped to html.calm so /quad?calm=off shows the page without it */
+  html.calm .chip { border-color: var(--clear); }
+  html.calm .chip.viewers::before,
+  html.calm :is(.explore-cats, .quad-cats) .chip .count::before { display: none; }
+  html.calm .chip.viewers, html.calm .card .pic .uptime { color: var(--text-quiet); font-weight: 400; }
+  html.calm .chip.slot { border-color: var(--accent); }
+  html.calm .chip.back { border-color: var(--accent); }
+  html.calm .explore-cats .chip { background: var(--current); }
+  html.calm .explore-cats .chip span:first-child { font-weight: 400; }
+  html.calm .explore-cats button.chip:hover, html.calm .explore-cats button.chip:focus-visible {
+    border-color: var(--clear); background: var(--hover); }
+  html.calm .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); }
+  html.calm .quad-cats .chip { font-size: 13px; font-weight: 400; color: var(--text-quiet); }
+  html.calm .quad-cats .chip .count { display: none; }
+  html.calm .quad-cats button.chip:hover, html.calm .quad-cats button.chip:focus-visible {
+    border-color: var(--clear); background: var(--hover); color: var(--text); }
+  html.calm .card .tags { display: none; }
+  html.calm .explore.filtered .card .cat { display: none; }
+  html.calm .card .title { color: var(--text-quiet); font-weight: 400; }
+  html.calm .cards { gap: 24px 12px; }
+  html.calm .explore-btn[aria-pressed="true"] { background: var(--current); color: var(--text); }
+  html.calm .explore-btn[aria-pressed="true"] svg { color: var(--accent); }
+  /* uptime and the add chip wait for the pointer; slot, back and viewers always show */
+  @media (hover: hover) {
+    html.calm .card .pic :is(.uptime, .act:not(.slot):not(.back)) { opacity: 0; transition: opacity 0.12s; }
+    html.calm .card:is(:hover, :focus-within) .pic :is(.uptime, .act) { opacity: 1; }
+  }
+  @media (hover: none) {
+    html.calm .card .pic .uptime { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html.calm .card .pic :is(.uptime, .act) { transition: none; }
+  }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
 </head>
@@ -1041,6 +1075,15 @@
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
 
+  // the calm pass, on unless ?calm=off asked otherwise; the choice is remembered
+  (() => {
+    const asked = new URLSearchParams(location.search).get('calm');
+    try { if (asked === 'off' || asked === 'on') localStorage.setItem('quadlink.calm', asked); } catch {}
+    let calm = asked !== 'off';
+    try { if (!asked) calm = localStorage.getItem('quadlink.calm') !== 'off'; } catch {}
+    document.documentElement.classList.toggle('calm', calm);
+  })();
+
   // Explore: browse a Twitch category for streams the config does not know
   const exploreBtn = document.querySelector('.explore-btn');
   const exploreQ = document.getElementById('explore-q');
@@ -1349,6 +1392,8 @@
 
   function showStreams() {
     const { streams, more, category } = ex.listing;
+    // a chosen category names every card's category already
+    explore.classList.toggle('filtered', Boolean(category));
     // a top-N cut ends on a full row: 4 columns on desktop, 2 on phones
     const shown = more ? streams.slice(0, streams.length - (streams.length % 4)) : streams;
     cards.replaceChildren(...shown.map(card));
