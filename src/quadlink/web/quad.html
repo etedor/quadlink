@@ -268,8 +268,10 @@
   .card .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card .title { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden; overflow-wrap: anywhere; }
-  .card .tags { color: var(--text-quiet); font-size: 13px; white-space: nowrap; overflow: hidden;
-    text-overflow: ellipsis; }
+  /* one line of tag chips; a chip that does not fit is cut, so cards keep one height */
+  .card .tags { display: flex; gap: 5px; overflow: hidden; min-width: 0; }
+  .card .tags .chip { min-width: 0; flex-shrink: 1; font-weight: 400; }
+  .card .tags .chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card.skeleton { cursor: default; }
   .card.skeleton .pic { animation: pulse 1s infinite alternate; }
   .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--field); }
@@ -1448,7 +1450,15 @@
     if (tags.length) {
       const t = document.createElement('div');
       t.className = 'tags';
-      t.textContent = tags.join(' · ');
+      t.append(...tags.map(tag => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.title = tag;
+        const text = document.createElement('span');
+        text.textContent = tag;
+        chip.append(text);
+        return chip;
+      }));
       li.append(t);
     }
     return li;
