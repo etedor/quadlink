@@ -35,10 +35,11 @@ T = TypeVar("T")
 
 class Sort(StrEnum):
     VIEWERS = "viewers"
+    FEWEST = "fewest"
     NEW = "new"
 
 
-_GQL_SORT = {Sort.VIEWERS: "VIEWER_COUNT", Sort.NEW: "RECENT"}
+_GQL_SORT = {Sort.VIEWERS: "VIEWER_COUNT", Sort.FEWEST: "VIEWER_COUNT_ASC", Sort.NEW: "RECENT"}
 
 _CATEGORY_FIELDS = (
     f"id name viewersCount broadcastersCount boxArtURL(width: {BOX_ART[0]}, height: {BOX_ART[1]})"

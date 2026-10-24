@@ -134,6 +134,11 @@ async def test_streams(directory: GQLDirectory, twitch: Twitch) -> None:
     }
 
 
+async def test_fewest_viewers_first(directory: GQLDirectory, twitch: Twitch) -> None:
+    await directory.streams("497057", Sort.FEWEST)
+    assert twitch.requests[0]["variables"]["sort"] == "VIEWER_COUNT_ASC"
+
+
 async def test_streams_in_a_language(directory: GQLDirectory, twitch: Twitch) -> None:
     await directory.streams("497057", Sort.VIEWERS, "DE")
     await directory.streams("497057", Sort.VIEWERS)

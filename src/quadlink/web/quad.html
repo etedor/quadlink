@@ -228,8 +228,6 @@
   .explore-cats .chip[aria-pressed="true"] .count { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
-  .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
-    text-decoration: underline; cursor: pointer; }
   /* 7px wider each side, the cards' inset, so their content lines up with the quad */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0 -7px; padding: 0 7px; }
   /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
@@ -1062,10 +1060,12 @@
   const exSortBtn = explore.querySelector('.ex-sort-btn');
   const exFilterPop = explore.querySelector('.ex-filter-pop');
   const exSortPop = explore.querySelector('.ex-sort-pop');
-  const EX_SORTS = [['viewers', 'Viewers'], ['new', 'New']];
+  const EX_SORTS = [['viewers', 'Viewers: high to low'], ['fewest', 'Viewers: low to high'], ['new', 'New']];
   const scroller = explore.querySelector('.explore-scroll');
   scroller.addEventListener('scroll', () => scroller.classList.toggle('under', scroller.scrollTop > 0), { passive: true });
   const SEARCH_AFTER = 250;
+  // ms before a failed Explore request asks again
+  const RETRY_AFTER = 3000;
   const CHIP_ROWS = 3;
   const SKELETONS = 6;
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
@@ -1266,9 +1266,10 @@
         cats.replaceChildren(...found.map(categoryChip));
         fitRows();
       }
-    } catch (err) {
+    } catch {
+      // a failure (a restart, Twitch, the proxy) says nothing: the list stays and asks again
       if (request !== ex.catRequest) return null;
-      cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));
+      setTimeout(() => { if (exploring() && request === ex.catRequest) showCats(); }, RETRY_AFTER);
     }
     alignQuad();
     return found;
@@ -1289,17 +1290,6 @@
     if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
   }
 
-  function retryNote(text, again) {
-    const p = document.createElement('p');
-    p.className = 'explore-note';
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'link';
-    b.textContent = 'Try again';
-    b.addEventListener('click', again);
-    p.append(text + ' ', b);
-    return p;
-  }
 
   function setSort(sort) {
     if (ex.sort === sort) return;
@@ -1352,10 +1342,10 @@
       ex.listing = listing;
       if (ex.category && listing.category) ex.category.viewers = listing.category.viewers;
       showStreams();
-    } catch (err) {
+    } catch {
+      // the placeholders stay and the listing asks again, without a word
       if (request !== ex.request) return;
-      cards.replaceChildren();
-      note.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, loadStreams));
+      setTimeout(() => { if (exploring() && request === ex.request) loadStreams(); }, RETRY_AFTER);
     }
     alignQuad();
   }

@@ -394,7 +394,7 @@ class DashboardAPI:
         try:
             sort = Sort(request.query.get("sort", Sort.VIEWERS))
         except ValueError:
-            return web.json_response({"error": "sort must be viewers or new"}, status=400)
+            return web.json_response({"error": "sort must be viewers, fewest or new"}, status=400)
         # no category lists all of Twitch
         if category and not category.isdigit():
             return web.json_response({"error": "category must be a Twitch category ID"}, status=400)
