@@ -16,6 +16,7 @@ from quadlink import overrides as actions
 from quadlink.config.loader import ConfigLoader, ConfigNotFoundError
 from quadlink.config.models import Config
 from quadlink.dashboard import QuadStreamLogin, Snapshot, snapshot
+from quadlink.explore import Directory, GQLDirectory
 from quadlink.health import HealthServer
 from quadlink.logconfig import apply_config_level
 from quadlink.overrides import OverrideError
@@ -133,6 +134,7 @@ class Daemon:
         self._watchers: list[Callable[[], None]] = []
         self._stats_client = httpx.AsyncClient()
         self.viewers = ViewerCounts(GQLStats(self._stats_client))
+        self.directory: Directory = GQLDirectory(self._stats_client)
         # runs beside the lookups, never awaited by a refresh: the quad does not wait on it
         self._viewers_task: asyncio.Task[None] | None = None
 

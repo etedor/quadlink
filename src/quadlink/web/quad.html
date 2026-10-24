@@ -164,20 +164,20 @@
     font-variant-numeric: tabular-nums; }
   .chip svg { width: 13px; height: 13px; }
   /* filled: the tile it is on; hollow (back): the tile a drop put it off */
-  .rail .chip.slot { border-color: var(--accent); background: var(--accent); color: var(--white); }
-  .rail .chip.back { border-color: var(--accent); color: var(--text); }
-  .rail .chip.viewers { color: var(--text); }
-  .rail .chip.viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
+  .chip.slot { border-color: var(--accent); background: var(--accent); color: var(--white); }
+  .chip.back { border-color: var(--accent); color: var(--text); }
+  .chip.viewers { color: var(--text); }
+  .chip.viewers::before { content: ""; width: 7px; height: 7px; border-radius: 50%;
     background: var(--live); }
   /* red on hover says a click takes it away */
-  .rail button.chip { cursor: pointer; appearance: none; }
-  .rail button.chip:hover, .rail button.chip:focus-visible { border-color: var(--error);
+  button.chip { cursor: pointer; appearance: none; }
+  button.chip:hover, button.chip:focus-visible { border-color: var(--error);
     color: var(--error); background: var(--popover); }
-  .rail button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+  button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
   /* put back restores, so it lights up in the accent rather than the red of removal */
-  .rail button.chip.back:hover, .rail button.chip.back:focus-visible {
+  button.chip.back:hover, button.chip.back:focus-visible {
     border-color: var(--accent); color: var(--white); background: var(--accent); }
-  .rail button.chip.back:disabled { border-color: var(--chip-edge); color: var(--text-quiet);
+  button.chip.back:disabled { border-color: var(--chip-edge); color: var(--text-quiet);
     background: none; cursor: default; }
   /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
@@ -191,6 +191,65 @@
   .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   .rail li { cursor: grab; }
   .rail img { pointer-events: none; }
+  .header-actions { display: flex; gap: 7px; }
+  .explore-btn[aria-pressed="true"] { background: var(--accent); color: var(--white); }
+  /* Explore takes the rail's place and more of the width: new streams need big pictures */
+  body.exploring { grid-template-columns: min(max(55vw, 720px), calc(100vw - 320px)) minmax(0, 1fr); }
+  body.exploring aside { display: none; }
+  .explore { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
+    font: 16px system-ui, sans-serif; position: relative; }
+  .explore[hidden] { display: none; }
+  .explore .tools { align-items: center; }
+  .sorts { display: flex; flex: none; height: 38px; padding: 3px; gap: 3px; box-sizing: border-box;
+    border-radius: calc(var(--radius) - 7px); background: var(--field); }
+  .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
+    background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
+  .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
+  .cats { display: flex; flex-wrap: wrap; gap: 7px; padding: 5px 10px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 5px;
+    border: 0; border-radius: 17px; background: var(--field); color: var(--text); font: inherit;
+    font-size: 15px; cursor: pointer; }
+  .pill:hover, .pill:focus-visible { background: var(--hover); }
+  .pill img { width: 18px; height: 24px; border-radius: 3px; object-fit: cover; }
+  .pill .count { color: var(--text-quiet); font-size: 13px; }
+  .current { display: flex; align-items: center; gap: 12px; padding: 5px 10px; width: 100%; box-sizing: border-box; }
+  .current img { width: 30px; height: 40px; border-radius: 4px; object-fit: cover; }
+  .current .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .current .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .current .count { color: var(--text-quiet); font-size: 14px; }
+  .explore-note { margin: 0; padding: 4px 17px; color: var(--text-quiet); font-size: 14px; }
+  .explore-note:empty { display: none; }
+  .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
+    text-decoration: underline; cursor: pointer; }
+  .explore-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+  .cards { list-style: none; margin: 0; padding: 5px 10px 10px; display: grid; gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--radius);
+    cursor: grab; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+  .card:hover { background: var(--hover); }
+  .card:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+  .card.picked { box-shadow: inset 0 0 0 2px var(--accent); }
+  .card.known { opacity: 0.55; }
+  .card .pic { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
+    overflow: hidden; background: var(--well); }
+  .card .pic img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  .card .pic .chip { position: absolute; background: var(--scrim); color: var(--text); }
+  .card .pic .viewers { left: 6px; bottom: 6px; }
+  .card .pic .uptime { right: 6px; bottom: 6px; }
+  .card .pic .act { right: 6px; top: 6px; }
+  .card .pic .chip.slot { background: var(--accent); color: var(--white); }
+  .card .pic button.chip.back:hover, .card .pic button.chip.back:focus-visible { background: var(--accent); }
+  .card .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .card .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card .title { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden; overflow-wrap: anywhere; }
+  .card .tags { color: var(--text-quiet); font-size: 13px; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; }
+  .card.skeleton { cursor: default; }
+  .card.skeleton .pic { animation: pulse 1s infinite alternate; }
+  .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--field); }
+  .explore-end { margin: 0; padding: 4px 17px 16px; color: var(--text-quiet); font-size: 14px; }
+  .explore-end:empty { display: none; }
   .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 144px; aspect-ratio: 16 / 9;
     border-radius: calc(var(--radius) - 7px); background: var(--well) center / cover no-repeat;
     box-shadow: 0 0 0 2px var(--accent); pointer-events: none; opacity: 0.9;
@@ -203,7 +262,7 @@
   .tile.lifted { opacity: 0.5; }
   @keyframes pulse { to { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
-    .tile.pending::after, .add.busy input, .add.busy button { animation: none; }
+    .tile.pending::after, .add.busy input, .add.busy button, .card.skeleton .pic { animation: none; }
     .rail li.just-added { animation: added 2s steps(2, jump-none) forwards; }
     .cover { transition: none; }
   }
@@ -215,6 +274,14 @@
     .quad { width: 100%; height: 100%; aspect-ratio: auto; margin: 0; }
     video, .cover { object-fit: cover; }
     aside { padding-top: 10px; }
+    body.exploring { grid-template-columns: minmax(0, 1fr); }
+    .explore { padding-top: 10px; }
+    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .card .title { -webkit-line-clamp: 1; }
+    .card .tags { display: none; }
+    .cats { flex-wrap: nowrap; overflow-x: auto; }
+    .pill { flex: none; }
+    .sorts button { padding: 0 9px; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
@@ -235,7 +302,10 @@
       </g>
     </svg>
   </a>
-  <button type="button" class="reset-all">Unpin all</button>
+  <div class="header-actions">
+    <button type="button" class="reset-all explore-btn" aria-pressed="false">Explore</button>
+    <button type="button" class="reset-all unpin-all">Unpin all</button>
+  </div>
 </header>
 <aside aria-label="Online streamers">
   <div class="tools">
@@ -263,6 +333,19 @@
   </div>
   <div class="rail-scroll"><ul class="rail"></ul></div>
 </aside>
+<section class="explore" aria-label="Explore" hidden>
+  <div class="tools">
+    <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
+      autocomplete="off" spellcheck="false">
+    <div class="sorts" role="group" aria-label="Sort streams">
+      <button type="button" data-sort="viewers" aria-pressed="true">Viewers</button>
+      <button type="button" data-sort="new" aria-pressed="false">New</button>
+    </div>
+  </div>
+  <div class="cats"></div>
+  <p class="explore-note"></p>
+  <div class="explore-scroll"><ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p></div>
+</section>
 <main class="stage">
 <div class="quad">
   <div class="tile">
@@ -373,8 +456,8 @@
     // picked, the click places that channel instead
     tile.querySelector('button').addEventListener('click', () => {
       if (picked) {
-        const li = rail.querySelector(`li[data-channel="${CSS.escape(picked)}"]`);
-        place(i, picked, li?.querySelector('img')?.src || null);
+        const el = document.querySelector(`[data-channel="${CSS.escape(picked)}"] img`);
+        place(i, picked, el?.src || null);
         pick(null);
         return;
       }
@@ -418,9 +501,9 @@
   function pick(channel) {
     picked = channel && channel !== picked ? channel : null;
     document.body.classList.toggle('picking', picked !== null);
-    rail.querySelectorAll('li').forEach(li => {
-      li.classList.toggle('picked', li.dataset.channel === picked);
-      li.setAttribute('aria-pressed', String(li.dataset.channel === picked));
+    document.querySelectorAll('.rail li, .cards .card[data-channel]').forEach(el => {
+      el.classList.toggle('picked', el.dataset.channel === picked);
+      el.setAttribute('aria-pressed', String(el.dataset.channel === picked));
     });
   }
 
@@ -452,7 +535,11 @@
     const li = e.target.closest('li[data-channel]');
     if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(li.dataset.channel); }
   });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') pick(null); });
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if (picked) pick(null);
+    else if (exploring()) setExploring(false);
+  });
 
   function nameOf(channel) {
     const c = latest?.channels.find(x => x.channel === channel);
@@ -656,15 +743,18 @@
 
   const stage = document.querySelector('.stage');
   const aside = document.querySelector('aside');
+  const explore = document.querySelector('.explore');
+  const exploring = () => document.body.classList.contains('exploring');
   const phone = matchMedia('(max-width: 720px)');
   // offsetTop is a layout position, so scrolling the rail leaves the quad still
   function alignQuad() {
-    const first = rail.querySelector('li[data-channel]');
+    const panel = exploring() ? explore : aside;
+    const first = exploring() ? explore.querySelector('.cards') : rail.querySelector('li[data-channel]');
     if (phone.matches || !first) {
       stage.style.removeProperty('--quad-top');
       return;
     }
-    const top = aside.getBoundingClientRect().top + first.offsetTop - stage.getBoundingClientRect().top;
+    const top = panel.getBoundingClientRect().top + first.offsetTop - stage.getBoundingClientRect().top;
     stage.style.setProperty('--quad-top', Math.max(0, top) + 'px');
   }
   addEventListener('resize', alignQuad);
@@ -784,7 +874,7 @@
   let drag = null;
   let dragged = false;
 
-  document.querySelector('.reset-all').addEventListener('click', () => act({ action: 'unpin_all' }));
+  document.querySelector('.unpin-all').addEventListener('click', () => act({ action: 'unpin_all' }));
 
   async function act(body) {
     const resp = await fetch('/api/actions', {
@@ -844,10 +934,19 @@
     cover(tiles[slot], thumb(channel));
   }
 
-  function place(slot, channel, image) {
+  async function place(slot, channel, image) {
     expect(slot, channel);
     cover(tiles[slot], image);
-    act({ action: 'place', channel, slot }).catch(() => fail(slot));
+    try {
+      // every hold needs a rail row that can end it, so a new stream is added first
+      if (!latest?.channels.some(c => c.channel === channel)) {
+        await act({ action: 'add', channel });
+        lastAdded = channel;
+      }
+      await act({ action: 'place', channel, slot });
+    } catch {
+      fail(slot);
+    }
   }
 
   function end(e, cancelled) {
@@ -904,6 +1003,14 @@
     drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
     if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
   });
+  document.querySelector('.cards').addEventListener('pointerdown', e => {
+    const card = e.target.closest('.card[data-channel]');
+    if (!card || e.button !== 0 || drag || e.target.closest('button')) return;
+    const img = card.querySelector('img');
+    const source = () => ({ channel: card.dataset.channel, image: () => img && img.src });
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
+  });
   tiles.forEach((tile, slot) => tile.addEventListener('pointerdown', e => {
     if (e.button !== 0 || drag) return;
     const source = () => ({
@@ -918,12 +1025,397 @@
   }));
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
+
+  // Explore: browse a Twitch category for streams the config does not know
+  const exploreBtn = document.querySelector('.explore-btn');
+  const exploreQ = document.getElementById('explore-q');
+  const cats = explore.querySelector('.cats');
+  const cards = explore.querySelector('.cards');
+  const note = explore.querySelector('.explore-note');
+  const endNote = explore.querySelector('.explore-end');
+  const sortBtns = [...explore.querySelectorAll('.sorts button')];
+  const SEARCH_AFTER = 250;
+  const SKELETONS = 6;
+  const PLUS = '<path d="M12 5v14M5 12h14"/>';
+  const HOURGLASS = '<path d="M5 22h14M5 2h14M17 22v-4.2a2 2 0 0 0-.6-1.4L12 12l-4.4 4.4a2 2 0 0 0-.6 1.4V22M7 2v4.2a2 2 0 0 0 .6 1.4L12 12l4.4-4.4a2 2 0 0 0 .6-1.4V2"/>';
+  const ex = { category: null, sort: 'viewers', listing: null, showKnown: false, opened: 0,
+    adding: new Set(), failed: new Map(), searchTimer: null, request: 0 };
+  let lastAdded = null;
+  try {
+    const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
+    if (saved.category?.id) ex.category = saved.category;
+    if (saved.sort === 'new') ex.sort = 'new';
+  } catch {}
+  function saveExplore() {
+    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort })); } catch {}
+  }
+
+  async function getJSON(path) {
+    const resp = await fetch(path, { headers: { 'X-QuadLink-Token': token } });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(body.error || resp.statusText);
+    return body;
+  }
+
+  function setExploring(on) {
+    if (on === exploring()) return;
+    document.body.classList.toggle('exploring', on);
+    explore.hidden = !on;
+    exploreBtn.setAttribute('aria-pressed', String(on));
+    try { history.replaceState(null, '', on ? '#explore' : location.pathname + location.search); } catch {}
+    if (on) {
+      ex.opened = Date.now();
+      showCats();
+      if (ex.category) loadStreams(); else cards.replaceChildren();
+    } else {
+      pick(null);
+      // back in the rail, the newest stream Explore added gets quick add's outline
+      if (lastAdded) {
+        added = { channel: lastAdded, until: Date.now() + ROW_WAIT, seen: null };
+        lastAdded = null;
+        render();
+        showAdded();
+      }
+    }
+    alignQuad();
+  }
+  exploreBtn.addEventListener('click', () => setExploring(!exploring()));
+
+  function categoryImage(c) {
+    const img = document.createElement('img');
+    img.alt = '';
+    if (c.box_art) img.src = c.box_art;
+    return img;
+  }
+
+  function pill(c) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pill';
+    const name = document.createElement('span');
+    name.textContent = c.name;
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = c.live ? c.live.toLocaleString() + ' live' : 'none live';
+    b.append(categoryImage(c), name, count);
+    b.addEventListener('click', () => choose(c));
+    return b;
+  }
+
+  function choose(c) {
+    ex.category = { id: c.id, name: c.name, box_art: c.box_art, live: c.live };
+    ex.showKnown = false;
+    exploreQ.value = '';
+    saveExplore();
+    showCats();
+    loadStreams();
+  }
+
+  // the field's results, else the chosen category, else suggestions
+  async function showCats() {
+    const q = exploreQ.value.trim();
+    if (!q && ex.category) {
+      const box = document.createElement('div');
+      box.className = 'current';
+      const what = document.createElement('div');
+      what.className = 'what';
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = ex.category.name;
+      const count = document.createElement('span');
+      count.className = 'count';
+      const live = ex.listing?.category?.live ?? ex.category.live;
+      count.textContent = live != null ? live.toLocaleString() + ' live' : '';
+      what.append(name, count);
+      const clear = document.createElement('button');
+      clear.type = 'button';
+      clear.className = 'chip';
+      clear.setAttribute('aria-label', 'Choose another category');
+      clear.title = 'Choose another category';
+      clear.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">' + CROSS + '</svg>';
+      clear.addEventListener('click', () => {
+        ex.category = null;
+        ex.listing = null;
+        saveExplore();
+        cards.replaceChildren();
+        note.textContent = '';
+        endNote.textContent = '';
+        showCats();
+        exploreQ.focus();
+      });
+      box.append(categoryImage(ex.category), what, clear);
+      cats.replaceChildren(box);
+      return;
+    }
+    const request = ++ex.request;
+    exploreQ.classList.remove('bad');
+    try {
+      const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
+      if (request !== ex.request) return;
+      if (!body.categories.length) {
+        const none = document.createElement('p');
+        none.className = 'explore-note';
+        none.textContent = `No category matches "${q}".`;
+        cats.replaceChildren(none);
+        return;
+      }
+      cats.replaceChildren(...body.categories.map(pill));
+    } catch (err) {
+      if (request !== ex.request) return;
+      cats.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, showCats));
+    }
+    alignQuad();
+  }
+  exploreQ.addEventListener('input', () => {
+    clearTimeout(ex.searchTimer);
+    ex.searchTimer = setTimeout(showCats, SEARCH_AFTER);
+  });
+  exploreQ.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); cats.querySelector('.pill')?.click(); }
+    if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; showCats(); }
+  });
+
+  function retryNote(text, again) {
+    const p = document.createElement('p');
+    p.className = 'explore-note';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'link';
+    b.textContent = 'Try again';
+    b.addEventListener('click', again);
+    p.append(text + ' ', b);
+    return p;
+  }
+
+  sortBtns.forEach(b => b.addEventListener('click', () => {
+    if (ex.sort === b.dataset.sort) return;
+    ex.sort = b.dataset.sort;
+    saveExplore();
+    markSort();
+    if (ex.category) loadStreams();
+  }));
+  function markSort() {
+    sortBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.sort === ex.sort)));
+  }
+  markSort();
+
+  function skeleton() {
+    const li = document.createElement('li');
+    li.className = 'card skeleton';
+    li.setAttribute('aria-hidden', 'true');
+    const pic = document.createElement('div');
+    pic.className = 'pic';
+    const a = document.createElement('div');
+    a.className = 'bar';
+    a.style.width = '60%';
+    const b = document.createElement('div');
+    b.className = 'bar';
+    li.append(pic, a, b);
+    return li;
+  }
+
+  async function loadStreams() {
+    const request = ++ex.request;
+    const { id } = ex.category;
+    ex.listing = null;
+    note.textContent = '';
+    endNote.textContent = '';
+    cards.replaceChildren(...Array.from({ length: SKELETONS }, skeleton));
+    explore.querySelector('.explore-scroll').scrollTop = 0;
+    try {
+      const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}`);
+      if (request !== ex.request) return;
+      ex.listing = listing;
+      ex.category.live = listing.category.live;
+      showCats();
+      showStreams();
+    } catch (err) {
+      if (request !== ex.request) return;
+      cards.replaceChildren();
+      note.replaceChildren(retryNote(err.message === 'Twitch did not answer' ? 'Twitch did not answer.' : err.message, loadStreams));
+    }
+    alignQuad();
+  }
+
+  function viewOf(channel) {
+    return latest?.channels.find(c => c.channel === channel) || null;
+  }
+
+  // the config's own channels are known; added and on-quad ones always show
+  function showStreams() {
+    const { streams, more, category } = ex.listing;
+    const known = s => { const v = viewOf(s.channel); return v && !v.extra && v.slot == null; };
+    const hidden = streams.filter(known);
+    const shown = ex.showKnown ? streams : streams.filter(s => !known(s));
+    cards.replaceChildren(...shown.map(card));
+    note.replaceChildren();
+    if (hidden.length) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'link';
+      toggle.textContent = ex.showKnown ? 'Hide' : 'Show';
+      toggle.addEventListener('click', () => { ex.showKnown = !ex.showKnown; showStreams(); });
+      const text = !shown.length && !ex.showKnown
+        ? `All ${hidden.length} live streams are known. `
+        : `${hidden.length} known ${ex.showKnown ? 'shown' : 'hidden'} · `;
+      note.append(text, toggle);
+    }
+    endNote.textContent = !streams.length ? `No one is live in ${category.name}.`
+      : more ? 'Twitch lists the top 100.' : "That's everyone.";
+    alignQuad();
+  }
+
+  function languageNames(code) {
+    const names = new Set([code.toLowerCase()]);
+    for (const locale of [code, 'en']) {
+      try { names.add(new Intl.DisplayNames([locale], { type: 'language' }).of(code).toLowerCase()); } catch {}
+    }
+    return names;
+  }
+
+  function uptime(startedAt) {
+    const minutes = Math.max(0, Math.floor((Date.now() / 1000 - startedAt) / 60));
+    const h = Math.floor(minutes / 60);
+    return h ? `${h}h ${minutes % 60}m` : `${minutes}m`;
+  }
+
+  function card(s) {
+    const li = document.createElement('li');
+    li.className = 'card';
+    li.dataset.channel = s.channel;
+    li.tabIndex = 0;
+    li.setAttribute('aria-pressed', String(s.channel === picked));
+    li.classList.toggle('picked', s.channel === picked);
+    const v = viewOf(s.channel);
+    li.classList.toggle('known', Boolean(v && !v.extra && v.slot == null));
+    const pic = document.createElement('div');
+    pic.className = 'pic';
+    const img = document.createElement('img');
+    img.alt = '';
+    img.loading = 'lazy';
+    // Twitch refreshes previews every few minutes; each opening of Explore gets fresh ones
+    if (s.thumbnail) img.src = s.thumbnail + '?t=' + ex.opened;
+    const viewers = document.createElement('span');
+    viewers.className = 'chip viewers';
+    viewers.textContent = s.viewers.toLocaleString();
+    viewers.title = 'Viewers';
+    const up = document.createElement('span');
+    up.className = 'chip uptime';
+    up.textContent = uptime(s.started_at);
+    up.title = 'Live for';
+    pic.append(img, viewers, up, action(s));
+    const line = document.createElement('div');
+    line.className = 'line';
+    const name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = s.display_name;
+    line.append(name);
+    if (s.language) {
+      const lang = document.createElement('span');
+      lang.className = 'chip';
+      lang.textContent = s.language;
+      lang.title = 'Language';
+      line.append(lang);
+    }
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = s.title;
+    title.title = s.title;
+    li.append(pic, line, title);
+    // Twitch tags most streams with their language's name, which the chip already shows
+    const spoken = languageNames(s.language);
+    const tags = s.tags.filter(t => !spoken.has(t.toLowerCase())).slice(0, 3);
+    if (tags.length) {
+      const t = document.createElement('div');
+      t.className = 'tags';
+      t.textContent = tags.join(' · ');
+      li.append(t);
+    }
+    return li;
+  }
+
+  // one chip: + to add, hourglass while adding, × once added, the tile number on the quad
+  function action(s) {
+    const v = viewOf(s.channel);
+    const name = s.display_name;
+    let el;
+    if (v?.slot != null) {
+      el = document.createElement('span');
+      el.className = 'chip slot';
+      el.textContent = v.slot + 1;
+      el.title = 'Slot ' + (v.slot + 1);
+    } else if (ex.adding.has(s.channel)) {
+      el = document.createElement('span');
+      el.className = 'chip';
+      el.setAttribute('role', 'img');
+      el.setAttribute('aria-label', 'Adding ' + name);
+      el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + HOURGLASS + '</svg>';
+    } else if (ex.failed.has(s.channel)) {
+      el = document.createElement('span');
+      el.className = 'chip';
+      el.textContent = 'Offline';
+      el.title = ex.failed.get(s.channel);
+    } else if (v?.extra) {
+      el = removeButton({ channel: s.channel, display_name: name });
+    } else if (v) {
+      return document.createTextNode('');
+    } else {
+      el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'chip back';
+      el.title = 'Add ' + name;
+      el.setAttribute('aria-label', 'Add ' + name);
+      el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">' + PLUS + '</svg>';
+      el.addEventListener('click', async e => {
+        e.stopPropagation();
+        ex.adding.add(s.channel);
+        markCards();
+        try {
+          await act({ action: 'add', channel: s.channel });
+          lastAdded = s.channel;
+        } catch (err) {
+          ex.failed.set(s.channel, err.message);
+        } finally {
+          ex.adding.delete(s.channel);
+          markCards();
+        }
+      });
+      el.addEventListener('keydown', e => e.stopPropagation());
+    }
+    el.classList.add('act');
+    el.addEventListener('pointerdown', e => e.stopPropagation());
+    return el;
+  }
+
+  function markCards() {
+    if (!exploring() || !ex.listing) return;
+    const byChannel = new Map(ex.listing.streams.map(s => [s.channel, s]));
+    cards.querySelectorAll('.card[data-channel]').forEach(li => {
+      const s = byChannel.get(li.dataset.channel);
+      if (!s) return;
+      li.querySelector('.act')?.replaceWith(action(s));
+      const v = viewOf(s.channel);
+      li.classList.toggle('known', Boolean(v && !v.extra && v.slot == null));
+    });
+  }
+
+  cards.addEventListener('click', e => {
+    const li = e.target.closest('.card[data-channel]');
+    if (li && !e.target.closest('button')) pick(li.dataset.channel);
+  });
+  cards.addEventListener('keydown', e => {
+    const li = e.target.closest('.card[data-channel]');
+    if (li && e.target === li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(li.dataset.channel); }
+  });
+  if (location.hash === '#explore') setExploring(true);
+
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
   events.onmessage = e => {
     const before = latest;
     latest = JSON.parse(e.data);
     render();
     markTiles();
+    markCards();
     showAdded();
     if (before) coverChanges(before);
   };

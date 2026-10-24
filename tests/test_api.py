@@ -1,4 +1,4 @@
-"""Tests for the dashboard API: guards, snapshot, events, actions and stills."""
+"""Tests for the dashboard API: guards, snapshot, events, actions, stills and Explore."""
 
 import asyncio
 import json
@@ -14,6 +14,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from quadlink import api
 from quadlink.config.loader import ConfigLoader
 from quadlink.dashboard import QuadStreamLogin, Snapshot, snapshot
+from quadlink.explore import Category, DirectoryError, Listing, Sort
+from quadlink.explore import Stream as ExploreStream
 from quadlink.overrides import OverrideError
 from quadlink.quad import Hold, Overrides, QuadState
 from quadlink.relay.playlist import Segment
@@ -56,10 +58,52 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
     )
 
 
+def _category(id: str, name: str) -> Category:
+    return Category(id, name, f"https://box/{id}.jpg", 100, 4)
+
+
+def _explore_stream(login: str) -> ExploreStream:
+    return ExploreStream(
+        login, login.upper(), "title", 7, STARTED, "EN", ("Chill",), f"https://p/{login}.jpg"
+    )
+
+
+class FakeDirectory:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Any, ...]] = []
+        self.error: DirectoryError | None = None
+        self.known = {"Chess": _category("5", "Chess"), "Games": _category("6", "Games")}
+
+    def _call(self, *call: Any) -> None:
+        self.calls.append(call)
+        if self.error is not None:
+            raise self.error
+
+    async def top(self) -> list[Category]:
+        self._call("top")
+        return [_category("9", "Just Chatting"), _category("5", "Chess")]
+
+    async def search(self, query: str) -> list[Category]:
+        self._call("search", query)
+        return [_category("2", "Destiny 2")]
+
+    async def named(self, names: list[str]) -> list[Category]:
+        self._call("named", names)
+        return [self.known[n] for n in names if n in self.known]
+
+    async def streams(self, category_id: str, sort: Sort) -> Listing | None:
+        self._call("streams", category_id, sort)
+        if category_id == "404":
+            return None
+        streams = [_explore_stream(login) for login in ("zed", "a", "b")]
+        return Listing(_category(category_id, "Chess"), streams, True)
+
+
 class FakeDashboard:
     def __init__(self, segments: SegmentProxy, ffmpeg_path: str | None) -> None:
         self.segments = segments
         self.ffmpeg = ffmpeg_path
+        self.directory = FakeDirectory()
         self.snap = _snapshot()
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.error: OverrideError | None = None
@@ -716,3 +760,79 @@ class TestStillChannels:
             resp = await self._get(two_client, 0, "a")
             assert resp.status == 302
         assert starts == 1
+
+
+class TestExplore:
+    async def _get(self, client: TestClient, webui: WebUI, path: str) -> ClientResponse:
+        return await client.get(path, headers=_auth(webui))
+
+    async def test_needs_the_token(self, client: TestClient) -> None:
+        assert (await client.get("/api/explore/categories")).status == 403
+
+    async def test_search(self, client: TestClient, webui: WebUI, dashboard: FakeDashboard) -> None:
+        resp = await self._get(client, webui, "/api/explore/categories?q=destiny")
+        assert resp.status == 200
+        assert await resp.json() == {
+            "categories": [
+                {
+                    "id": "2",
+                    "name": "Destiny 2",
+                    "box_art": "https://box/2.jpg",
+                    "viewers": 100,
+                    "live": 4,
+                }
+            ]
+        }
+        assert dashboard.directory.calls == [("search", "destiny")]
+
+    async def test_suggestions_lead_with_the_quad_then_the_config_then_top(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+    ) -> None:
+        resp = await self._get(client, webui, "/api/explore/categories")
+        names = [c["name"] for c in (await resp.json())["categories"]]
+        # Chess is on the quad and among the top: it shows once, where it first appears
+        assert names == ["Chess", "Games", "Just Chatting"]
+        assert dashboard.directory.calls[0] == ("named", ["Chess", "Games"])
+
+    async def test_streams_mark_what_the_dashboard_knows(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+    ) -> None:
+        resp = await self._get(client, webui, "/api/explore/streams?category=5&sort=new")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["category"]["name"] == "Chess"
+        assert body["more"] is True
+        marks = [(s["channel"], s["known"], s["slot"]) for s in body["streams"]]
+        assert marks == [("zed", None, None), ("a", "config", 0), ("b", "config", 2)]
+        assert body["streams"][0] == {
+            "channel": "zed",
+            "display_name": "ZED",
+            "title": "title",
+            "viewers": 7,
+            "started_at": int(STARTED.timestamp()),
+            "language": "EN",
+            "tags": ["Chill"],
+            "thumbnail": "https://p/zed.jpg",
+            "known": None,
+            "slot": None,
+        }
+        assert dashboard.directory.calls == [("streams", "5", Sort.NEW)]
+
+    @pytest.mark.parametrize(
+        "query,status",
+        [("category=5&sort=top", 400), ("category=abc", 400), ("", 400), ("category=404", 404)],
+    )
+    async def test_bad_listing_requests(
+        self, client: TestClient, webui: WebUI, query: str, status: int
+    ) -> None:
+        resp = await self._get(client, webui, "/api/explore/streams?" + query)
+        assert resp.status == status
+
+    @pytest.mark.parametrize("path", ["/api/explore/categories", "/api/explore/streams?category=5"])
+    async def test_twitch_failure_is_502(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard, path: str
+    ) -> None:
+        dashboard.directory.error = DirectoryError("failed integrity check")
+        resp = await self._get(client, webui, path)
+        assert resp.status == 502
+        assert await resp.json() == {"error": "Twitch did not answer"}

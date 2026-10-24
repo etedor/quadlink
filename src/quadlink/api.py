@@ -1,4 +1,4 @@
-"""Dashboard API: state snapshot, live events, operator actions and slot stills.
+"""Dashboard API: state snapshot, live events, operator actions, slot stills and Explore.
 
 The web UI's request guard covers every route here; nothing in this module checks
 the caller.
@@ -15,6 +15,7 @@ import structlog
 from aiohttp import web
 
 from quadlink.dashboard import Snapshot
+from quadlink.explore import Category, Directory, DirectoryError, Sort, Stream
 from quadlink.overrides import OverrideError
 from quadlink.relay.segments import SegmentProxy
 from quadlink.types import thumbnail_url
@@ -54,6 +55,7 @@ class Dashboard(Protocol):
 
     segments: SegmentProxy
     ffmpeg: str | None
+    directory: Directory
 
     def snapshot(self) -> Snapshot: ...
 
@@ -246,6 +248,8 @@ class DashboardAPI:
         app.router.add_get(EVENTS_PATH, self._handle_events)
         app.router.add_post("/api/actions", self._handle_action)
         app.router.add_get("/api/slots/{slot}/still.jpg", self._handle_still)
+        app.router.add_get("/api/explore/categories", self._handle_categories)
+        app.router.add_get("/api/explore/streams", self._handle_streams)
         app.on_shutdown.append(self._shutdown)
 
     def _changed(self) -> None:
@@ -368,6 +372,95 @@ class DashboardAPI:
                 jpeg = await grab_frame(ffmpeg, segment)
             self._stills[slot] = (channel, loop.time(), jpeg)
             return jpeg
+
+    async def _handle_categories(self, request: web.Request) -> web.Response:
+        query = request.query.get("q", "").strip()
+        directory = self.dashboard.directory
+        try:
+            if query:
+                found = await directory.search(query)
+            else:
+                # what the quad and the config already show, then what Twitch watches most
+                ours = await directory.named(_our_categories(self.dashboard.snapshot()))
+                found = _unique([*ours, *await directory.top()])
+        except DirectoryError as e:
+            logger.warning("explore categories failed", query=query, error=str(e))
+            return web.json_response({"error": "Twitch did not answer"}, status=502)
+        return web.json_response(
+            {"categories": [_category_json(c) for c in found]},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def _handle_streams(self, request: web.Request) -> web.Response:
+        category = request.query.get("category", "")
+        try:
+            sort = Sort(request.query.get("sort", Sort.VIEWERS))
+        except ValueError:
+            return web.json_response({"error": "sort must be viewers or new"}, status=400)
+        if not category.isdigit():
+            return web.json_response({"error": "category must be a Twitch category ID"}, status=400)
+        try:
+            listing = await self.dashboard.directory.streams(category, sort)
+        except DirectoryError as e:
+            logger.warning("explore streams failed", category=category, error=str(e))
+            return web.json_response({"error": "Twitch did not answer"}, status=502)
+        if listing is None:
+            return web.json_response({"error": "the category does not exist"}, status=404)
+        snap = self.dashboard.snapshot()
+        known = {c.channel: c for c in snap.channels}
+        return web.json_response(
+            {
+                "category": _category_json(listing.category),
+                "streams": [_stream_json(s, known.get(s.login)) for s in listing.streams],
+                "more": listing.more,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+
+def _our_categories(snap: Snapshot) -> list[str]:
+    """Categories on the quad, by slot, then the live config channels' by how many share each."""
+    views = {c.channel: c for c in snap.channels}
+
+    def category(channel: str) -> str | None:
+        view = views.get(channel)
+        stream = view.status.stream if view is not None else None
+        return stream.metadata.category if stream is not None else None
+
+    on_quad = [category(s.channel) for s in snap.slots if s.channel]
+    counts: dict[str, int] = {}
+    for c in snap.channels:
+        name = category(c.channel)
+        if name and c.live and not c.extra:
+            counts[name] = counts.get(name, 0) + 1
+    by_count = sorted(counts, key=lambda n: -counts[n])
+    return list(dict.fromkeys(n for n in [*on_quad, *by_count] if n))
+
+
+def _unique(categories: list[Category]) -> list[Category]:
+    # a dict keeps each ID where it first appears
+    return list({c.id: c for c in categories}.values())
+
+
+def _category_json(c: Category) -> dict[str, Any]:
+    return {"id": c.id, "name": c.name, "box_art": c.box_art, "viewers": c.viewers, "live": c.live}
+
+
+def _stream_json(s: Stream, view: Any) -> dict[str, Any]:
+    known = None if view is None else "added" if view.extra else "config"
+    return {
+        "channel": s.login,
+        "display_name": s.display_name,
+        "title": s.title,
+        "viewers": s.viewers,
+        # epoch seconds, like the snapshot's started_at
+        "started_at": int(s.started_at.timestamp()),
+        "language": s.language,
+        "tags": list(s.tags),
+        "thumbnail": s.thumbnail,
+        "known": known,
+        "slot": None if view is None else view.slot,
+    }
 
 
 def _redirect(location: str) -> web.Response:
