@@ -193,36 +193,46 @@
   .rail img { pointer-events: none; }
   .header-actions { display: flex; gap: 7px; }
   .explore-btn[aria-pressed="true"] { background: var(--accent); color: var(--white); }
-  /* Explore takes the rail's place and more of the width: new streams need big pictures */
-  body.exploring { grid-template-columns: min(max(55vw, 720px), calc(100vw - 320px)) minmax(0, 1fr); }
-  body.exploring aside { display: none; }
-  .explore { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
-    font: 16px system-ui, sans-serif; position: relative; }
+  /* Explore shares the main panel: the quad becomes one frozen row of tiles, still a drop
+     target, and Explore scrolls below it at the quad's width */
+  body.exploring .stage { flex-direction: column; align-items: center; }
+  body.exploring .quad { grid-template: 1fr / repeat(4, 1fr); width: 92cqw; aspect-ratio: 64 / 9;
+    flex: none; }
+  body.exploring .tile:nth-child(1)::after { border-radius: var(--radius) 0 0 var(--radius); }
+  body.exploring .tile:nth-child(2)::after, body.exploring .tile:nth-child(3)::after { border-radius: 0; }
+  body.exploring .tile:nth-child(4)::after { border-radius: 0 var(--radius) var(--radius) 0; }
+  .explore { flex: 1; min-height: 0; width: 92cqw; display: flex; flex-direction: column;
+    font: 16px system-ui, sans-serif; }
   .explore[hidden] { display: none; }
+  .explore .tools { padding: 10px 0 5px; }
   .explore .tools { align-items: center; }
   .sorts { display: flex; flex: none; height: 38px; padding: 3px; gap: 3px; box-sizing: border-box;
     border-radius: calc(var(--radius) - 7px); background: var(--field); }
   .sorts button { width: auto; height: auto; border: 0; border-radius: calc(var(--radius) - 10px); padding: 0 12px;
     background: none; color: var(--text-quiet); font: inherit; font-size: 15px; cursor: pointer; }
   .sorts button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
-  .cats { display: flex; flex-wrap: wrap; gap: 7px; padding: 5px 10px; }
+  .cats { display: flex; flex-wrap: wrap; gap: 7px; padding: 5px 0; }
   .pill { display: inline-flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 5px;
     border: 0; border-radius: 17px; background: var(--field); color: var(--text); font: inherit;
     font-size: 15px; cursor: pointer; }
   .pill:hover, .pill:focus-visible { background: var(--hover); }
   .pill img { width: 18px; height: 24px; border-radius: 3px; object-fit: cover; }
   .pill .count { color: var(--text-quiet); font-size: 13px; }
-  .current { display: flex; align-items: center; gap: 12px; padding: 5px 10px; width: 100%; box-sizing: border-box; }
+  .current { display: flex; align-items: center; gap: 12px; padding: 5px 0; width: 100%; box-sizing: border-box; }
   .current img { width: 30px; height: 40px; border-radius: 4px; object-fit: cover; }
   .current .what { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .current .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .current .count { color: var(--text-quiet); font-size: 14px; }
-  .explore-note { margin: 0; padding: 4px 17px; color: var(--text-quiet); font-size: 14px; }
+  .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
   .link { border: 0; padding: 0; background: none; color: var(--text); font: inherit;
     text-decoration: underline; cursor: pointer; }
-  .explore-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
-  .cards { list-style: none; margin: 0; padding: 5px 10px 10px; display: grid; gap: 12px;
+  .explore-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+  /* the fade shows once cards sit above, as the menus' fade shows while options sit below */
+  .explore-scroll.under::before { content: ""; position: sticky; top: 0; z-index: 1; display: block;
+    height: 38px; margin-bottom: -38px; pointer-events: none;
+    background: linear-gradient(var(--ground), var(--clear)); }
+  .cards { list-style: none; margin: 0 -7px; padding: 5px 0 10px; display: grid; gap: 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
   .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--radius);
     cursor: grab; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
@@ -248,7 +258,7 @@
   .card.skeleton { cursor: default; }
   .card.skeleton .pic { animation: pulse 1s infinite alternate; }
   .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--field); }
-  .explore-end { margin: 0; padding: 4px 17px 16px; color: var(--text-quiet); font-size: 14px; }
+  .explore-end { margin: 0; padding: 4px 7px 16px; color: var(--text-quiet); font-size: 14px; }
   .explore-end:empty { display: none; }
   .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 144px; aspect-ratio: 16 / 9;
     border-radius: calc(var(--radius) - 7px); background: var(--well) center / cover no-repeat;
@@ -274,8 +284,13 @@
     .quad { width: 100%; height: 100%; aspect-ratio: auto; margin: 0; }
     video, .cover { object-fit: cover; }
     aside { padding-top: 10px; }
-    body.exploring { grid-template-columns: minmax(0, 1fr); }
-    .explore { padding-top: 10px; }
+    /* no room for a row of tiles: the 2x2 quad stays and Explore takes the rail's place */
+    body.exploring aside { display: none; }
+    body.exploring .stage { display: contents; }
+    body.exploring .quad { grid-area: quad; grid-template: 1fr 1fr / 1fr 1fr; width: auto;
+      aspect-ratio: auto; margin: 0 19px; }
+    body.exploring .tile:nth-child(n)::after { border-radius: 0; }
+    .explore { grid-area: rail; width: auto; padding: 10px 10px 0; }
     .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     .card .title { -webkit-line-clamp: 1; }
     .card .tags { display: none; }
@@ -333,19 +348,6 @@
   </div>
   <div class="rail-scroll"><ul class="rail"></ul></div>
 </aside>
-<section class="explore" aria-label="Explore" hidden>
-  <div class="tools">
-    <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
-      autocomplete="off" spellcheck="false">
-    <div class="sorts" role="group" aria-label="Sort streams">
-      <button type="button" data-sort="viewers" aria-pressed="true">Viewers</button>
-      <button type="button" data-sort="new" aria-pressed="false">New</button>
-    </div>
-  </div>
-  <div class="cats"></div>
-  <p class="explore-note"></p>
-  <div class="explore-scroll"><ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p></div>
-</section>
 <main class="stage">
 <div class="quad">
   <div class="tile">
@@ -373,6 +375,19 @@
     <button aria-label="Slot 4" aria-pressed="false"></button>
   </div>
 </div>
+<section class="explore" aria-label="Explore" hidden>
+  <div class="tools">
+    <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
+      autocomplete="off" spellcheck="false">
+    <div class="sorts" role="group" aria-label="Sort streams">
+      <button type="button" data-sort="viewers" aria-pressed="true">Viewers</button>
+      <button type="button" data-sort="new" aria-pressed="false">New</button>
+    </div>
+  </div>
+  <div class="cats"></div>
+  <p class="explore-note"></p>
+  <div class="explore-scroll"><ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p></div>
+</section>
 </main>
 <script>
   const tiles = [...document.querySelectorAll('.tile')];
@@ -748,13 +763,12 @@
   const phone = matchMedia('(max-width: 720px)');
   // offsetTop is a layout position, so scrolling the rail leaves the quad still
   function alignQuad() {
-    const panel = exploring() ? explore : aside;
-    const first = exploring() ? explore.querySelector('.cards') : rail.querySelector('li[data-channel]');
+    const first = rail.querySelector('li[data-channel]');
     if (phone.matches || !first) {
       stage.style.removeProperty('--quad-top');
       return;
     }
-    const top = panel.getBoundingClientRect().top + first.offsetTop - stage.getBoundingClientRect().top;
+    const top = aside.getBoundingClientRect().top + first.offsetTop - stage.getBoundingClientRect().top;
     stage.style.setProperty('--quad-top', Math.max(0, top) + 'px');
   }
   addEventListener('resize', alignQuad);
@@ -1034,6 +1048,8 @@
   const note = explore.querySelector('.explore-note');
   const endNote = explore.querySelector('.explore-end');
   const sortBtns = [...explore.querySelectorAll('.sorts button')];
+  const scroller = explore.querySelector('.explore-scroll');
+  scroller.addEventListener('scroll', () => scroller.classList.toggle('under', scroller.scrollTop > 0), { passive: true });
   const SEARCH_AFTER = 250;
   const SKELETONS = 6;
   const PLUS = '<path d="M12 5v14M5 12h14"/>';
@@ -1221,7 +1237,8 @@
     note.textContent = '';
     endNote.textContent = '';
     cards.replaceChildren(...Array.from({ length: SKELETONS }, skeleton));
-    explore.querySelector('.explore-scroll').scrollTop = 0;
+    scroller.scrollTop = 0;
+    scroller.classList.remove('under');
     try {
       const listing = await getJSON(`/api/explore/streams?category=${encodeURIComponent(id)}&sort=${ex.sort}`);
       if (request !== ex.request) return;

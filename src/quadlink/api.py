@@ -35,6 +35,9 @@ STILL_TTL = 5.0
 # seconds one ffmpeg frame grab may take
 STILL_WAIT = 3.0
 
+# categories of our own that Explore suggests before Twitch's top ones
+OUR_CATEGORIES = 8
+
 # Twitch logins; any other channel key is a URL, which has no preview image
 _LOGIN = re.compile(r"[a-z0-9_]+")
 
@@ -434,7 +437,7 @@ def _our_categories(snap: Snapshot) -> list[str]:
         if name and c.live and not c.extra:
             counts[name] = counts.get(name, 0) + 1
     by_count = sorted(counts, key=lambda n: -counts[n])
-    return list(dict.fromkeys(n for n in [*on_quad, *by_count] if n))
+    return list(dict.fromkeys(n for n in [*on_quad, *by_count] if n))[:OUR_CATEGORIES]
 
 
 def _unique(categories: list[Category]) -> list[Category]:

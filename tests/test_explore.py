@@ -111,6 +111,12 @@ async def test_named_keeps_order_and_drops_unknown_names(
     assert len(twitch.requests) == 1
 
 
+async def test_named_splits_past_the_alias_limit(directory: GQLDirectory, twitch: Twitch) -> None:
+    names = ["Chess", *(f"x{i}" for i in range(15)), "Games"]
+    assert [c.name for c in await directory.named(names)] == ["Chess", "Games"]
+    assert [len(r["variables"]) for r in twitch.requests] == [15, 2]
+
+
 async def test_streams(directory: GQLDirectory, twitch: Twitch) -> None:
     listing = await directory.streams("497057", Sort.NEW)
     assert listing is not None

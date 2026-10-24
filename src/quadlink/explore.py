@@ -18,6 +18,8 @@ REQUEST_WAIT = 4.0
 STREAMS_LIMIT = 100
 TOP_LIMIT = 12
 SEARCH_LIMIT = 10
+# GQL refuses a query with more than 15 aliased root fields
+ALIAS_LIMIT = 15
 # seconds an answer serves every request with the same arguments
 SEARCH_TTL = 300.0
 LISTING_TTL = 60.0
@@ -202,6 +204,12 @@ class GQLDirectory:
         return sorted(found, key=lambda c: c.viewers, reverse=True)
 
     async def _named(self, names: list[str]) -> list[Category]:
+        found: list[Category] = []
+        for i in range(0, len(names), ALIAS_LIMIT):
+            found += await self._named_batch(names[i : i + ALIAS_LIMIT])
+        return found
+
+    async def _named_batch(self, names: list[str]) -> list[Category]:
         # one aliased lookup per name, in a single request
         fields = " ".join(
             f"c{i}: game(name: $n{i}) {{ {_CATEGORY_FIELDS} }}" for i in range(len(names))
