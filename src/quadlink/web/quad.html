@@ -1203,7 +1203,9 @@
     try {
       const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
       if (request !== ex.catRequest) return;
-      if (!q && ex.category && !body.categories.some(c => c.id === ex.category.id)) {
+      // a category from search joins the chips while chosen; a quad tile's has its chip under the tile
+      const onQuad = (latest?.slots || []).some(t => t.category === ex.category?.name);
+      if (!q && ex.category && !onQuad && !body.categories.some(c => c.id === ex.category.id)) {
         body.categories.unshift(ex.category);
       }
       if (!body.categories.length) {
