@@ -501,7 +501,7 @@
     if (n != null) span.textContent = viewerFormat.format(n).toLowerCase();
     return span;
   }
-  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['replaced', 'Replaced'],
+  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['replaced', 'Benched'],
                   ['offline', 'Offline']];
   const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
                  ['newest', 'Newest stream'], ['longest', 'Longest stream']];
@@ -596,7 +596,7 @@
     button.type = 'button';
     button.className = 'chip back';
     button.textContent = tile;
-    button.title = 'Replaced by ' + nameOf(c.replaced_by);
+    button.title = 'Benched for ' + nameOf(c.replaced_by);
     button.setAttribute('aria-label', `Put ${displayName} back on tile ${tile}`);
     // offline, it would only put filler on the tile
     button.disabled = !c.live;
@@ -799,7 +799,7 @@
     // the quad's channels are its cards, not rows
     const head = [];
     if (replaced.length) {
-      head.push(section('Replaced'), ...replaced.map(row));
+      head.push(section('Benched'), ...replaced.map(row));
     }
     if (added.length) {
       head.push(section('Added'), ...added.map(row));
