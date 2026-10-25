@@ -28,6 +28,8 @@
   --on-accent: var(--white);
   --error: var(--live);
   --drop-wash: color-mix(in oklab, var(--twitch) 22%, var(--clear));
+  /* the dark band beside a ring drawn over a picture, so the ring holds on any frame */
+  --keyline: color-mix(in oklab, var(--black) 50%, var(--clear));
   --s1: 4px;
   --s2: 8px;
   --edge: 12px;
