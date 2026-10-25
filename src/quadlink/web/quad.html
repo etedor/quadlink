@@ -103,10 +103,11 @@
   /* the quad as four cards, the size of Explore's: a live tile, then name and category.
      7px wider each side, the cards' inset, so their content lines up with Explore */
   .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
-    width: calc(92cqw + 14px); padding: 6px 0; flex: none; font: 16px system-ui, sans-serif;
-    /* a band the panel's full width: what is on the TV, and a surface Explore scrolls away
-       beneath. full width so it has no side edges to line up with the column */
-    background: var(--current); box-shadow: 0 0 0 100vmax var(--current); clip-path: inset(0 -100vmax); }
+    width: calc(92cqw + 14px); margin-top: 12px; padding: 12px 0; flex: none; font: 16px system-ui, sans-serif;
+    /* a panel nearly the stage's width, 12px in from its edges: what is on the TV, and a
+       surface Explore scrolls away beneath. wide so its edges sit clear of the column's */
+    background: var(--current); box-shadow: 0 0 0 100vmax var(--current);
+    clip-path: inset(0 calc(19px - 4cqw) round var(--radius)); }
   .tile { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     background: var(--well); overflow: hidden; }
   /* first among the outline rules: pending and failure outrank a plain hover */
@@ -281,7 +282,7 @@
     body { grid-template: 58px auto minmax(0, 1fr) / minmax(0, 1fr); grid-template-areas: "top" "quad" "rail"; }
     .stage { display: contents; }
     .quad { grid-area: quad; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 4px;
-      width: auto; margin: 0 12px; }
+      width: auto; margin: 0 12px; padding: 6px 0; clip-path: inset(0 -100vmax); }
     aside { padding-top: 10px; }
     body.exploring aside { display: none; }
     .explore { grid-area: rail; width: auto; padding: 10px 10px 0; }
