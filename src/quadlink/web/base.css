@@ -27,6 +27,8 @@
   --accent-ink: color-mix(in oklab, var(--twitch) 60%, var(--white));    /* 8.8; 9.1 on black */
   --on-accent: var(--white);
   --error: var(--live);
+  /* --error is 4.4 on --ground: rings and marks only; text in --error-ink */
+  --error-ink: color-mix(in oklab, var(--live) 85%, var(--white));      /* 5.75 */
   --drop-wash: color-mix(in oklab, var(--twitch) 22%, var(--clear));
   /* the dark band beside a ring drawn over a picture, so the ring holds on any frame */
   --keyline: color-mix(in oklab, var(--black) 50%, var(--clear));

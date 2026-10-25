@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Ccircle cx=%2232%22 cy=%2232%22 r=%2232%22 fill=%22%239147ff%22/%3E%3Cg fill=%22%23ffffff%22 transform=%22translate%280 -3%29%22%3E%3Cpath d=%22M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.65 14.65 0 1 0 38.45 15.19Z%22/%3E%3Cpath d=%22M24.5 31H39.5L37 35.5H35.4L34.3 54L32 59L29.7 54L28.6 35.5H27Z%22/%3E%3C/g%3E%3C/svg%3E">
+<meta name="quadlink-token" content="__QUADLINK_TOKEN__">
+<title>quadlink · config</title>
+<link rel="stylesheet" href="/web/base.css">
+<style>
+  body { max-width: 780px; margin: 0 auto; padding: 0 var(--s4); }
+  /* as tall as the dashboard's header row, so the logo sits at the same height on both pages */
+  h1 { display: flex; align-items: center; gap: var(--s2); height: calc(var(--control) + 2 * var(--edge));
+    margin: 0; font-size: var(--t-meta); font-weight: normal; color: var(--text-quiet); }
+  .logo { display: flex; align-items: center; }
+  /* the wordmark's own proportions */
+  .logo svg { width: 143.4px; height: 24.7px; }
+  #config-path { margin: 0; font-size: var(--t-meta); color: var(--text-quiet); overflow-wrap: anywhere; }
+  section { margin-block: var(--s4) var(--edge); }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+    min-height: var(--control); margin-bottom: var(--s2); }
+  h2 { margin: 0; font-size: var(--t-meta); font-weight: normal; color: var(--text-quiet); }
+  .head label { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta);
+    color: var(--text-quiet); }
+  .head select { color: var(--text); }
+  textarea.field { display: block; width: 100%; height: auto; min-height: 260px; padding: var(--edge);
+    font: var(--t-meta)/1.5 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
+  #editor-priorities, #editor-rulesets { min-height: 520px; }
+  /* the bar keeps the actions in reach while the textareas scroll under it */
+  .actions { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--s2);
+    padding-block: var(--edge); background: var(--ground); }
+  .actions output { min-width: 0; margin-inline-end: auto; font-size: var(--t-meta); color: var(--text-quiet); }
+  .actions output.error { color: var(--error-ink); }
+</style>
+</head>
+<body>
+<header>
+<h1>
+  <a class="logo" href="/quad" aria-label="QuadLink">
+    <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
+      <g style="fill: var(--accent-fill)">
+        <g transform="scale(0.3863)">
+        <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.03 14.03 0 1 0 38.45 15.19Z"/>
+        <path d="M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z"/>
+        </g>
+        <path d="M24.92 16.02V4.25H28.82V16.02Q28.82 17.12 29.54 17.54Q30.25 17.95 32 17.95Q33.72 17.95 34.41 17.54Q35.1 17.12 35.1 16.02V4.25H39V16.02Q39 20.72 31.95 20.72Q24.92 20.72 24.92 16.02Z M48.25 4.25H53L58.85 20.47H54.9L53.45 16.2H47.52L46.1 20.47H42.25ZM52.6 13.6 50.55 7.5H50.45L48.4 13.6Z M62.15 4.25H69.05Q71.9 4.25 73.55 4.69Q75.2 5.12 75.97 6.2Q76.75 7.27 76.75 9.17V15.77Q76.75 17.62 76.02 18.64Q75.3 19.65 73.65 20.06Q72 20.47 69.07 20.47H62.15ZM68.9 17.7Q70.5 17.7 71.31 17.56Q72.12 17.42 72.49 17.02Q72.85 16.62 72.85 15.77V9.1Q72.85 7.95 71.94 7.49Q71.02 7.02 69.02 7.02H66.05V17.7Z M81.4 4.25H85.3V17.7H93.27V20.47H81.4Z M97.4 4.25H101.3V20.47H97.4Z M106.3 4.25H110.25L118.1 15.32V4.25H121.57V20.47H117.62L109.77 9.22V20.47H106.3Z M126.57 4.25H130.47V20.47H126.57ZM130.57 11.87 136.65 4.25H141.22L135.07 11.8L141.9 20.47H137.15Z"/>
+      </g>
+    </svg>
+  </a>
+  <span id="version"></span>
+</h1>
+<p id="config-path">Loading…</p>
+</header>
+
+<section>
+  <div class="head">
+    <h2 id="title-priorities">Priorities</h2>
+    <label>Sort by
+      <select id="sort-order" class="field" onchange="loadConfig()">
+        <option value="desc">High to low</option>
+        <option value="asc">Low to high</option>
+      </select>
+    </label>
+  </div>
+  <textarea id="editor-priorities" class="field" aria-labelledby="title-priorities" spellcheck="false" placeholder="Loading…"></textarea>
+</section>
+
+<section>
+  <div class="head"><h2 id="title-rulesets">Rulesets</h2></div>
+  <textarea id="editor-rulesets" class="field" aria-labelledby="title-rulesets" spellcheck="false" placeholder="Loading…"></textarea>
+</section>
+
+<section>
+  <div class="head"><h2 id="title-settings">Settings</h2></div>
+  <textarea id="editor-settings" class="field" aria-labelledby="title-settings" spellcheck="false" placeholder="Loading…"></textarea>
+</section>
+
+<div class="actions">
+  <output id="status"></output>
+  <button type="button" class="btn" onclick="loadConfig()">Reload</button>
+  <button type="button" class="btn" onclick="validateConfig()">Validate</button>
+  <button type="button" class="btn" onclick="saveConfig()">Save</button>
+</div>
+
+<script>
+  const status = document.getElementById('status');
+  const configPath = document.getElementById('config-path');
+  const versionEl = document.getElementById('version');
+  let initialized = false;
+  const token = document.querySelector('meta[name="quadlink-token"]').content;
+
+  function api(url, options = {}) {
+    const headers = {'X-QuadLink-Token': token};
+    if (options.body !== undefined) headers['Content-Type'] = 'application/json';
+    return fetch(url, {...options, headers, cache: 'no-store'});
+  }
+
+  const sections = {
+    priorities: ['priorities'],
+    rulesets: ['rulesets'],
+    settings: ['diversity_bonus', 'stability_bonus', 'category_continuity_bonus',
+               'webhook', 'proxy_playlist', 'low_latency', 'lookup_timeout',
+               'relay_segments', 'log_level']
+  };
+
+  function showStatus(message, isError = false) {
+    status.textContent = message;
+    status.className = isError ? 'error' : '';
+    if (!isError) {
+      setTimeout(() => {
+        if (status.textContent === message) status.textContent = '';
+      }, 3000);
+    }
+  }
+
+  function splitYamlSections(yaml) {
+    const lines = yaml.split('\n');
+    const result = { priorities: [], rulesets: [], settings: [] };
+    let currentSection = null;
+
+    for (const line of lines) {
+      const keyMatch = line.match(/^(\w+):/);
+      if (keyMatch) {
+        const key = keyMatch[1];
+        if (sections.priorities.includes(key)) {
+          currentSection = 'priorities';
+          continue;
+        } else if (sections.rulesets.includes(key)) {
+          currentSection = 'rulesets';
+          continue;
+        } else {
+          currentSection = 'settings';
+        }
+      }
+      if (currentSection) {
+        const nested = currentSection === 'priorities' || currentSection === 'rulesets';
+        if (nested && line.startsWith('  ')) {
+          result[currentSection].push(line.slice(2));
+        } else {
+          result[currentSection].push(line);
+        }
+      }
+    }
+
+    return {
+      priorities: result.priorities.join('\n').trim(),
+      rulesets: result.rulesets.join('\n').trim(),
+      settings: result.settings.join('\n').trim()
+    };
+  }
+
+  function mergeYamlSections() {
+    const priorities = document.getElementById('editor-priorities').value.trim();
+    const rulesets = document.getElementById('editor-rulesets').value.trim();
+    const settings = document.getElementById('editor-settings').value.trim();
+
+    const parts = [];
+
+    if (priorities) {
+      const indented = priorities.split('\n').map(l => '  ' + l).join('\n');
+      parts.push('priorities:\n' + indented);
+    }
+    if (rulesets) {
+      const indented = rulesets.split('\n').map(l => '  ' + l).join('\n');
+      parts.push('rulesets:\n' + indented);
+    }
+    if (settings) {
+      parts.push(settings);
+    }
+
+    return parts.join('\n\n');
+  }
+
+  async function loadConfig() {
+    try {
+      const sortOrder = document.getElementById('sort-order').value;
+      const res = await api(`/api/config?t=${Date.now()}&sort=${sortOrder}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      configPath.textContent = data.path || 'Unknown';
+      if (data.version) versionEl.textContent = 'v' + data.version;
+
+      const split = splitYamlSections(data.yaml);
+      document.getElementById('editor-priorities').value = split.priorities;
+      document.getElementById('editor-rulesets').value = split.rulesets;
+      document.getElementById('editor-settings').value = split.settings;
+
+      if (initialized) showStatus('Reloaded');
+      initialized = true;
+    } catch (e) {
+      showStatus('Load failed: ' + e.message, true);
+    }
+  }
+
+  async function validateConfig() {
+    try {
+      const yaml = mergeYamlSections();
+      const res = await api('/api/validate', {
+        method: 'POST',
+        body: JSON.stringify({yaml})
+      });
+      const data = await res.json();
+      if (data.valid) {
+        showStatus('Valid');
+      } else {
+        showStatus(data.error, true);
+      }
+    } catch (e) {
+      showStatus(e.message, true);
+    }
+  }
+
+  async function saveConfig() {
+    try {
+      const yaml = mergeYamlSections();
+      const res = await api('/api/config', {
+        method: 'POST',
+        body: JSON.stringify({yaml})
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      showStatus('Saved');
+    } catch (e) {
+      showStatus('Save failed: ' + e.message, true);
+    }
+  }
+
+  loadConfig();
+</script>
+</body>
+</html>

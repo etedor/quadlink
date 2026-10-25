@@ -81,7 +81,9 @@ class TestPage:
         assert resp.status == 200
         html = await resp.text()
         assert f'<meta name="quadlink-token" content="{webui.token}">' in html
+        assert TOKEN_PLACEHOLDER not in html
         assert resp.headers["Cache-Control"] == "no-store"
+        assert resp.headers["X-Frame-Options"] == "DENY"
         assert resp.headers["Referrer-Policy"] == "no-referrer"
 
     async def test_every_fetch_sends_token_and_json(self, client: TestClient) -> None:
@@ -93,8 +95,9 @@ class TestPage:
         assert "'X-QuadLink-Token': token" in api_fn
         assert "'Content-Type'] = 'application/json'" in api_fn
 
-    async def test_quad_page_links_base_css(self, client: TestClient) -> None:
-        html = await (await client.get("/quad")).text()
+    @pytest.mark.parametrize("path", ["/", "/quad"])
+    async def test_page_links_base_css(self, client: TestClient, path: str) -> None:
+        html = await (await client.get(path)).text()
         assert '<link rel="stylesheet" href="/web/base.css">' in html
 
     async def test_web_serves_css(self, client: TestClient) -> None:
@@ -108,6 +111,7 @@ class TestPage:
         "path",
         [
             "/web/quad.html",
+            "/web/config.html",
             "/web/missing.css",
             "/web/..%2Fwebui.py",
             "/web/%2E%2E%2F%2E%2E%2Fx.css",
