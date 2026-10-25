@@ -149,7 +149,7 @@
   .explore-cats:empty { display: none; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: var(--s1); min-width: 0; }
-  /* the whole of Explore scrolls, its tools and menus too, and fades out under the quad. it
+  /* the rail and Explore each scroll whole, tools and menus included. Explore fades out under the quad; it
      reaches --inset past the column so it does not clip the focus rings at the column's edges */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
     margin: 0 calc(-1 * var(--inset)); padding: 0 var(--inset); }
@@ -247,12 +247,14 @@
   </div>
 </header>
 <aside aria-label="Online streamers">
+  <div class="rail-scroll">
   <div class="tools">
     <input type="search" class="field" placeholder="Search…" aria-label="Search channels">
     <button type="button" class="btn icon filter-btn" aria-label="Filter" aria-expanded="false" data-icon="filter"></button>
     <button type="button" class="btn icon sort-btn" aria-label="Sort" aria-expanded="false" data-icon="sort"></button>
   </div>
-  <div class="rail-scroll"><ul class="rail"></ul></div>
+  <ul class="rail"></ul>
+  </div>
 </aside>
 <main class="stage">
 <div class="quad">
