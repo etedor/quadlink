@@ -135,9 +135,8 @@
     background: none; color: var(--text-quiet); font: 600 13px/1 system-ui, sans-serif;
     font-variant-numeric: tabular-nums; }
   .chip svg { width: 13px; height: 13px; }
-  /* filled: the tile it is on; hollow (back): the tile a drop put it off */
+  /* the tile it is on */
   .chip.slot { border-color: var(--accent); background: var(--accent); color: var(--white); }
-  .chip.back { border-color: var(--accent); color: var(--text); }
   /* every viewer count on the page: a small live dot, then the compact number */
   .viewers { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--text-quiet);
     font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -148,11 +147,6 @@
   button.chip:hover, button.chip:focus-visible { border-color: var(--error);
     color: var(--error); background: var(--popover); }
   button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
-  /* put back restores, so it lights up in the accent rather than the red of removal */
-  button.chip.back:hover, button.chip.back:focus-visible {
-    border-color: var(--accent); color: var(--white); background: var(--accent); }
-  button.chip.back:disabled { border-color: var(--clear); color: var(--text-quiet);
-    background: none; cursor: default; }
   /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
   /* a picked row waits for a tile click: the click alternative to dragging */
@@ -213,10 +207,6 @@
   .card .pic { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     overflow: hidden; background: var(--well); }
   .card .pic img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
-  .card .pic .chip { position: absolute; background: var(--scrim); color: var(--text); }
-  .card .pic .act { right: 6px; top: 6px; }
-  .card .pic .chip.slot { background: var(--accent); color: var(--white); }
-  .card .pic button.chip.back:hover, .card .pic button.chip.back:focus-visible { background: var(--accent); }
   .card .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
   .card .line .viewers { margin-left: auto; font-size: 14px; }
   .card .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -232,7 +222,6 @@
     font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity 0.12s;
     overflow: hidden; overflow-wrap: anywhere; }
   .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .peek { opacity: 1; }
-  .card .pic .chip { z-index: 1; }
   .card.skeleton { cursor: default; }
   .card.skeleton .pic { animation: pulse 1s infinite alternate; }
   .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--field); }
@@ -1137,10 +1126,6 @@
     }
   }
 
-  function viewOf(channel) {
-    return latest?.channels.find(c => c.channel === channel) || null;
-  }
-
   // a typed search shows the channels it found, if any; a chosen category, its listing
   function showStreams() {
     if (ex.searching && ex.found.length) {
@@ -1251,7 +1236,7 @@
     const peek = document.createElement('div');
     peek.className = 'peek';
     peek.textContent = cleanTitle(s.title);
-    pic.append(img, peek, slotChip(s));
+    pic.append(img, peek);
     const line = document.createElement('div');
     line.className = 'line';
     const name = document.createElement('span');
@@ -1275,29 +1260,6 @@
     return li;
   }
 
-  // the tile a card's channel is on
-  function slotChip(s) {
-    const slot = viewOf(s.channel)?.slot;
-    if (slot == null) return document.createTextNode('');
-    const el = document.createElement('span');
-    el.className = 'chip slot act';
-    el.textContent = slot + 1;
-    el.title = 'Slot ' + (slot + 1);
-    return el;
-  }
-
-  function markCards() {
-    if (!exploring() || !ex.listing) return;
-    const byChannel = new Map([...ex.listing.streams, ...ex.found].map(s => [s.channel, s]));
-    cards.querySelectorAll('.card[data-channel]').forEach(li => {
-      const s = byChannel.get(li.dataset.channel);
-      if (!s) return;
-      const pic = li.querySelector('.pic');
-      pic.querySelector('.act')?.remove();
-      pic.append(slotChip(s));
-    });
-  }
-
   cards.addEventListener('click', e => {
     const li = e.target.closest('.card[data-channel]');
     if (li && !e.target.closest('button')) pick(li.dataset.channel);
@@ -1315,7 +1277,6 @@
     latest = JSON.parse(e.data);
     render();
     markTiles();
-    markCards();
     if (before) coverChanges(before);
   };
   // a restart changes the page token, and EventSource never retries a refusal
