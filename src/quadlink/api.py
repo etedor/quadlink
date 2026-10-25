@@ -87,7 +87,8 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             ),
         }
         if stream is None:
-            return {"display_name": channel, "title": None, "category": None, **numbers}
+            name = view.display_name if view is not None else channel
+            return {"display_name": name, "title": None, "category": None, **numbers}
         meta = stream.metadata
         return {
             "display_name": meta.author,

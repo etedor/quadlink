@@ -27,6 +27,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from quadlink import __main__ as cli
 from quadlink import logconfig
+from quadlink.api import snapshot_json
 from quadlink.daemon import Daemon, run_daemon
 from quadlink.dashboard import DashboardState, QuadStreamLogin
 from quadlink.health import HealthServer
@@ -754,6 +755,19 @@ class TestOperatorActions:
         assert (held.pinned, held.reserved_for) == (False, "e")
         views = {c.channel: c for c in snap.channels}
         assert (views["e"].state, views["e"].pin_slot) == (DashboardState.OFFLINE, 3)
+
+    async def test_offline_channel_keeps_its_last_display_name(self, make_daemon, twitch):
+        twitch.display["e"] = "Zed"
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            twitch.go_offline("e")
+            await loops.refresh()
+        views = {c.channel: c for c in daemon.snapshot().channels}
+        assert (views["e"].state, views["e"].display_name) == (DashboardState.OFFLINE, "Zed")
+        rows = {c["channel"]: c for c in snapshot_json(daemon.snapshot())["channels"]}
+        assert rows["e"]["display_name"] == "Zed"
 
     async def test_swap_waits_for_a_live_pool(self, make_daemon, twitch):
         daemon = make_daemon()

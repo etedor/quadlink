@@ -130,6 +130,8 @@ class Daemon:
         self.channel_statuses: list[ChannelStatus] = []
         # wall-clock time (epoch seconds) of that refresh; None before the first
         self.statuses_at: float | None = None
+        # last display name seen live per channel: an offline channel has no stream to name it
+        self.display_names: dict[str, str] = {}
         # called after anything the snapshot shows may have changed
         self._watchers: list[Callable[[], None]] = []
         self._stats_client = httpx.AsyncClient()
@@ -308,6 +310,9 @@ class Daemon:
         candidates = await self.processor.process_stream_groups()
         self.channel_statuses = self.processor.statuses()
         self.statuses_at = time.time()
+        self.display_names |= {
+            s.channel: s.stream.metadata.author for s in self.channel_statuses if s.stream
+        }
         if serve_local:
             candidates += self._still_playing(candidates)
         self._refreshed_at = self.slot_relay.clock()
@@ -462,6 +467,7 @@ class Daemon:
             self.statuses_at,
             self._quadstream_login(),
             self.viewers.stats,
+            self.display_names,
         )
 
     def watch(self, callback: Callable[[], None]) -> None:

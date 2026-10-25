@@ -37,7 +37,7 @@ class SlotView:
         slot: Slot number 0-3.
         channel: Channel on screen, "" for an empty slot.
         display_name: Twitch display name of that channel, or its login when
-            the last refresh did not resolve it.
+            no refresh has resolved it.
         pinned: The channel on screen holds this tile.
         reserved_for: The tile's holder while it is out of the pool; it takes the
             tile back if it returns within the grace.
@@ -56,6 +56,7 @@ class ChannelView:
 
     Attributes:
         channel: Channel key (lowercase Twitch login).
+        display_name: Twitch display name, or the login when no refresh has resolved it.
         state: Dashboard state.
         slot: Slot it is on screen in, if any.
         pin_slot: Slot it holds, whether or not it is on screen.
@@ -67,6 +68,7 @@ class ChannelView:
     """
 
     channel: str
+    display_name: str
     state: DashboardState
     slot: int | None
     pin_slot: int | None
@@ -101,10 +103,18 @@ def snapshot(
     refreshed_at: float | None,
     quadstream: QuadStreamLogin = QuadStreamLogin.OFF,
     stats: dict[str, Stats] | None = None,
+    known_names: dict[str, str] | None = None,
 ) -> Snapshot:
-    """Build the dashboard view from the daemon's current state."""
+    """Build the dashboard view from the daemon's current state.
+
+    known_names holds display names from earlier refreshes, for channels the
+    last refresh found without a stream.
+    """
     stats = stats or {}
-    names = {s.channel: s.stream.metadata.author for s in statuses if s.stream is not None}
+    names = {
+        **(known_names or {}),
+        **{s.channel: s.stream.metadata.author for s in statuses if s.stream is not None},
+    }
     holds = overrides.holds
     slots = []
     for slot, channel in enumerate(state.channels):
@@ -123,6 +133,7 @@ def snapshot(
     channels = [
         ChannelView(
             channel=s.channel,
+            display_name=names.get(s.channel, s.channel),
             state=_state(s, positions),
             slot=positions.get(s.channel),
             pin_slot=overrides.pins.get(s.channel),
