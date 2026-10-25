@@ -62,8 +62,6 @@
        surface Explore scrolls away beneath. wide so its edges sit clear of the column's */
     background: var(--raised); box-shadow: 0 0 0 100vmax var(--raised);
     clip-path: inset(0 calc(19px - 4cqw) round var(--r-outer)); }
-  .tile { position: relative; aspect-ratio: 16 / 9; border-radius: var(--r-inner);
-    background: var(--well); overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   /* stands in for the incoming channel until the player reaches the splice */
   .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
@@ -78,22 +76,29 @@
     pointer-events: none; }
   .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
     gap: 5px; }
-  .rail li { display: flex; align-items: center; gap: 12px; padding: 7px; border-radius: var(--r-outer); }
-  @media (hover: hover) { .rail li:hover { background-image: linear-gradient(var(--veil), var(--veil)); } }
-  .rail .thumb { flex: none; width: 96px; }
-  .rail .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .rail .name { font-weight: 600; }
-  /* the viewer count ends the name's line, as on the cards; the name gives way first */
-  .rail .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .rail .line .viewers { margin-left: auto; font-size: 14px; }
-  /* every glyph sits at the category's line end, so the category keeps the rest of the row */
-  .rail .marks { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
-    color: var(--text-quiet); }
-  /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
-  /* one chip for everything a row carries: facts (viewers, slot) and actions (put back,
-     remove); only colour and behaviour differ */
-  /* the tile it is on */
-  .chip.slot { --chip-bg: var(--accent-fill); --chip-fg: var(--on-accent); }
+  /* one channel: a picture, then name and category. a card stacks them, a row sets them side by side */
+  .item { position: relative; display: flex; flex-direction: column; gap: 6px; padding: var(--inset);
+    border-radius: var(--r-outer); min-width: 0; }
+  .item.row { flex-direction: row; align-items: center; gap: var(--edge); }
+  .item.row > .thumb { flex: none; width: 96px; }
+  .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  /* fixed heights keep neighbours level whether or not a line carries a chip */
+  .line, .sub { display: flex; align-items: center; gap: var(--inset); min-width: 0; height: var(--line); }
+  .name { font-weight: 600; }
+  /* the viewer count ends the name's line; the name gives way first */
+  .line .viewers { margin-left: auto; font-size: var(--t-meta); }
+  .lang { flex: none; color: var(--text-quiet); font-size: var(--t-meta); }
+  .sub { color: var(--text-quiet); font-size: var(--t-meta); }
+  .sub .cat { flex: 1; }
+  /* a pickable item is one button: drag starts on the item, a click or key on the button picks */
+  .pickable { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none;
+    transition: background-color var(--t-state), box-shadow var(--t-state), opacity var(--t-state); }
+  .pick { position: absolute; inset: 0; margin: 0; padding: 0; border: 0; border-radius: inherit;
+    background: none; cursor: grab; }
+  @media (hover: hover) { .pickable:hover { background-image: linear-gradient(var(--veil), var(--veil)); } }
+  /* a touch long-press, until it becomes a drag or a scroll */
+  .pickable.pressing { background-image: linear-gradient(var(--veil), var(--veil)); }
+  .lifted { opacity: 0.5; }
   /* every viewer count on the page: a small live dot, then the compact number */
   .viewers { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--text-quiet);
     font-weight: 400; font-variant-numeric: tabular-nums; }
@@ -103,19 +108,16 @@
   :where(.btn, .chip):is([aria-pressed="true"], [aria-expanded="true"]) .viewers::before {
     background: currentColor; }
   /* a picked row or card waits for a tile click: the click alternative to dragging */
-  .picked { box-shadow: inset 0 0 0 var(--ring) var(--accent-ink); transition: box-shadow var(--t-state); }
-  /* one 16:9 picture well; a missing picture shows the raised surface, not a black hole */
+  .picked { box-shadow: inset 0 0 0 var(--ring) var(--accent-ink); }
+  /* one 16:9 picture well; a missing picture shows the raised surface, not a black hole.
+     a tile's video fills its well, so the tile keeps the black behind letterboxing */
   .thumb { position: relative; display: block; aspect-ratio: 16 / 9; border-radius: var(--r-inner);
-    background: var(--well); overflow: hidden; object-fit: cover; }
-  .thumb > img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .thumb:not([src]):not(:has(img[src])) { background: var(--raised); }
-  /* category and viewer count share the second line; the category gives way first */
-  .rail .meta { display: flex; align-items: center; gap: 10px; color: var(--text-quiet); font-size: 14px; }
-  .rail .cat { flex: 1; min-width: 0; }
-  /* drag: rows and tiles can be picked up; long-press callouts would steal touch drags */
-  .rail li, .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
-  .rail li { cursor: grab; }
-  .rail img { pointer-events: none; }
+    background: var(--well); overflow: hidden; }
+  /* zero specificity, so the tile's .cover keeps its contain fit */
+  :where(.thumb) > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .thumb:not(:has(video, img[src])) { background: var(--raised); }
+  /* long-press callouts would steal touch drags */
+  .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   /* the Explore button switches the phone's one list; desktop shows the rail and Explore */
   @media (min-width: 721px) { .explore-btn { display: none; } }
   .explore { flex: 1; min-height: 0; width: 92cqw; display: flex; flex-direction: column;
@@ -146,27 +148,17 @@
     mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px); }
   .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 16px 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
-  .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--r-outer);
-    cursor: grab; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
-  @media (hover: hover) { .card:hover { background-image: linear-gradient(var(--veil), var(--veil)); } }
-  .card .pic img { pointer-events: none; }
-  .card .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .card .line .viewers { margin-left: auto; font-size: 14px; }
-  .card .name { font-weight: 600; }
-  .card .cat { margin-top: -4px; color: var(--text-quiet); font-size: 14px; }
-  /* the language flag reads as plain text beside the name */
-  .card .line .chip { --chip-bg: var(--clear); --chip-fg: var(--text-quiet); }
   /* the title is opt-in: a cleaned copy fades in over the picture on hover, focus or
      a pick, so the grid never shifts */
-  .card .peek { display: flex; position: absolute; inset: 0; align-items: flex-end;
+  .peek { display: flex; position: absolute; inset: 0; align-items: flex-end;
     padding: 34px 10px 36px; box-sizing: border-box; background: var(--scrim); color: var(--text);
     font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity 0.12s;
     overflow: hidden; overflow-wrap: anywhere; }
-  .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .peek { opacity: 1; }
-  .card.skeleton { cursor: default; }
-  .card.skeleton .pic { aspect-ratio: 16 / 9; border-radius: var(--r-inner); background: var(--well);
-    animation: pulse 1s infinite alternate; }
-  .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--raised); }
+  .pickable:is(:hover, :has(:focus-visible), .picked) .peek { opacity: 1; }
+  /* a placeholder item while its list loads; under reduced motion it holds still but stays */
+  .skeleton { animation: pulse 1s infinite alternate; }
+  .skeleton .bar { width: 100%; height: 12px; border-radius: var(--r-pill); background: var(--raised); }
+  .skeleton .line .bar { width: 60%; }
   .explore-end { margin: 0; padding: 4px 7px 16px; color: var(--text-quiet); font-size: 14px; }
   .explore-end:empty { display: none; }
   .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 144px; aspect-ratio: 16 / 9;
@@ -180,11 +172,10 @@
   .tile.target::after { box-shadow: inset 0 0 0 4px var(--accent-ink); background: var(--drop-wash); }
   .tile.pending::after { box-shadow: inset 0 0 0 3px var(--accent-ink); animation: pulse 1s infinite alternate; }
   .tile.failed::after { box-shadow: inset 0 0 0 3px var(--error); }
-  .tile.lifted { opacity: 0.5; }
   @keyframes pulse { to { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
-    .tile.pending::after, .card.skeleton .pic { animation: none; }
-    .cover, .card .peek { transition: none; }
+    .tile.pending::after, .skeleton { animation: none; }
+    .cover, .peek { transition: none; }
   }
   /* phones: top bar, the quad as 2x2 cards, then the rail or Explore */
   @media (max-width: 720px) {
@@ -241,45 +232,53 @@
 </aside>
 <main class="stage">
 <div class="quad">
-  <div class="card quad-card">
-    <div class="tile">
+  <div class="item quad-card">
+    <div class="tile thumb">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
       <button class="inset-focus" aria-label="Slot 1" aria-pressed="false"></button>
     </div>
-    <div class="line"><span class="name truncate"></span></div>
-    <div class="cat"><button type="button" class="btn link truncate what"></button></div>
+    <div class="who">
+      <div class="line"><span class="name truncate"></span></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+    </div>
   </div>
-  <div class="card quad-card">
-    <div class="tile">
+  <div class="item quad-card">
+    <div class="tile thumb">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
       <button class="inset-focus" aria-label="Slot 2" aria-pressed="false"></button>
     </div>
-    <div class="line"><span class="name truncate"></span></div>
-    <div class="cat"><button type="button" class="btn link truncate what"></button></div>
+    <div class="who">
+      <div class="line"><span class="name truncate"></span></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+    </div>
   </div>
-  <div class="card quad-card">
-    <div class="tile">
+  <div class="item quad-card">
+    <div class="tile thumb">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
       <button class="inset-focus" aria-label="Slot 3" aria-pressed="false"></button>
     </div>
-    <div class="line"><span class="name truncate"></span></div>
-    <div class="cat"><button type="button" class="btn link truncate what"></button></div>
+    <div class="who">
+      <div class="line"><span class="name truncate"></span></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+    </div>
   </div>
-  <div class="card quad-card">
-    <div class="tile">
+  <div class="item quad-card">
+    <div class="tile thumb">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
       <button class="inset-focus" aria-label="Slot 4" aria-pressed="false"></button>
     </div>
-    <div class="line"><span class="name truncate"></span></div>
-    <div class="cat"><button type="button" class="btn link truncate what"></button></div>
+    <div class="who">
+      <div class="line"><span class="name truncate"></span></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+    </div>
   </div>
 </div>
 <section class="explore" aria-label="Explore" hidden>
@@ -437,9 +436,10 @@
   function pick(channel) {
     picked = channel && channel !== picked ? channel : null;
     document.body.classList.toggle('picking', picked !== null);
-    document.querySelectorAll('.rail li, .cards .card[data-channel]').forEach(el => {
-      el.classList.toggle('picked', el.dataset.channel === picked);
-      el.setAttribute('aria-pressed', String(el.dataset.channel === picked));
+    document.querySelectorAll('.pickable').forEach(el => {
+      const on = el.dataset.channel === picked;
+      el.classList.toggle('picked', on);
+      el.querySelector('.pick').setAttribute('aria-pressed', String(on));
     });
   }
 
@@ -475,65 +475,77 @@
     b.addEventListener('click', open);
   });
 
-  rail.addEventListener('click', e => {
-    const li = e.target.closest('li[data-channel]');
-    if (li) pick(li.dataset.channel);
-  });
-  rail.addEventListener('keydown', e => {
-    const li = e.target.closest('li[data-channel]');
-    if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(li.dataset.channel); }
-  });
+  // rows and cards pick through their button, so Enter and Space come with it
+  for (const list of [rail, document.querySelector('.cards')]) {
+    list.addEventListener('click', e => {
+      const button = e.target.closest('.pick');
+      if (button) pick(button.parentElement.dataset.channel);
+    });
+  }
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
     if (picked) pick(null);
     else if (exploring() && phone.matches) setExploring(false);
   });
 
-  function row(c) {
-    const li = document.createElement('li');
-    const img = document.createElement('img');
-    img.className = 'thumb';
-    img.alt = '';
-    const image = thumb(c.channel);
-    if (image) img.src = image;
-    const who = document.createElement('div');
-    who.className = 'who';
-    const name = document.createElement('span');
-    name.className = 'name truncate';
-    name.textContent = c.display_name || c.channel;
-    const cat = document.createElement('span');
-    cat.className = 'cat truncate';
-    const label = STATES.find(([s]) => s === c.state);
-    // glyphs and row shading carry these states, so the line keeps to the category
-    cat.textContent = ['live', 'in quad'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
-    const meta = document.createElement('div');
-    meta.className = 'meta';
-    meta.append(cat);
-    const line = document.createElement('div');
-    line.className = 'line';
-    line.append(name);
-    if (c.viewers != null) line.append(viewerCount(c.viewers));
-    const marks = [];
-    if (c.slot != null) {
-      const badge = document.createElement('span');
-      badge.className = 'chip slot';
-      badge.textContent = c.slot + 1;
-      badge.title = 'Slot ' + (c.slot + 1);
-      marks.push(badge);
-    }
-    if (marks.length) {
-      const box = document.createElement('span');
-      box.className = 'marks';
-      box.append(...marks);
-      meta.append(box);
-    }
-    who.append(line, meta);
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  // one channel for the rail (row) or Explore (card); the quad's cards are the same
+  // markup, written in the page, with the tile as their picture
+  function item(c, { row = false, image = null, title = null } = {}) {
+    const name = c.display_name || c.channel;
+    const li = el('li', row ? 'item row pickable' : 'item pickable');
     li.dataset.channel = c.channel;
     li.classList.toggle('picked', c.channel === picked);
-    li.tabIndex = 0;
-    li.setAttribute('role', 'button');
-    li.setAttribute('aria-pressed', String(c.channel === picked));
-    li.append(img, who);
+    // the list redraws on every snapshot, mid-drag too
+    li.classList.toggle('lifted', drag?.active === true && drag.source.channel === c.channel);
+    const pic = el('div', 'thumb');
+    // no img without a picture: WebKit draws a broken-image edge round an empty one
+    if (image) {
+      const img = el('img', '');
+      img.alt = '';
+      img.loading = 'lazy';
+      img.src = image;
+      pic.append(img);
+    }
+    if (title != null) pic.append(el('div', 'peek', title));
+    const line = el('div', 'line');
+    line.append(el('span', 'name truncate', name));
+    // only Explore knows the language; the viewer's own goes without saying
+    if (c.language && c.language.toLowerCase() !== own?.language) {
+      const lang = el('span', 'lang', flag(c.language) || c.language);
+      lang.title = languageName(c.language);
+      line.append(lang);
+    }
+    line.append(viewerCount(c.viewers));
+    const sub = el('div', 'sub');
+    sub.append(el('span', 'cat truncate', c.category || ''));
+    if (c.state === 'offline') sub.append(el('span', 'chip', 'Offline'));
+    const who = el('div', 'who');
+    who.append(line, sub);
+    const button = el('button', 'pick inset-focus');
+    button.type = 'button';
+    button.setAttribute('aria-label', name);
+    button.setAttribute('aria-pressed', String(c.channel === picked));
+    li.append(pic, who, button);
+    return li;
+  }
+
+  function skeleton(kind) {
+    const li = el('li', kind === 'row' ? 'item row skeleton' : 'item skeleton');
+    li.setAttribute('aria-hidden', 'true');
+    const line = el('div', 'line');
+    line.append(el('div', 'bar'));
+    const sub = el('div', 'sub');
+    sub.append(el('div', 'bar'));
+    const who = el('div', 'who');
+    who.append(line, sub);
+    li.append(el('div', 'thumb'), who);
     return li;
   }
 
@@ -565,7 +577,7 @@
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
     // the quad's channels are its cards, not rows
-    rail.replaceChildren(...rows.map(row));
+    rail.replaceChildren(...rows.map(c => item(c, { row: true, image: thumb(c.channel) })));
     document.querySelector('.filter-btn').classList.toggle('changed',
       cats.size > 0 || view.show.slice().sort().join() !== DEFAULTS.show.slice().sort().join());
     document.querySelector('.sort-btn').classList.toggle('changed', view.sort !== DEFAULTS.sort);
@@ -692,7 +704,8 @@
     const image = source.image();
     if (image) ghost.style.backgroundImage = 'url("' + image + '")';
     document.body.append(ghost);
-    if (source.tile) source.tile.classList.add('lifted');
+    drag.el.classList.remove('pressing');
+    drag.el.classList.add('lifted');
     drag = { ...drag, ghost, source, active: true };
     move(e);
   }
@@ -717,7 +730,9 @@
   function end(e, cancelled) {
     const { source, ghost } = drag;
     ghost.remove();
-    tiles.forEach(t => t.classList.remove('target', 'lifted'));
+    tiles.forEach(t => t.classList.remove('target'));
+    // a redrawn list may hold a newer copy of the source
+    document.querySelectorAll('.lifted').forEach(x => x.classList.remove('lifted'));
     const over = cancelled ? null : tileUnder(e.clientX, e.clientY);
     drag = null;
     if (!over) return;
@@ -742,17 +757,19 @@
     const far = Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > DRAG_DISTANCE;
     if (!far) return;
     // a touch that moves before the long press is a scroll, not a drag
-    if (drag.touch) { clearTimeout(drag.timer); drag = null; return; }
+    if (drag.touch) { clearTimeout(drag.timer); drag.el.classList.remove('pressing'); drag = null; return; }
     start(e, drag.pending());
   });
   document.addEventListener('pointerup', e => {
     if (!drag || e.pointerId !== drag.id) return;
     clearTimeout(drag.timer);
+    drag.el.classList.remove('pressing');
     if (drag.active) { dragged = true; end(e, false); } else drag = null;
   });
   document.addEventListener('pointercancel', e => {
     if (!drag || e.pointerId !== drag.id) return;
     clearTimeout(drag.timer);
+    drag.el.classList.remove('pressing');
     if (drag.active) end(e, true); else drag = null;
   });
   // once a touch drag starts, keep the page from scrolling under it
@@ -761,19 +778,21 @@
   document.addEventListener('click', e => { if (dragged) { dragged = false; e.stopPropagation(); e.preventDefault(); } }, true);
 
   rail.addEventListener('pointerdown', e => {
-    const li = e.target.closest('li[data-channel]');
+    const li = e.target.closest('.pickable');
     if (!li || e.button !== 0 || drag) return;
     const img = li.querySelector('img');
     const source = () => ({ channel: li.dataset.channel, image: () => img && img.src });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: li, active: false, touch: e.pointerType === 'touch', pending: source };
+    if (drag.touch) li.classList.add('pressing');
     if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
   });
   document.querySelector('.cards').addEventListener('pointerdown', e => {
-    const card = e.target.closest('.card[data-channel]');
-    if (!card || e.button !== 0 || drag || e.target.closest('button')) return;
+    const card = e.target.closest('.pickable');
+    if (!card || e.button !== 0 || drag) return;
     const img = card.querySelector('img');
     const source = () => ({ channel: card.dataset.channel, image: () => img && img.src });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: card, active: false, touch: e.pointerType === 'touch', pending: source };
+    if (drag.touch) card.classList.add('pressing');
     if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
   });
   tiles.forEach((tile, slot) => tile.addEventListener('pointerdown', e => {
@@ -785,7 +804,7 @@
         return channel ? '/api/slots/' + slot + '/still.jpg?c=' + encodeURIComponent(channel) : null;
       },
     });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, active: false, touch: e.pointerType === 'touch', pending: source };
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: tile, active: false, touch: e.pointerType === 'touch', pending: source };
     if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
   }));
 
@@ -971,6 +990,10 @@
       showStreams();
       return;
     }
+    if (ex.searching) {
+      cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
+      endNote.textContent = '';
+    }
     try {
       const body = await getJSON('/api/explore/channels?q=' + encodeURIComponent(q));
       if (request !== ex.foundRequest) return;
@@ -1033,28 +1056,13 @@
     exSortBtn.classList.toggle('changed', ex.sort !== 'viewers');
   }
 
-  function skeleton() {
-    const li = document.createElement('li');
-    li.className = 'card skeleton';
-    li.setAttribute('aria-hidden', 'true');
-    const pic = document.createElement('div');
-    pic.className = 'pic';
-    const a = document.createElement('div');
-    a.className = 'bar';
-    a.style.width = '60%';
-    const b = document.createElement('div');
-    b.className = 'bar';
-    li.append(pic, a, b);
-    return li;
-  }
-
   async function loadStreams() {
     const request = ++ex.request;
     const id = ex.category?.id ?? '';
     ex.listing = null;
     note.textContent = '';
     endNote.textContent = '';
-    cards.replaceChildren(...Array.from({ length: SKELETONS }, skeleton));
+    cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
     scroller.scrollTop = 0;
     scroller.classList.remove('under');
     try {
@@ -1162,60 +1170,14 @@
     return t;
   }
 
-  function card(s) {
-    const li = document.createElement('li');
-    li.className = 'card';
-    li.dataset.channel = s.channel;
-    li.tabIndex = 0;
-    li.classList.add('inset-focus');
-    li.setAttribute('aria-pressed', String(s.channel === picked));
-    li.classList.toggle('picked', s.channel === picked);
-    const pic = document.createElement('div');
-    pic.className = 'pic thumb';
-    const img = document.createElement('img');
-    img.alt = '';
-    img.loading = 'lazy';
-    // Twitch refreshes previews every few minutes; each opening of Explore gets fresh ones
-    if (s.thumbnail) img.src = s.thumbnail + '?t=' + ex.opened;
-    const viewers = viewerCount(s.viewers);
-    const peek = document.createElement('div');
-    peek.className = 'peek';
-    peek.textContent = cleanTitle(s.title);
-    pic.append(img, peek);
-    const line = document.createElement('div');
-    line.className = 'line';
-    const name = document.createElement('span');
-    name.className = 'name truncate';
-    name.textContent = s.display_name;
-    line.append(name);
-    // the viewer's own language goes without saying
-    if (s.language && s.language.toLowerCase() !== own?.language) {
-      const lang = document.createElement('span');
-      lang.className = 'chip';
-      lang.textContent = flag(s.language) || s.language;
-      lang.title = languageName(s.language);
-      line.append(lang);
-    }
-    line.append(viewers);
-    // the category sits under the name, as on the rail's rows
-    const cat = document.createElement('div');
-    cat.className = 'cat truncate';
-    cat.textContent = s.category;
-    li.append(pic, line, cat);
-    return li;
-  }
+  // Twitch refreshes previews every few minutes; each opening of Explore gets fresh ones
+  const card = s => item(s, { image: s.thumbnail && s.thumbnail + '?t=' + ex.opened, title: cleanTitle(s.title) });
 
-  cards.addEventListener('click', e => {
-    const li = e.target.closest('.card[data-channel]');
-    if (li && !e.target.closest('button')) pick(li.dataset.channel);
-  });
-  cards.addEventListener('keydown', e => {
-    const li = e.target.closest('.card[data-channel]');
-    if (li && e.target === li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(li.dataset.channel); }
-  });
   if (!phone.matches || location.hash === '#explore') setExploring(true);
   phone.addEventListener('change', () => { if (!phone.matches) setExploring(true); });
 
+  // placeholder rows until the first snapshot
+  rail.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('row')));
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
   events.onmessage = e => {
     const before = latest;
