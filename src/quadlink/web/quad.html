@@ -133,9 +133,10 @@
   .rail .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   .rail .name, .rail .cat { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rail .name { font-weight: 600; }
-  /* override glyphs follow the name; the name gives way first */
+  /* the viewer count ends the name's line, as on the cards; the name gives way first */
   .rail .line { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  /* every glyph sits at the line's end, so the name keeps the rest of the row */
+  .rail .line .viewers { margin-left: auto; font-size: 14px; }
+  /* every glyph sits at the category's line end, so the category keeps the rest of the row */
   .rail .marks { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
     color: var(--text-quiet); }
   /* WCAG 2.5.8: a 29px hit area around a 16px glyph */
@@ -732,10 +733,10 @@
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.append(cat);
-    if (c.viewers != null) meta.append(viewerCount(c.viewers));
     const line = document.createElement('div');
     line.className = 'line';
     line.append(name);
+    if (c.viewers != null) line.append(viewerCount(c.viewers));
     const marks = [];
     const displayName = c.display_name || c.channel;
     if (c.replaced_slot != null) marks.push(backButton(c, displayName));
@@ -751,7 +752,7 @@
       const box = document.createElement('span');
       box.className = 'marks';
       box.append(...marks);
-      line.append(box);
+      meta.append(box);
     }
     li.classList.toggle('replaced', c.replaced_slot != null);
     who.append(line, meta);
