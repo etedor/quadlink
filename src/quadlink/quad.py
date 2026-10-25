@@ -15,16 +15,25 @@ EMPTY_SLOTS = ("", "", "", "")
 
 @dataclass(frozen=True)
 class Hold:
-    """A tile the operator filled by a drop.
+    """A tile the operator filled by a drop or locked.
+
+    A hard hold keeps the tile until its holder goes offline. A soft hold
+    competes for it as an on-screen stream scored as the stream it replaced
+    (see quad._soft_score), and ends when it loses.
 
     Attributes:
         holder: The channel the tile shows while it is in the pool.
-        replaced: The channel on the tile before the first drop. It gets the
-            tile back when the hold ends and takes no tile until then.
+        replaced: The channel on the tile before the first drop. It takes no
+            tile while the hold lasts; when a hard hold ends, it gets the tile back.
+        soft: The hold is soft.
+        priority: The replaced channel's priority when the hold was made; 0
+            when the hold replaced nothing.
     """
 
     holder: str
     replaced: str | None = None
+    soft: bool = False
+    priority: int = 0
 
 
 @dataclass(frozen=True)
@@ -58,11 +67,18 @@ class Overrides:
             raise ValueError(f"outside channels are never replaced: {sorted(listed_extras)}")
         if idle := self.extras - set(holders):
             raise ValueError(f"outside channels must hold a tile: {sorted(idle)}")
+        if stray := [h.holder for h in self.holds.values() if h.priority and not h.replaced]:
+            raise ValueError(f"holds with a priority but nothing replaced: {stray}")
 
     @property
     def pins(self) -> dict[str, int]:
         """Slot of each holder."""
         return {h.holder: slot for slot, h in self.holds.items()}
+
+    @property
+    def hard_pins(self) -> dict[str, int]:
+        """Slot of each holder of a hard hold."""
+        return {h.holder: slot for slot, h in self.holds.items() if not h.soft}
 
     @property
     def replaced(self) -> set[str]:
@@ -100,8 +116,9 @@ def compose(
 ) -> QuadState:
     """Compose the next quad from the live pool, the previous state and the overrides.
 
-    The pool is ordered best first. Replaced channels drop out of it; holders
-    in it take their slots; the other slots fill by adjusted priority.
+    The pool is ordered best first. Replaced channels drop out of it; hard
+    holders in it take their slots; soft holders in it compete for theirs as
+    on-screen streams; the other slots fill by adjusted priority.
     Channels already on screen keep their slots; newcomers take freed slots
     lowest-first in priority order. The input state is not modified, and an empty
     pool returns it as is, so slots and categories survive a cycle in which every
@@ -133,7 +150,14 @@ def _compose(
         s.stream.channel: s for s in reversed(pool) if _eligible(s.stream.channel, overrides)
     }
     pinned = _reclaimed(overrides, candidate_map)
-    existing_streams = _existing_streams(state, candidate_map, pinned)
+    soft = {
+        h.holder: (slot, h)
+        for slot, h in overrides.holds.items()
+        if h.soft and h.holder in candidate_map
+    }
+    existing_streams = _existing_streams(
+        state, candidate_map, pinned, {c: slot for c, (slot, _) in soft.items()}
+    )
     existing_channels = {s.stream.channel for s in existing_streams}
     departed_categories = _departed_categories(state, existing_channels, pinned)
 
@@ -145,7 +169,9 @@ def _compose(
     )
 
     competitors = [
-        s for s in pool if s.stream.channel in candidate_map and s.stream.channel not in pinned
+        _soft_score(s, soft[s.stream.channel][1], config) if s.stream.channel in soft else s
+        for s in pool
+        if s.stream.channel in candidate_map and s.stream.channel not in pinned
     ]
     adjusted = _apply_adjustments(
         config,
@@ -171,14 +197,14 @@ def _compose(
 def _reclaimed(
     overrides: Overrides, candidate_map: dict[str, PrioritizedStream]
 ) -> dict[str, PrioritizedStream]:
-    """Pinned channels in the pool, each positioned at its pinned slot.
+    """Hard-pinned channels in the pool, each positioned at its pinned slot.
 
-    A pinned channel takes its slot back whenever it is in the pool, from
+    A hard-pinned channel takes its slot back whenever it is in the pool, from
     whichever channel holds the slot meanwhile.
     """
     return {
         channel: replace(candidate_map[channel], position=slot)
-        for channel, slot in overrides.pins.items()
+        for channel, slot in overrides.hard_pins.items()
         if channel in candidate_map
     }
 
@@ -187,14 +213,21 @@ def _existing_streams(
     state: QuadState,
     candidate_map: dict[str, PrioritizedStream],
     pinned: dict[str, PrioritizedStream],
+    soft: Mapping[str, int],
 ) -> list[PrioritizedStream]:
     """Unpinned streams of the previous quad still in the pool, with their slots.
 
-    The occupant of a slot a pinned channel reclaims is left out: it competes as
-    a newcomer, with no stability bonus, so it cannot push out a channel that has
-    held its tile all along.
+    A soft holder in the pool counts as on screen at its held slot, even while
+    back from an absence within the grace. The occupant of a slot a holder
+    reclaims is left out: it competes as a newcomer, with no stability bonus,
+    so it cannot push out a channel that has held its tile all along.
     """
-    pinned_slots = {s.position for s in pinned.values()}
+    held = {s.position for s in pinned.values()} | set(soft.values())
+    positions = {
+        channel: position
+        for channel, position in state.positions.items()
+        if channel not in pinned and channel not in soft and position not in held
+    }
     return [
         PrioritizedStream(
             stream=candidate_map[channel].stream,
@@ -202,9 +235,20 @@ def _existing_streams(
             tiebreaker=candidate_map[channel].tiebreaker,
             position=position,
         )
-        for channel, position in state.positions.items()
-        if channel in candidate_map and channel not in pinned and position not in pinned_slots
+        for channel, position in {**positions, **soft}.items()
+        if channel in candidate_map
     ]
+
+
+def _soft_score(candidate: PrioritizedStream, hold: Hold, config: Config) -> PrioritizedStream:
+    """The soft holder's candidate, scored as what it replaced plus pin_bonus.
+
+    With nothing replaced, its own priority stands in. The stability bonus comes
+    on top, as for any on-screen stream, so anything that beats replaced priority
+    + stability_bonus + pin_bonus takes the tile.
+    """
+    base = hold.priority if hold.replaced else candidate.priority
+    return replace(candidate, priority=base + config.pin_bonus)
 
 
 def _departed_categories(

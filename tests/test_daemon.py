@@ -598,13 +598,22 @@ class TestFirstRefresh:
         assert [c.stream.channel for c in daemon._still_playing(pool)] == ["a"]
 
 
-E_OVER_B = {"1": {"holder": "e", "replaced": "b"}}
+E_OVER_B = {"1": {"holder": "e", "replaced": "b", "soft": False, "priority": 100}}
+E_OVER_B_SOFT = {"1": {**E_OVER_B["1"], "soft": True}}
+C_LOCKED = {"2": {"holder": "c", "replaced": None, "soft": False, "priority": 0}}
 ACTIONS: dict[str, tuple[Any, Any, dict[str, Any], list[str]]] = {
     # name: (setup action, action, saved holds, slots after)
     "place": (None, lambda d: d.place("e", 1), E_OVER_B, ["a", "e", "c", "d"]),
     "swap": (None, lambda d: d.swap(0, 1), {}, ["b", "a", "c", "d"]),
     "unpin": (lambda d: d.place("e", 1), lambda d: d.unpin(1), {}, ["a", "b", "c", "d"]),
     "unpin_all": (lambda d: d.place("e", 1), lambda d: d.unpin_all(), {}, ["a", "b", "c", "d"]),
+    "lock": (None, lambda d: d.lock(2, False), C_LOCKED, ["a", "b", "c", "d"]),
+    "lock soft": (
+        lambda d: d.place("e", 1),
+        lambda d: d.lock(1, True),
+        E_OVER_B_SOFT,
+        ["a", "e", "c", "d"],
+    ),
 }
 
 
@@ -674,7 +683,7 @@ class TestOperatorActions:
             twitch.go_offline("e")
             for absent in range(1, GRACE_REFRESHES + 1):
                 await loops.refresh()
-                assert daemon.overrides.holds == {1: Hold("e", "b")}
+                assert daemon.overrides.holds == {1: Hold("e", "b", priority=100)}
                 assert daemon.overrides.absent == {"e": absent}
             with structlog.testing.capture_logs() as logs:
                 await loops.refresh()
@@ -707,7 +716,7 @@ class TestOperatorActions:
             twitch.go_offline("e", *CHANNELS)
             for _ in range(GRACE_REFRESHES + 2):
                 await loops.refresh()
-        assert daemon.overrides.holds == {0: Hold("e", "a")}
+        assert daemon.overrides.holds == {0: Hold("e", "a", priority=100)}
 
     async def test_channel_removed_from_the_config_clears_at_once(
         self, make_daemon, config_path, twitch
@@ -1412,3 +1421,66 @@ class TestOutsideChannels:
             await settle()
         assert second.overrides.extras == frozenset()
         assert "zed" not in second.quad_state.channels
+
+
+class TestSoftHolds:
+    async def test_a_soft_hold_that_loses_ends_and_forgets_the_replaced(
+        self, make_daemon, config_path, twitch, state_file
+    ):
+        # E scores 100 + 30 - 31 = 99 as a soft pin, which F (100) beats
+        write_config(config_path, channels=(*CONFIGURED, "f"), diversity_bonus=0, pin_bonus=-31)
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.place("e", 1)
+            await daemon.lock(1, True)
+            await settle()
+            await loops.refresh()
+            assert store_channels(daemon) == ["a", "e", "c", "d"]
+            assert daemon.snapshot().slots[1].hold == "soft"
+            twitch.go_live("f")
+            with structlog.testing.capture_logs() as logs:
+                await loops.refresh()
+            assert store_channels(daemon) == ["a", "f", "c", "d"]
+            assert daemon.overrides.holds == {}
+            assert events(logs, "soft holds lost")[0]["channels"] == ["e"]
+            assert json.loads(state_file.read_text())["holds"] == {}
+            # B is no longer replaced, and gets no tile back
+            await loops.refresh()
+            assert store_channels(daemon) == ["a", "f", "c", "d"]
+
+    async def test_lock_on_an_empty_tile_is_refused(self, make_daemon, config_path, twitch):
+        twitch.go_offline("d")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            with pytest.raises(OverrideError, match="slot 3 is empty"):
+                await daemon.lock(3, False)
+        assert daemon.overrides == Overrides()
+
+    async def test_an_outside_channel_holding_softly_stays_looked_up(self, make_daemon, twitch):
+        twitch.go_live("zed")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.place("zed", 2)
+            await daemon.lock(2, True)
+            await settle()
+            for _ in range(2):
+                await loops.refresh()
+                assert daemon.quad_state.channels[2] == "zed"
+            assert daemon.processor is not None and "zed" in daemon.processor.extras
+            assert daemon.snapshot().slots[2].hold == "soft"
+
+    async def test_a_soft_hold_survives_a_restart(self, make_daemon, twitch):
+        twitch.go_live("e")
+        first = make_daemon()
+        async with stepped(first) as loops:
+            await loops.refresh()
+            await first.place("e", 1)
+            await first.lock(1, True)
+            await settle()
+        assert first.overrides.holds == {1: Hold("e", "b", soft=True, priority=100)}
+        second = make_daemon()
+        assert second.overrides == first.overrides

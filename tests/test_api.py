@@ -43,8 +43,8 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
         ChannelStatus("c", ChannelState.OFFLINE, [50, 10]),
         ChannelStatus("d", ChannelState.REJECTED, [50], reason="category blocked"),
     ]
-    # "a" holds slot 0 over "d"; "c" holds slot 1 while out of the pool
-    overrides = Overrides(holds={0: Hold("a", "d"), 1: Hold("c")})
+    # "a" holds slot 0 over "d"; "c" holds slot 1 softly while out of the pool
+    overrides = Overrides(holds={0: Hold("a", "d"), 1: Hold("c", soft=True)})
     # "c" is offline to the lookup, so its counts do not show
     stats = {"a": Stats(1108, STARTED), "c": Stats(3, STARTED)}
     return snapshot(
@@ -146,6 +146,9 @@ class FakeDashboard:
 
     async def unpin_all(self) -> None:
         self._act("unpin_all")
+
+    async def lock(self, slot: int, soft: bool) -> None:
+        self._act("lock", slot=slot, soft=soft)
 
 
 async def _no_fetch(uri: str) -> bytes:  # pragma: no cover - guard
@@ -262,7 +265,7 @@ class TestState:
         resp = await client.get("/api/state", headers=_auth(webui))
         assert resp.headers["Cache-Control"] == "no-store"
         body = await resp.json()
-        assert body["v"] == 2
+        assert body["v"] == 3
         assert body["refreshed_at"] == 1700000000.5
         assert body["quadstream"] == "failed"
         assert body["slots"] == [
@@ -276,6 +279,7 @@ class TestState:
                 "started_at": 1792774848,
                 "pinned": True,
                 "reserved_for": None,
+                "hold": "hard",
                 "still": "/api/slots/0/still.jpg?c=a",
             },
             {
@@ -288,6 +292,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": "c",
+                "hold": "soft",
                 "still": None,
             },
             {
@@ -300,6 +305,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
+                "hold": None,
                 "still": "/api/slots/2/still.jpg?c=b",
             },
             {
@@ -312,6 +318,7 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
+                "hold": None,
                 "still": None,
             },
         ]
@@ -470,6 +477,8 @@ class TestActions:
             ({"action": "swap", "a": 0, "b": 2}, ("swap", {"a": 0, "b": 2})),
             ({"action": "unpin", "slot": 1}, ("unpin", {"slot": 1})),
             ({"action": "unpin_all"}, ("unpin_all", {})),
+            ({"action": "lock", "slot": 2, "soft": True}, ("lock", {"slot": 2, "soft": True})),
+            ({"action": "lock", "slot": 0, "soft": False}, ("lock", {"slot": 0, "soft": False})),
         ],
     )
     async def test_action_calls_the_daemon_and_returns_the_snapshot(
@@ -482,7 +491,7 @@ class TestActions:
     ) -> None:
         resp = await self._post(client, webui, body)
         assert resp.status == 200
-        assert (await resp.json())["v"] == 2
+        assert (await resp.json())["v"] == 3
         assert dashboard.calls == [call]
 
     async def test_override_error_is_400_with_its_message(
@@ -506,6 +515,10 @@ class TestActions:
             ({"action": "unpin", "slot": True}, "slot must be an integer"),
             ({"action": "unpin", "slot": 1.0}, "slot must be an integer"),
             ({"action": "place", "channel": 5, "slot": 1}, "channel must be a string"),
+            ({"action": "lock", "slot": 1}, "takes slot, soft"),
+            ({"action": "lock", "slot": 1, "soft": 1}, "soft must be true or false"),
+            ({"action": "lock", "slot": 1, "soft": "yes"}, "soft must be true or false"),
+            ({"action": "lock", "slot": True, "soft": True}, "slot must be an integer"),
         ],
     )
     async def test_invalid_body_is_400(

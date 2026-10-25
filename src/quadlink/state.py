@@ -22,6 +22,9 @@ Slot = Annotated[int, Field(ge=0, le=3)]
 class _HoldFile(BaseModel):
     holder: str
     replaced: str | None
+    # older state files lack these
+    soft: bool = False
+    priority: int = 0
 
 
 class _StateFile(BaseModel):
@@ -60,7 +63,9 @@ class StateStore:
         try:
             data = _StateFile.model_validate_json(text)
             overrides = Overrides(
-                holds={s: Hold(h.holder, h.replaced) for s, h in data.holds.items()},
+                holds={
+                    s: Hold(h.holder, h.replaced, h.soft, h.priority) for s, h in data.holds.items()
+                },
                 absent=data.absent,
             )
         except ValueError as e:
@@ -93,7 +98,12 @@ def _serialize(overrides: Overrides, state: QuadState) -> str:
             "version": STATE_VERSION,
             # added channels end with the process, and their holds with them
             "holds": {
-                str(slot): {"holder": hold.holder, "replaced": hold.replaced}
+                str(slot): {
+                    "holder": hold.holder,
+                    "replaced": hold.replaced,
+                    "soft": hold.soft,
+                    "priority": hold.priority,
+                }
                 for slot, hold in sorted(overrides.holds.items())
                 if hold.holder not in overrides.extras
             },

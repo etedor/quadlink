@@ -107,6 +107,11 @@
   .lang { flex: none; color: var(--text-quiet); font-size: var(--t-meta); }
   .sub { color: var(--text-quiet); font-size: var(--t-meta); }
   .sub .cat { flex: 1; }
+  /* a quad card's lock ends its category line; soft is the lock's quiet middle state */
+  .sub .lock { margin-left: auto; }
+  .lock.soft { color: var(--accent-ink); }
+  /* .chip's display would otherwise show it on an empty tile */
+  .lock[hidden] { display: none; }
   /* a pickable item is one button: drag starts on the item, a click or key on the button picks */
   .pickable { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none;
     transition: background-color var(--t-state), box-shadow var(--t-state), opacity var(--t-state); }
@@ -267,7 +272,7 @@
     </div>
     <div class="who">
       <div class="line"><span class="name truncate"></span></div>
-      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button><button type="button" class="chip lock" aria-pressed="false" hidden></button></div>
     </div>
   </div>
   <div class="item quad-card">
@@ -279,7 +284,7 @@
     </div>
     <div class="who">
       <div class="line"><span class="name truncate"></span></div>
-      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button><button type="button" class="chip lock" aria-pressed="false" hidden></button></div>
     </div>
   </div>
   <div class="item quad-card">
@@ -291,7 +296,7 @@
     </div>
     <div class="who">
       <div class="line"><span class="name truncate"></span></div>
-      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button><button type="button" class="chip lock" aria-pressed="false" hidden></button></div>
     </div>
   </div>
   <div class="item quad-card">
@@ -303,7 +308,7 @@
     </div>
     <div class="who">
       <div class="line"><span class="name truncate"></span></div>
-      <div class="sub"><button type="button" class="btn link truncate what"></button></div>
+      <div class="sub"><button type="button" class="btn link truncate what"></button><button type="button" class="chip lock" aria-pressed="false" hidden></button></div>
     </div>
   </div>
 </div>
@@ -442,6 +447,8 @@
     sort: '<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>',
     reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
     sound: '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
+    lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    'lock-open': '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
     settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
   };
   function icon(name) {
@@ -487,6 +494,7 @@
       const what = info.querySelector('.what');
       what.textContent = s?.category || '';
       what.hidden = !s?.category;
+      markLock(info.querySelector('.lock'), s);
       const button = tile.querySelector('button');
       const who = s?.display_name || s?.channel || 'empty';
       // while a pick waits, a click places it rather than toggling sound
@@ -495,6 +503,46 @@
       button.setAttribute('aria-pressed', String(loud));
     });
   }
+
+  const LOCKS = {
+    hard: ['lock', name => `Pinned, ${name}`],
+    soft: ['lock-open', name => `Pinned softly, ${name}`],
+    auto: ['lock-open', name => `Pin ${name}`],
+  };
+  function markLock(button, s) {
+    button.hidden = !s?.channel;
+    if (button.hidden) return;
+    const kind = s.hold || 'auto';
+    const [glyph, label] = LOCKS[kind];
+    // the hold belongs to the channel it waits for while that one is off the tile
+    const holder = s.reserved_for
+      ? latest.channels.find(c => c.channel === s.reserved_for)?.display_name || s.reserved_for
+      : s.display_name || s.channel;
+    if (button.dataset.glyph !== glyph) {
+      button.replaceChildren(icon(glyph));
+      button.dataset.glyph = glyph;
+    }
+    button.classList.toggle('soft', kind === 'soft');
+    button.setAttribute('aria-pressed', String(kind === 'hard'));
+    button.setAttribute('aria-label', label(holder));
+  }
+
+  // automatic -> hard -> soft -> hard: only a lost tile or an ended stream frees a pin
+  async function lock(slot) {
+    const s = latest?.slots[slot];
+    if (!s?.channel) return;
+    const before = s.hold;
+    const soft = before === 'hard';
+    s.hold = soft ? 'soft' : 'hard';
+    markTiles();
+    try {
+      await act({ action: 'lock', slot, soft });
+    } catch {
+      // unless a newer snapshot has already said what the server holds
+      if (latest?.slots[slot] === s) { s.hold = before; markTiles(); }
+    }
+  }
+  document.querySelectorAll('.quad-card .lock').forEach((b, i) => b.addEventListener('click', () => lock(i)));
 
   document.querySelectorAll('.quad-card .what').forEach(b => {
     const open = () => { setExploring(true); chooseNamed(b.textContent); };

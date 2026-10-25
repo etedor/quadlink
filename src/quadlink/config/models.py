@@ -149,6 +149,7 @@ class Config(BaseSettings):
         diversity_bonus: Points added for new categories in quad.
         stability_bonus: Points added for streams already in quad.
         category_continuity_bonus: Points for replacing departed category.
+        pin_bonus: Points added to a soft pin's score, on top of the stability bonus.
         webhook: Webhook notification settings.
         proxy_playlist: Twitch playlist proxy URL for ad-free streams.
         low_latency: Enable low-latency streaming mode.
@@ -171,6 +172,7 @@ class Config(BaseSettings):
     diversity_bonus: int = 25
     stability_bonus: int = 30
     category_continuity_bonus: int = 10
+    pin_bonus: int = 50
 
     webhook: Webhook = Field(default_factory=Webhook)
 

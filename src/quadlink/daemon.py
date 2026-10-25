@@ -379,6 +379,11 @@ class Daemon:
             return
 
         self.quad_state = state = compose(pool, self.quad_state, self.overrides, config)
+        overrides = actions.lose(self.overrides, state, {c.stream.channel for c in pool})
+        if overrides != self.overrides:
+            lost = sorted(self.overrides.pins.keys() - overrides.pins.keys())
+            logger.info("soft holds lost", channels=lost)
+            self._set_overrides(overrides)
         self._save_state()
         quad = state.quad
         self._on_screen = {}
@@ -420,7 +425,11 @@ class Daemon:
         configured = self._configured()
         if channel not in configured and channel not in self.overrides.extras:
             await self._look_up_outside(channel)
-        self._apply(*actions.place(self.overrides, self.quad_state, channel, slot, configured))
+        # reversed: the pool is best first, and a channel's first entry is the one that counts
+        priorities = {c.stream.channel: c.priority for c in reversed(self._pool)}
+        self._apply(
+            *actions.place(self.overrides, self.quad_state, channel, slot, configured, priorities)
+        )
 
     async def swap(self, a: int, b: int) -> None:
         """Swap the channels of two slots; holds move with their holders."""
@@ -436,6 +445,10 @@ class Daemon:
     async def unpin_all(self) -> None:
         """End every hold."""
         self._apply(*actions.unpin_all(self.overrides, self.quad_state))
+
+    async def lock(self, slot: int, soft: bool) -> None:
+        """Make the tile's hold soft or hard; a tile with no hold gets one for its channel."""
+        self._apply(*actions.lock(self.overrides, self.quad_state, slot, soft))
 
     async def _look_up_outside(self, channel: str) -> None:
         """Check a channel outside the config is live with video, and pool it at once."""
@@ -496,15 +509,19 @@ class Daemon:
         # swap moves channels between slots ahead of the recompose that seats them
         if state is not None:
             self.quad_state = state
+        self._set_overrides(overrides)
+        self._save_state()
+        self.request_recompose()
+        self._notify()
+
+    def _set_overrides(self, overrides: Overrides) -> None:
+        """Take overrides; outside channels that no longer hold a tile leave the pool."""
         if gone := self.overrides.extras - overrides.extras:
             self._pool = [c for c in self._pool if c.stream.channel not in gone]
             self.channel_statuses = [s for s in self.channel_statuses if s.channel not in gone]
         self.overrides = overrides
         if self.processor is not None:
             self.processor.extras = overrides.extras
-        self._save_state()
-        self.request_recompose()
-        self._notify()
 
     def _save_state(self) -> None:
         self.state_store.save(self.overrides, self.quad_state)

@@ -23,6 +23,29 @@ def test_round_trip(state_file: Path):
     assert json.loads(state_file.read_text())["version"] == 4
 
 
+def test_soft_holds_keep_their_kind_and_priority(state_file: Path):
+    overrides = Overrides(holds={1: Hold("e", "b", soft=True, priority=70), 3: Hold("f")})
+    StateStore(state_file).save(overrides, STATE)
+    loaded, _ = StateStore(state_file).load()
+    assert loaded == overrides
+
+
+def test_a_file_without_hold_kinds_loads_them_hard(state_file: Path):
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 4,
+                "holds": {"3": {"holder": "f", "replaced": "d"}},
+                "absent": {"f": 1},
+                "channels": ["a", "b", "", "f"],
+                "categories": {},
+            }
+        )
+    )
+    overrides, _ = StateStore(state_file).load()
+    assert overrides == OVERRIDES
+
+
 def test_missing_file_starts_empty(state_file: Path):
     with structlog.testing.capture_logs() as logs:
         assert StateStore(state_file).load() == (Overrides(), QuadState())

@@ -41,6 +41,7 @@ class SlotView:
         pinned: The channel on screen holds this tile.
         reserved_for: The tile's holder while it is out of the pool; it takes the
             tile back if it returns within the grace.
+        hold: "hard" or "soft" while the tile has a hold, else None.
     """
 
     slot: int
@@ -48,6 +49,7 @@ class SlotView:
     display_name: str
     pinned: bool
     reserved_for: str | None
+    hold: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,7 @@ def snapshot(
                 display_name=names.get(channel, channel),
                 pinned=bool(channel) and holder == channel,
                 reserved_for=None if holder == channel else holder,
+                hold=None if hold is None else "soft" if hold.soft else "hard",
             )
         )
     positions = state.positions

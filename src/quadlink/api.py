@@ -22,7 +22,7 @@ from quadlink.types import thumbnail_url
 
 logger = structlog.get_logger()
 
-API_VERSION = 2
+API_VERSION = 3
 EVENTS_PATH = "/api/events"
 STILL_PATH = re.compile(r"/api/slots/[^/]+/still\.jpg")
 
@@ -46,8 +46,10 @@ ACTIONS: dict[str, dict[str, type]] = {
     "place": {"channel": str, "slot": int},
     "swap": {"a": int, "b": int},
     "unpin": {"slot": int},
+    "lock": {"slot": int, "soft": bool},
     "unpin_all": {},
 }
+_NOUNS = {int: "an integer", bool: "true or false"}
 
 
 class Dashboard(Protocol):
@@ -66,6 +68,8 @@ class Dashboard(Protocol):
     async def swap(self, a: int, b: int) -> None: ...
 
     async def unpin(self, slot: int) -> None: ...
+
+    async def lock(self, slot: int, soft: bool) -> None: ...
 
     async def unpin_all(self) -> None: ...
 
@@ -114,6 +118,7 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
         entry |= {
             "pinned": s.pinned,
             "reserved_for": s.reserved_for,
+            "hold": s.hold,
             # the channel in the URL keeps a browser's cached still from outliving a swap
             "still": f"/api/slots/{s.slot}/still.jpg?c={quote(s.channel)}" if s.channel else None,
         }
@@ -160,8 +165,8 @@ def parse_action(body: Any) -> tuple[str, dict[str, Any]]:
     for name, kind in spec.items():
         value = params[name]
         # bool is an int subclass, and JSON true must not mean slot 1
-        if not isinstance(value, kind) or isinstance(value, bool):
-            noun = "an integer" if kind is int else "a string"
+        if not isinstance(value, kind) or (kind is int and isinstance(value, bool)):
+            noun = _NOUNS.get(kind, "a string")
             raise OverrideError(f"the parameter {name} must be {noun}")
     return action, params
 

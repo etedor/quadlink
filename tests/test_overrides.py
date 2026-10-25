@@ -9,6 +9,8 @@ from quadlink.overrides import (
     Result,
     age,
     drop_unconfigured,
+    lock,
+    lose,
     place,
     swap,
     unpin,
@@ -59,7 +61,9 @@ class Scene:
         return sorted(pool, key=lambda s: (s.priority, s.tiebreaker), reverse=True)
 
     def compose(self) -> tuple[str, ...]:
-        self.state = compose(self.pool(), self.state, self.overrides, self.config)
+        pool = self.pool()
+        self.state = compose(pool, self.state, self.overrides, self.config)
+        self.overrides = lose(self.overrides, self.state, {s.stream.channel for s in pool})
         return self.state.channels
 
     def refresh(self) -> tuple[str, ...]:
@@ -75,6 +79,14 @@ class Scene:
 
     def drop(self, channel: str, slot: int) -> tuple[str, ...]:
         return self.act(place(self.overrides, self.state, channel, slot, self.configured))
+
+    def pin(self, channel: str, slot: int) -> tuple[str, ...]:
+        """A drop as the daemon makes it, which keeps the replaced channel's priority."""
+        result = place(self.overrides, self.state, channel, slot, self.configured, self.live)
+        return self.act(result)
+
+    def lock(self, slot: int, soft: bool) -> tuple[str, ...]:
+        return self.act(lock(self.overrides, self.state, slot, soft))
 
 
 SIX = {"a": 100, "b": 90, "c": 80, "d": 70, "e": 60, "f": 50}
@@ -339,6 +351,10 @@ class TestInvariants:
         with pytest.raises(ValueError):
             Overrides(holds={0: Hold("a", "x"), 1: Hold("x")}, extras=frozenset({"x"}))
 
+    def test_a_priority_needs_a_replaced_channel(self):
+        with pytest.raises(ValueError, match="nothing replaced"):
+            Overrides(holds={0: Hold("a", priority=5)})
+
     def test_outside_channels_hold_a_tile(self):
         with pytest.raises(ValueError):
             Overrides(extras=frozenset({"x"}))
@@ -346,3 +362,153 @@ class TestInvariants:
     def test_slots_are_0_to_3(self):
         with pytest.raises(ValueError):
             Overrides(holds={4: Hold("a")})
+
+
+class TestLock:
+    def test_an_automatic_tile_gets_a_hard_hold_of_its_stream(self, scene):
+        assert scene.lock(3, soft=False) == ("a", "b", "c", "d")
+        assert scene.overrides.holds == {3: Hold("d")}
+        # D ranks lowest, yet the newcomer pushes out C instead
+        scene.live["g"] = 1000
+        assert scene.refresh() == ("a", "b", "g", "d")
+
+    def test_hard_then_soft_then_hard(self, scene):
+        scene.pin("f", 3)
+        assert scene.overrides.holds == {3: Hold("f", "d", priority=70)}
+        scene.lock(3, soft=True)
+        assert scene.overrides.holds == {3: Hold("f", "d", soft=True, priority=70)}
+        scene.lock(3, soft=False)
+        assert scene.overrides.holds == {3: Hold("f", "d", priority=70)}
+
+    def test_the_same_kind_changes_nothing(self, scene):
+        scene.pin("f", 3)
+        before = (scene.overrides, scene.state)
+        assert lock(*before, 3, soft=False) == before
+
+    def test_an_empty_tile_is_refused(self):
+        scene = Scene(make_config(), {"a": 100, "b": 90, "c": 80}, {"a", "b", "c"})
+        scene.refresh()
+        with pytest.raises(OverrideError, match="slot 3 is empty"):
+            lock(scene.overrides, scene.state, 3, soft=False)
+
+    def test_a_bad_slot_is_refused(self, scene):
+        with pytest.raises(OverrideError, match="use a slot from 0 to 3"):
+            lock(scene.overrides, scene.state, 4, soft=True)
+
+    def test_a_drop_on_a_soft_tile_holds_it_hard_and_keeps_the_original(self, scene):
+        scene.pin("f", 3)
+        scene.lock(3, soft=True)
+        scene.pin("e", 3)
+        assert scene.overrides.holds == {3: Hold("e", "d", priority=70)}
+
+    def test_a_drop_on_an_empty_tile_keeps_no_priority(self):
+        scene = Scene(make_config(), {"a": 100, "b": 90, "c": 80}, {"a", "b", "c", "f"})
+        scene.refresh()
+        scene.live["f"] = 50
+        scene.pin("f", 3)
+        assert scene.overrides.holds == {3: Hold("f")}
+
+
+# replaced D scores 70 + stability 30 + pin_bonus 50 = 150 as a soft pin; A-C rank above it
+STRONG = {"a": 300, "b": 290, "c": 280, "d": 70, "f": 50}
+
+
+def strong() -> Scene:
+    """One category, stability bonus 30, pin bonus 50, A-D on screen."""
+    config = make_config(diversity_bonus=0, stability_bonus=30, category_continuity_bonus=0)
+    assert config.pin_bonus == 50
+    scene = Scene(config, STRONG, {*STRONG, "e", "g"})
+    assert scene.refresh() == ("a", "b", "c", "d")
+    return scene
+
+
+@pytest.fixture
+def soft() -> Scene:
+    """F holds slot 3 softly over D."""
+    scene = strong()
+    scene.pin("f", 3)
+    assert scene.lock(3, soft=True) == ("a", "b", "c", "f")
+    return scene
+
+
+class TestSoft:
+    def test_it_keeps_the_tile_against_a_stream_that_does_not_beat_its_score(self, soft):
+        soft.live["g"] = 140
+        for _ in range(3):
+            assert soft.refresh() == ("a", "b", "c", "f")
+        assert soft.overrides.holds == {3: Hold("f", "d", soft=True, priority=70)}
+
+    def test_a_stream_that_beats_its_score_takes_the_tile_and_ends_the_hold(self, soft):
+        soft.live["g"] = 151
+        assert soft.refresh() == ("a", "b", "c", "g")
+        assert soft.overrides.holds == {}
+        assert soft.overrides.replaced == set()
+
+    def test_the_replaced_stream_does_not_return_after_a_loss(self, soft):
+        soft.live["g"] = 151
+        soft.refresh()
+        for _ in range(3):
+            assert soft.refresh() == ("a", "b", "c", "g")
+
+    def test_the_replaced_stream_takes_no_tile_while_it_lasts(self, soft):
+        # D outranks F by priority, but stays off as replaced streams do
+        for _ in range(3):
+            assert soft.refresh() == ("a", "b", "c", "f")
+
+    def test_with_nothing_replaced_its_own_priority_counts(self):
+        scene = strong()
+        scene.lock(3, soft=False)
+        assert scene.lock(3, soft=True) == ("a", "b", "c", "d")
+        # D scores 70 + 30 + 50; unpinned, 100 would lose to 149
+        scene.live["g"] = 149
+        assert scene.refresh() == ("a", "b", "c", "d")
+        scene.live["g"] = 151
+        assert scene.refresh() == ("a", "b", "c", "g")
+        assert scene.overrides.holds == {}
+
+    def test_a_holder_back_within_the_grace_competes_for_its_tile(self, soft):
+        soft.live["e"] = 75
+        del soft.live["f"]
+        assert soft.refresh() == ("a", "b", "c", "e")
+        soft.live["f"] = 50
+        assert soft.refresh() == ("a", "b", "c", "f")
+        assert soft.overrides.holds == {3: Hold("f", "d", soft=True, priority=70)}
+
+
+class TestSoftOffline:
+    """E outranks D by priority but not D's stability bonus, so only a reseat brings D back."""
+
+    def _offline(self, scene: Scene) -> tuple[str, ...]:
+        scene.live["e"] = 75
+        del scene.live["f"]
+        for _ in range(GRACE_REFRESHES):
+            scene.refresh()
+        return scene.refresh()
+
+    def test_a_soft_hold_offline_past_the_grace_leaves_the_tile_to_selection(self, soft):
+        assert self._offline(soft) == ("a", "b", "c", "e")
+        assert soft.overrides.holds == {}
+        assert soft.refresh() == ("a", "b", "c", "e")
+
+    def test_a_hard_hold_offline_past_the_grace_still_returns_the_replaced(self, soft):
+        soft.lock(3, soft=False)
+        assert self._offline(soft) == ("a", "b", "c", "d")
+        assert soft.overrides.holds == {}
+
+
+class TestSoftOutside:
+    def test_an_outside_soft_holder_stays_eligible_while_it_wins(self, soft):
+        soft.live["zz"] = 0
+        soft.pin("zz", 3)
+        soft.lock(3, soft=True)
+        for _ in range(3):
+            assert soft.refresh() == ("a", "b", "c", "zz")
+        assert soft.overrides.extras == {"zz"}
+
+    def test_an_outside_soft_holder_that_loses_leaves_the_extras(self, soft):
+        soft.live["zz"] = 0
+        soft.pin("zz", 3)
+        soft.lock(3, soft=True)
+        soft.live["g"] = 151
+        assert soft.refresh() == ("a", "b", "c", "g")
+        assert soft.overrides.extras == frozenset()
