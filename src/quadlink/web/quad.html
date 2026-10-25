@@ -46,8 +46,7 @@
     padding: var(--inset) var(--inset) 0 var(--edge); color: var(--text-quiet); font-size: var(--t-meta); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
-  .pop-body { padding: 0 var(--edge) var(--inset); }
-  .pop fieldset:last-child { margin-bottom: 0; }
+  .pop-body { display: grid; gap: var(--s2); padding: 0 var(--edge) var(--inset); }
   /* the fade shows only while more options sit below, so the menu ends at its last item */
   .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: var(--fade);
     margin-top: calc(-1 * var(--fade)); pointer-events: none;
@@ -55,7 +54,7 @@
   .pop .reset { background-color: var(--clear); color: var(--text-quiet); }
   @media (hover: hover) { .pop .reset:hover { color: var(--text); } }
   /* fieldsets default to min-content width, which would let long names push past the edge */
-  .pop fieldset { border: 0; margin: 0 0 var(--s2); padding: 0; min-width: 0; }
+  .pop fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
   .pop legend { color: var(--text-quiet); font-size: var(--t-meta); margin-bottom: var(--s1); padding: 0; }
   .pop label { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; cursor: pointer;
     min-width: 0; }
@@ -144,8 +143,6 @@
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: var(--s1); min-width: 0; }
   .explore-cats .chip { font-weight: 400; }
-  .explore-note { margin: 0; padding: var(--s1) var(--inset); color: var(--text-quiet); font-size: var(--t-meta); }
-  .explore-note:empty { display: none; }
   /* the whole of Explore scrolls, its tools and menus too, and fades out under the quad. it
      reaches --inset past the column so it does not clip the focus rings at the column's edges */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
@@ -236,24 +233,13 @@
       </g>
     </svg>
   </a>
-  <button type="button" class="btn explore-btn" aria-pressed="false"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M15.5 8.5l-2 5-5 2 2-5z"></path></svg>Explore</button>
+  <button type="button" class="btn explore-btn" aria-pressed="false" data-icon="explore">Explore</button>
 </header>
 <aside aria-label="Online streamers">
   <div class="tools">
     <input type="search" class="field" placeholder="Search…" aria-label="Search channels">
-    <button type="button" class="btn icon filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
-    <button type="button" class="btn icon sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
-    <div class="pop filter-pop" hidden>
-      <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="btn icon reset" aria-label="Reset filters" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-      <div class="pop-body">
-        <fieldset class="show"><legend class="sr-only">Show</legend></fieldset>
-        <fieldset class="cats"><legend>Category</legend></fieldset>
-      </div>
-    </div>
-    <div class="pop sort-pop" hidden>
-      <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-      <div class="pop-body"><fieldset class="sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
-    </div>
+    <button type="button" class="btn icon filter-btn" aria-label="Filter" aria-expanded="false" data-icon="filter"></button>
+    <button type="button" class="btn icon sort-btn" aria-label="Sort" aria-expanded="false" data-icon="sort"></button>
   </div>
   <div class="rail-scroll"><ul class="rail"></ul></div>
 </aside>
@@ -313,19 +299,10 @@
   <div class="tools">
     <input type="search" id="explore-q" class="field" placeholder="Search…" aria-label="Find a category or channel"
       autocomplete="off" spellcheck="false">
-    <button type="button" class="btn icon ex-filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
-    <button type="button" class="btn icon ex-sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
-    <div class="pop ex-filter-pop" hidden>
-      <div class="pop-head"><span aria-hidden="true">Language</span><button type="button" class="btn icon reset" aria-label="Reset language" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-      <div class="pop-body"><fieldset class="ex-langs"><legend class="sr-only">Language</legend></fieldset></div>
-    </div>
-    <div class="pop ex-sort-pop" hidden>
-      <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-      <div class="pop-body"><fieldset class="ex-sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
-    </div>
+    <button type="button" class="btn icon ex-filter-btn" aria-label="Filter" aria-expanded="false" data-icon="filter"></button>
+    <button type="button" class="btn icon ex-sort-btn" aria-label="Sort" aria-expanded="false" data-icon="sort"></button>
   </div>
   <div class="explore-cats"></div>
-  <p class="explore-note"></p>
   <ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p>
   </div>
 </section>
@@ -433,8 +410,8 @@
     return span;
   }
   const STATES = [['live', 'Live'], ['offline', 'Offline']];
-  const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
-                 ['newest', 'Newest stream'], ['longest', 'Longest stream']];
+  const SORTS = [['priority', 'Priority'], ['viewers', 'Most viewers'], ['name', 'Name'],
+                 ['newest', 'Newest'], ['longest', 'Longest']];
   const DEFAULTS = { show: ['live'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
   try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.4') || '{}'), { q: '' }); } catch {}
@@ -444,19 +421,22 @@
     try { localStorage.setItem('quadlink.view.4', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
   }
 
-  function glyph(kind, paths, label) {
-    const span = document.createElement('span');
-    span.className = kind;
-    span.title = label;
-    span.setAttribute('role', 'img');
-    span.setAttribute('aria-label', label);
-    span.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-      + 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
-    return span;
+  // every glyph on the page, drawn on one 24-unit stroke grid; the CSS around it sets the size
+  const ICONS = {
+    explore: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+    filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
+    sort: '<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>',
+    reset: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
+    sound: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+  };
+  function icon(name) {
+    const t = document.createElement('template');
+    t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[name] + '</svg>';
+    return t.content.firstChild;
   }
+  document.querySelectorAll('[data-icon]').forEach(b => b.prepend(icon(b.dataset.icon)));
 
-  const SPEAKER = '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'
-    + '<path d="M18.5 5.5a9 9 0 0 1 0 13"/>';
   let picked = null;
 
   function pick(channel) {
@@ -474,13 +454,15 @@
       const s = latest?.slots[i];
       const loud = tile.classList.contains('loud');
       const marks = [];
-      if (s?.reserved_for) {
-        const offline = document.createElement('span');
-        offline.className = 'chip on-media';
-        offline.textContent = 'Offline';
-        marks.push(offline);
+      if (s?.reserved_for) marks.push(el('span', 'chip on-media', 'Offline'));
+      if (loud) {
+        const sound = el('span', 'chip on-media');
+        sound.title = 'Sound on';
+        sound.setAttribute('role', 'img');
+        sound.setAttribute('aria-label', 'Sound on');
+        sound.append(icon('sound'));
+        marks.push(sound);
       }
-      if (loud) marks.push(glyph('chip on-media', SPEAKER, 'Sound on'));
       tile.querySelector('.tile-marks').replaceChildren(...marks);
       const info = tile.parentElement;
       info.querySelector('.name').textContent = s?.display_name || s?.channel || '';
@@ -507,10 +489,15 @@
       const button = e.target.closest('.pick');
       if (button) pick(button.parentElement.dataset.channel);
     });
+    list.addEventListener('pointerdown', e => {
+      const li = e.target.closest('.pickable');
+      if (li) armDrag(e, { list, channel: li.dataset.channel });
+    });
   }
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
-    if (picked) pick(null);
+    if (openMenu) closeMenu(true);
+    else if (picked) pick(null);
     else if (exploring() && phone.matches) setExploring(false);
   });
 
@@ -529,7 +516,9 @@
     li.dataset.channel = c.channel;
     li.classList.toggle('picked', c.channel === picked);
     // the list redraws on every snapshot, mid-drag too
-    li.classList.toggle('lifted', drag?.active === true && drag.source.channel === c.channel);
+    const held = drag?.source.channel === c.channel;
+    li.classList.toggle('lifted', held && drag.active);
+    li.classList.toggle('pressing', held && !drag.active && drag.touch);
     const pic = el('div', 'thumb');
     // no img without a picture: WebKit draws a broken-image edge round an empty one
     if (image) {
@@ -587,8 +576,6 @@
     longest: (a, b) => (a.started_at ?? Infinity) - (b.started_at ?? Infinity),
   };
 
-  const stage = document.querySelector('.stage');
-  const aside = document.querySelector('aside');
   const explore = document.querySelector('.explore');
   const exploring = () => document.body.classList.contains('exploring');
   const phone = matchMedia('(max-width: 720px)');
@@ -599,18 +586,15 @@
     const cats = new Set(view.cats);
     const matches = c => !q || [c.display_name, c.channel, c.category]
       .some(v => v && v.toLowerCase().includes(q));
-    // outside channels reach the quad from Explore and leave it with their hold
+    // the quad's channels are its cards, not rows; outside channels reach the quad from
+    // Explore and leave it with their hold
     const rows = latest.channels
-      .filter(c => !c.extra && c.slot == null && c.state !== 'in quad')
+      .filter(c => !c.extra && c.slot == null)
       .filter(c => show.has(c.state))
       .filter(c => !cats.size || cats.has(c.category))
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
-    // the quad's channels are its cards, not rows
     rail.replaceChildren(...rows.map(c => item(c, { row: true, image: thumb(c.channel) })));
-    document.querySelector('.filter-btn').classList.toggle('changed',
-      cats.size > 0 || view.show.slice().sort().join() !== DEFAULTS.show.slice().sort().join());
-    document.querySelector('.sort-btn').classList.toggle('changed', view.sort !== DEFAULTS.sort);
   }
 
   function option(type, name, value, text, checked, onChange) {
@@ -629,69 +613,117 @@
     return label;
   }
 
-  function fillFilters() {
-    const show = document.querySelector('.filter-pop .show');
-    show.replaceChildren(show.querySelector('legend'), ...STATES.map(([s, text]) =>
-      option('checkbox', 'show', s, text, view.show.includes(s), e => {
-        view.show = e.target.checked ? [...view.show, s] : view.show.filter(x => x !== s);
-        save(); render();
-      })));
-    const live = latest ? [...new Set(latest.channels
-      .filter(c => c.state !== 'offline' && c.category).map(c => c.category))].sort() : [];
-    const cats = document.querySelector('.filter-pop .cats');
-    cats.replaceChildren(cats.querySelector('legend'), ...live.map(name =>
-      option('checkbox', 'cat', name, name, view.cats.includes(name), e => {
-        view.cats = e.target.checked ? [...view.cats, name] : view.cats.filter(x => x !== name);
-        save(); render();
-      })));
-  }
-
-  function fillSorts() {
-    const sorts = document.querySelector('.sort-pop .sorts');
-    sorts.replaceChildren(sorts.querySelector('legend'), ...SORTS.map(([key, text]) =>
-      option('radio', 'sort', key, text, view.sort === key, () => { view.sort = key; save(); render(); })));
-  }
+  // a checkbox group's value is a list, so order does not count
+  const same = (a, b) => Array.isArray(a) ? [...a].sort().join('\n') === [...b].sort().join('\n') : a === b;
 
   function edge(pop) {
     pop.classList.toggle('more', pop.scrollTop + pop.clientHeight < pop.scrollHeight - 1);
   }
-  document.querySelectorAll('.pop').forEach(pop => pop.addEventListener('scroll', () => edge(pop)));
 
-  function toggle(button, pop, fill) {
-    const open = pop.hidden;
-    document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
-    document.querySelectorAll('.tools > button').forEach(b => b.setAttribute('aria-expanded', 'false'));
-    if (open) {
-      fill(); pop.hidden = false; pop.scrollTop = 0;
-      button.setAttribute('aria-expanded', 'true'); edge(pop);
-    }
+  let openMenu = null;
+  function closeMenu(refocus = false) {
+    if (!openMenu) return;
+    openMenu.pop.hidden = true;
+    openMenu.button.setAttribute('aria-expanded', 'false');
+    if (refocus) openMenu.button.focus();
+    openMenu = null;
   }
-  const filterBtn = document.querySelector('.filter-btn');
-  const sortBtn = document.querySelector('.sort-btn');
-  filterBtn.addEventListener('click', () => toggle(filterBtn, document.querySelector('.filter-pop'), fillFilters));
-  sortBtn.addEventListener('click', () => toggle(sortBtn, document.querySelector('.sort-pop'), fillSorts));
-  function closePops() {
-    document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
-    document.querySelectorAll('.tools > button').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools > button')) closeMenu(); });
+
+  // a menu hangs from its button's tools row: a head (title, reset), then a fieldset per group.
+  // a group's choices() runs on every opening, so lists drawn from live data stay current.
+  // the button's dot shows while any group differs from its fallback; a reset with nothing
+  // changed does nothing, so it never reloads a listing
+  function menu({ button, title, reset, apply, groups }) {
+    const pop = el('div', 'pop');
+    pop.hidden = true;
+    const head = el('div', 'pop-head');
+    const label = el('span', '', title);
+    label.setAttribute('aria-hidden', 'true');
+    const undo = el('button', 'btn icon reset');
+    undo.type = 'button';
+    undo.title = 'Reset';
+    undo.setAttribute('aria-label', reset);
+    undo.append(icon('reset'));
+    head.append(label, undo);
+    const body = el('div', 'pop-body');
+    pop.append(head, body);
+    button.closest('.tools').append(pop);
+    const changed = () => groups.some(g => !same(g.get(), g.fallback));
+    const chose = () => { apply(); button.classList.toggle('changed', changed()); };
+    const fill = () => body.replaceChildren(...groups.map(g => {
+      const field = el('fieldset', '');
+      field.append(el('legend', g.legend ? '' : 'sr-only', g.legend || title));
+      field.append(...g.choices().map(([value, text]) => {
+        const radio = g.type === 'radio';
+        return option(g.type, g.name, value, text, radio ? g.get() === value : g.get().includes(value), e => {
+          g.set(radio ? value : e.target.checked ? [...g.get(), value] : g.get().filter(x => x !== value));
+          chose();
+        });
+      }));
+      return field;
+    }));
+    undo.addEventListener('click', () => {
+      if (!changed()) return;
+      groups.forEach(g => g.set(Array.isArray(g.fallback) ? [...g.fallback] : g.fallback));
+      chose();
+      fill();
+    });
+    const m = { button, pop };
+    button.addEventListener('click', () => {
+      const open = openMenu !== m;
+      closeMenu(!open);
+      if (!open) return;
+      fill();
+      pop.hidden = false;
+      pop.scrollTop = 0;
+      button.setAttribute('aria-expanded', 'true');
+      openMenu = m;
+      (pop.querySelector('input:checked') || pop.querySelector('input'))?.focus();
+      edge(pop);
+    });
+    pop.addEventListener('scroll', () => edge(pop));
+    button.classList.toggle('changed', changed());
   }
-  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools > button')) closePops(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
-  document.querySelector('.filter-pop .reset').addEventListener('click', () => {
-    view.show = [...DEFAULTS.show]; view.cats = []; save(); fillFilters(); render();
-  });
-  document.querySelector('.sort-pop .reset').addEventListener('click', () => {
-    view.sort = DEFAULTS.sort; save(); fillSorts(); render();
-  });
-  document.querySelector('.tools input').addEventListener('input', e => { view.q = e.target.value; render(); });
+
+  // categories with a channel live now
+  function liveCategories() {
+    const names = new Set((latest?.channels || [])
+      .filter(c => c.state !== 'offline' && c.category).map(c => c.category));
+    return [...names].sort().map(name => [name, name]);
+  }
+  const railApply = () => { save(); render(); };
+  menu({ button: document.querySelector('.filter-btn'), title: 'Show', reset: 'Reset filters', apply: railApply,
+    groups: [
+      { type: 'checkbox', name: 'show', choices: () => STATES, fallback: DEFAULTS.show,
+        get: () => view.show, set: v => { view.show = v; } },
+      { type: 'checkbox', name: 'cat', legend: 'Category', choices: liveCategories, fallback: DEFAULTS.cats,
+        get: () => view.cats, set: v => { view.cats = v; } },
+    ] });
+  menu({ button: document.querySelector('.sort-btn'), title: 'Sort by', reset: 'Reset sort', apply: railApply,
+    groups: [{ type: 'radio', name: 'sort', choices: () => SORTS, fallback: DEFAULTS.sort,
+      get: () => view.sort, set: v => { view.sort = v; } }] });
+
+  // an empty field lets Escape through to close the next layer
+  function clearable(field, cleared) {
+    field.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !field.value) return;
+      e.preventDefault();
+      e.stopPropagation();
+      field.value = '';
+      cleared();
+    });
+  }
+  const railQ = document.querySelector('aside .field');
+  railQ.addEventListener('input', () => { view.q = railQ.value; render(); });
+  clearable(railQ, () => { view.q = ''; render(); });
 
   // drag and drop on pointer events, so mouse, pen and touch share one path. a touch
   // drag starts on a long press, leaving a quick swipe to scroll the rail
   const DRAG_DISTANCE = 6;
   const LONG_PRESS = 300;
-  const pending = new Map();
   let drag = null;
   let dragged = false;
-
 
   async function act(body) {
     const resp = await fetch('/api/actions', {
@@ -702,15 +734,12 @@
     if (!resp.ok) throw new Error((await resp.json().catch(() => ({}))).error || resp.statusText);
   }
 
-  function expect(slot, channel) {
-    const tile = tiles[slot];
-    tile.classList.remove('failed');
-    tile.classList.add('pending');
-    pending.set(slot, { channel });
+  function expect(slot) {
+    tiles[slot].classList.remove('failed');
+    tiles[slot].classList.add('pending');
   }
 
   function settle(slot, failed = false) {
-    pending.delete(slot);
     tiles[slot].classList.remove('pending');
     if (failed) {
       tiles[slot].classList.add('failed');
@@ -728,15 +757,34 @@
     return el ? el.closest('.tile') : null;
   }
 
-  function start(e, source) {
-    const ghost = document.createElement('div');
-    ghost.className = 'ghost';
-    const image = source.image();
+  // a source is { list, channel } for a row or card, { slot } for a tile. render() replaces
+  // the rail's rows on every snapshot, so its element is looked up when needed, never kept
+  function sourceEl(source) {
+    if (source.channel === undefined) return tiles[source.slot];
+    return source.list.querySelector(`[data-channel="${CSS.escape(source.channel)}"]`);
+  }
+  function sourceImage(source) {
+    if (source.channel === undefined) return latest?.slots[source.slot]?.still ?? null;
+    return sourceEl(source)?.querySelector('img')?.src || null;
+  }
+  const unpress = () => document.querySelectorAll('.pressing').forEach(x => x.classList.remove('pressing'));
+
+  function armDrag(e, source) {
+    if (e.button !== 0 || drag) return;
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, source, active: false, touch: e.pointerType === 'touch' };
+    if (!drag.touch) return;
+    sourceEl(source)?.classList.add('pressing');
+    drag.timer = setTimeout(() => { if (drag && !drag.active) start(e); }, LONG_PRESS);
+  }
+
+  function start(e) {
+    const ghost = el('div', 'ghost');
+    const image = sourceImage(drag.source);
     if (image) ghost.style.backgroundImage = 'url("' + image + '")';
     document.body.append(ghost);
-    drag.el.classList.remove('pressing');
-    drag.el.classList.add('lifted');
-    drag = { ...drag, ghost, source, active: true };
+    unpress();
+    sourceEl(drag.source)?.classList.add('lifted');
+    drag = { ...drag, ghost, image, active: true };
     move(e);
   }
 
@@ -744,11 +792,11 @@
     drag.ghost.style.left = e.clientX + 'px';
     drag.ghost.style.top = e.clientY + 'px';
     const over = tileUnder(e.clientX, e.clientY);
-    tiles.forEach(t => t.classList.toggle('target', t === over && t !== drag.source.tile));
+    tiles.forEach((t, i) => t.classList.toggle('target', t === over && i !== drag.source.slot));
   }
 
   async function place(slot, channel, image) {
-    expect(slot, channel);
+    expect(slot);
     cover(tiles[slot], image);
     try {
       await act({ action: 'place', channel, slot });
@@ -758,7 +806,7 @@
   }
 
   function end(e, cancelled) {
-    const { source, ghost } = drag;
+    const { source, ghost, image } = drag;
     ghost.remove();
     tiles.forEach(t => t.classList.remove('target'));
     // a redrawn list may hold a newer copy of the source
@@ -768,12 +816,11 @@
     if (!over) return;
     const slot = tiles.indexOf(over);
     if (source.channel !== undefined) {
-      place(slot, source.channel, source.image());
+      place(slot, source.channel, image);
     } else if (slot !== source.slot) {
       const a = source.slot, b = slot;
-      const ca = latest?.slots[a]?.channel ?? null, cb = latest?.slots[b]?.channel ?? null;
-      expect(a, cb);
-      expect(b, ca);
+      expect(a);
+      expect(b);
       const fa = frame(tiles[a]), fb = frame(tiles[b]);
       cover(tiles[a], fb);
       cover(tiles[b], fa);
@@ -787,53 +834,24 @@
     const far = Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > DRAG_DISTANCE;
     if (!far) return;
     // a touch that moves before the long press is a scroll, not a drag
-    if (drag.touch) { clearTimeout(drag.timer); drag.el.classList.remove('pressing'); drag = null; return; }
-    start(e, drag.pending());
+    if (drag.touch) { clearTimeout(drag.timer); unpress(); drag = null; return; }
+    start(e);
   });
-  document.addEventListener('pointerup', e => {
-    if (!drag || e.pointerId !== drag.id) return;
-    clearTimeout(drag.timer);
-    drag.el.classList.remove('pressing');
-    if (drag.active) { dragged = true; end(e, false); } else drag = null;
-  });
-  document.addEventListener('pointercancel', e => {
-    if (!drag || e.pointerId !== drag.id) return;
-    clearTimeout(drag.timer);
-    drag.el.classList.remove('pressing');
-    if (drag.active) end(e, true); else drag = null;
-  });
+  for (const type of ['pointerup', 'pointercancel']) {
+    document.addEventListener(type, e => {
+      if (!drag || e.pointerId !== drag.id) return;
+      clearTimeout(drag.timer);
+      unpress();
+      if (!drag.active) { drag = null; return; }
+      if (type === 'pointerup') dragged = true;
+      end(e, type === 'pointercancel');
+    });
+  }
   // once a touch drag starts, keep the page from scrolling under it
   document.addEventListener('touchmove', e => { if (drag && drag.active) e.preventDefault(); }, { passive: false });
   // the drop's pointerup also clicks the tile; that click must not toggle its sound
   document.addEventListener('click', e => { if (dragged) { dragged = false; e.stopPropagation(); e.preventDefault(); } }, true);
-
-  rail.addEventListener('pointerdown', e => {
-    const li = e.target.closest('.pickable');
-    if (!li || e.button !== 0 || drag) return;
-    const img = li.querySelector('img');
-    const source = () => ({ channel: li.dataset.channel, image: () => img && img.src });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: li, active: false, touch: e.pointerType === 'touch', pending: source };
-    if (drag.touch) li.classList.add('pressing');
-    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
-  });
-  document.querySelector('.cards').addEventListener('pointerdown', e => {
-    const card = e.target.closest('.pickable');
-    if (!card || e.button !== 0 || drag) return;
-    const img = card.querySelector('img');
-    const source = () => ({ channel: card.dataset.channel, image: () => img && img.src });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: card, active: false, touch: e.pointerType === 'touch', pending: source };
-    if (drag.touch) card.classList.add('pressing');
-    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
-  });
-  tiles.forEach((tile, slot) => tile.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || drag) return;
-    const source = () => ({
-      slot, tile,
-      image: () => latest?.slots[slot]?.still ?? null,
-    });
-    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: tile, active: false, touch: e.pointerType === 'touch', pending: source };
-    if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
-  }));
+  tiles.forEach((tile, slot) => tile.addEventListener('pointerdown', e => armDrag(e, { slot })));
 
   const token = document.querySelector('meta[name="quadlink-token"]').content;
 
@@ -842,13 +860,10 @@
   const exploreQ = document.getElementById('explore-q');
   const cats = explore.querySelector('.explore-cats');
   const cards = explore.querySelector('.cards');
-  const note = explore.querySelector('.explore-note');
   const endNote = explore.querySelector('.explore-end');
   const exFilterBtn = explore.querySelector('.ex-filter-btn');
   const exSortBtn = explore.querySelector('.ex-sort-btn');
-  const exFilterPop = explore.querySelector('.ex-filter-pop');
-  const exSortPop = explore.querySelector('.ex-sort-pop');
-  const EX_SORTS = [['viewers', 'Viewers: high to low'], ['fewest', 'Viewers: low to high'], ['new', 'New']];
+  const EX_SORTS = [['viewers', 'Most viewers'], ['fewest', 'Fewest viewers'], ['new', 'Newest']];
   const scroller = explore.querySelector('.explore-scroll');
   // the rail and Explore fade out at their top edge once anything sits above it
   for (const area of [scroller, document.querySelector('.rail-scroll')]) {
@@ -863,7 +878,7 @@
   const columns = () => Number(getComputedStyle(cards).getPropertyValue('--cols'));
   // lang: a Twitch code, '' for all
   const ex = { category: null, lang: null, sort: 'viewers', listing: null,
-    found: [], searching: false, searchTimer: null, request: 0, catRequest: 0, foundRequest: 0 };
+    found: [], searching: false, searchTimer: null };
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
     if (saved.category?.id) ex.category = saved.category;
@@ -915,12 +930,12 @@
   }
 
   function choose(c) {
-    const same = ex.category?.id === c.id;
+    const kept = ex.category?.id === c.id;
     ex.category = { id: c.id, name: c.name, viewers: c.viewers };
     ex.searching = false;
     saveExplore();
-    markPills();
-    if (!same || !ex.listing) loadStreams(); else showStreams();
+    markChips();
+    if (!kept || !ex.listing) loadStreams(); else showStreams();
   }
 
   async function chooseNamed(name) {
@@ -985,50 +1000,54 @@
     }));
   }
 
-  function markPills() {
+  function markChips() {
     cats.querySelectorAll('.chip').forEach(b =>
       b.setAttribute('aria-pressed', String(b.dataset.id === ex.category?.id)));
   }
 
-  // the search's results, else Twitch's top categories; returns what it listed
-  async function showCats() {
-    const q = exploreQ.value.trim();
-    const request = ++ex.catRequest;
-    let found = null;
+  // only the newest request of each kind counts. a failure (a restart, Twitch, the proxy)
+  // says nothing: what is shown stays, and again() asks once more while Explore is open.
+  // resolves to apply's result, or null for a stale or failed request
+  const requests = { cats: 0, found: 0, streams: 0 };
+  async function retrying(kind, path, apply, again, failed = () => {}) {
+    const n = ++requests[kind];
     try {
-      const body = await getJSON('/api/explore/categories?q=' + encodeURIComponent(q));
-      if (request !== ex.catRequest) return null;
-      found = body.categories;
-      cats.replaceChildren(...found.map(categoryChip));
-      if (found.length) fitRows();
+      const body = await getJSON(path);
+      if (n === requests[kind]) return apply(body);
     } catch {
-      // a failure (a restart, Twitch, the proxy) says nothing: the list stays and asks again
-      if (request !== ex.catRequest) return null;
-      setTimeout(() => { if (exploring() && request === ex.catRequest) showCats(); }, RETRY_AFTER);
+      if (n !== requests[kind]) return null;
+      failed();
+      setTimeout(() => { if (exploring() && n === requests[kind]) again(); }, RETRY_AFTER);
     }
-    return found;
+    return null;
+  }
+
+  // the search's results, else Twitch's top categories; resolves to what it listed
+  function showCats() {
+    const q = exploreQ.value.trim();
+    return retrying('cats', '/api/explore/categories?q=' + encodeURIComponent(q), body => {
+      cats.replaceChildren(...body.categories.map(categoryChip));
+      if (body.categories.length) fitRows();
+      return body.categories;
+    }, showCats);
   }
 
   // live channels whose name matches the search, ahead of the listing
   async function showFound() {
     const q = exploreQ.value.trim();
-    const request = ++ex.foundRequest;
     if (!q) {
+      requests.found++;
       ex.found = [];
       showStreams();
       return;
     }
-    try {
-      const body = await getJSON('/api/explore/channels?q=' + encodeURIComponent(q));
-      if (request !== ex.foundRequest) return;
+    await retrying('found', '/api/explore/channels?q=' + encodeURIComponent(q), body => {
       ex.found = body.streams;
       showStreams();
-    } catch {
-      if (request !== ex.foundRequest) return;
+    }, showFound, () => {
       // the cards stand for another search until the retry answers
       if (ex.searching) placeholders();
-      setTimeout(() => { if (exploring() && request === ex.foundRequest) showFound(); }, RETRY_AFTER);
-    }
+    });
   }
   exploreQ.addEventListener('input', () => {
     ex.searching = true;
@@ -1036,15 +1055,13 @@
     ex.searchTimer = setTimeout(searched, SEARCH_AFTER);
   });
   exploreQ.addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      clearTimeout(ex.searchTimer);
-      searched().then(chooseExact);
-    }
-    if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; searched(); }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    clearTimeout(ex.searchTimer);
+    searched().then(chooseExact);
   });
+  clearable(exploreQ, searched);
 
-  // the search persists until cleared; clearing it ends a choice the top categories do not hold
   // Enter takes only an exact name: a channel, picked for a tile, before a category
   function chooseExact() {
     const q = exploreQ.value.trim().toLowerCase();
@@ -1054,53 +1071,24 @@
     [...cats.querySelectorAll('.chip')].find(b => b.firstChild.textContent.toLowerCase() === q)?.click();
   }
 
+  // the search persists until cleared; clearing it ends a choice the top categories do not hold
   async function searched() {
     saveExplore();
     const [found] = await Promise.all([showCats(), showFound()]);
     if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
   }
 
-
-  function setSort(sort) {
-    if (ex.sort === sort) return;
-    ex.sort = sort;
-    saveExplore();
-    markExploreTools();
-    loadStreams();
-  }
-  function fillExSorts() {
-    const field = exSortPop.querySelector('.ex-sorts');
-    field.replaceChildren(field.querySelector('legend'), ...EX_SORTS.map(([key, text]) =>
-      option('radio', 'ex-sort', key, text, ex.sort === key, () => setSort(key))));
-  }
-  exSortBtn.addEventListener('click', () => toggle(exSortBtn, exSortPop, fillExSorts));
-  exSortPop.querySelector('.reset').addEventListener('click', () => { setSort('viewers'); fillExSorts(); });
-
-  // the rail's dot: a menu's choice differs from its default
-  function markExploreTools() {
-    exFilterBtn.classList.toggle('changed', ex.lang !== ownLang());
-    exSortBtn.classList.toggle('changed', ex.sort !== 'viewers');
-  }
-
-  async function loadStreams() {
-    const request = ++ex.request;
+  function loadStreams() {
     const id = ex.category?.id ?? '';
     ex.listing = null;
-    note.textContent = '';
     placeholders();
     scroller.scrollTop = 0;
     scroller.classList.remove('under');
-    try {
-      const listing = await getJSON(`/api/explore/streams?category=${id}&sort=${ex.sort}&language=${ex.lang}`);
-      if (request !== ex.request) return;
+    return retrying('streams', `/api/explore/streams?category=${id}&sort=${ex.sort}&language=${ex.lang}`, listing => {
       ex.listing = listing;
       if (ex.category && listing.category) ex.category.viewers = listing.category.viewers;
       showStreams();
-    } catch {
-      // the placeholders stay and the listing asks again, without a word
-      if (request !== ex.request) return;
-      setTimeout(() => { if (exploring() && request === ex.request) loadStreams(); }, RETRY_AFTER);
-    }
+    }, loadStreams);
   }
 
   function placeholders() {
@@ -1112,7 +1100,6 @@
   function showStreams() {
     if (ex.searching && ex.found.length) {
       cards.replaceChildren(...ex.found.map(card));
-      note.replaceChildren();
       endNote.textContent = '';
       return;
     }
@@ -1122,7 +1109,6 @@
     // a top-N cut ends on a full row
     const shown = more ? streams.slice(0, streams.length - (streams.length % columns())) : streams;
     cards.replaceChildren(...shown.map(card));
-    note.replaceChildren();
     // the grid's end needs no words; only an empty grid gets a line
     endNote.textContent = streams.length ? '' : `No one is live${category ? ' in ' + category.name : ''}.`;
   }
@@ -1157,26 +1143,20 @@
   }
   if (ex.lang === null) ex.lang = ownLang();
 
-  function setLang(code) {
-    if (ex.lang === code) return;
-    ex.lang = code;
-    saveExplore();
-    markExploreTools();
-    loadStreams();
-  }
-  function fillExLangs() {
+  function langChoices() {
     const ownCode = ownLang();
     const label = code => [flag(code), languageName(code)].filter(Boolean).join(' ');
     const rest = LANGS.filter(c => c !== ownCode).sort((a, b) => languageName(a).localeCompare(languageName(b)));
-    const choices = [['', 'All languages'], ...(ownCode ? [[ownCode, label(ownCode)]] : []),
+    return [['', 'All languages'], ...(ownCode ? [[ownCode, label(ownCode)]] : []),
       ...rest.map(c => [c, label(c)])];
-    const field = exFilterPop.querySelector('.ex-langs');
-    field.replaceChildren(field.querySelector('legend'), ...choices.map(([code, text]) =>
-      option('radio', 'ex-lang', code, text, ex.lang === code, () => setLang(code))));
   }
-  exFilterBtn.addEventListener('click', () => toggle(exFilterBtn, exFilterPop, fillExLangs));
-  exFilterPop.querySelector('.reset').addEventListener('click', () => { setLang(ownLang()); fillExLangs(); });
-  markExploreTools();
+  const exApply = () => { saveExplore(); loadStreams(); };
+  menu({ button: exFilterBtn, title: 'Language', reset: 'Reset language', apply: exApply,
+    groups: [{ type: 'radio', name: 'ex-lang', choices: langChoices, fallback: ownLang(),
+      get: () => ex.lang, set: v => { ex.lang = v; } }] });
+  menu({ button: exSortBtn, title: 'Sort by', reset: 'Reset sort', apply: exApply,
+    groups: [{ type: 'radio', name: 'ex-sort', choices: () => EX_SORTS, fallback: 'viewers',
+      get: () => ex.sort, set: v => { ex.sort = v; } }] });
 
   // safe edits only: Twitch shows titles as typed, so case stays, and a !command stays
   // unless it is part of the run that ends the title. ©®™ are pictographic but not emoji
