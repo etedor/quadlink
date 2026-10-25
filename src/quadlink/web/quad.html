@@ -99,13 +99,14 @@
   .pop input { accent-color: var(--accent); }
   .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
-    display: flex; flex-direction: column; align-items: center; }
+    display: flex; flex-direction: column; align-items: center; overflow: hidden; }
   /* the quad as four cards, the size of Explore's: a live tile, then name and category.
      7px wider each side, the cards' inset, so their content lines up with Explore */
   .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
-    width: calc(92cqw + 14px); margin-top: 5px; flex: none; font: 16px system-ui, sans-serif;
-    /* its own panel: what is on the TV, and a surface Explore scrolls away beneath */
-    border-radius: var(--radius); background: var(--current); }
+    width: calc(92cqw + 14px); padding: 6px 0; flex: none; font: 16px system-ui, sans-serif;
+    /* a band the panel's full width: what is on the TV, and a surface Explore scrolls away
+       beneath. full width so it has no side edges to line up with the column */
+    background: var(--current); box-shadow: 0 0 0 100vmax var(--current); clip-path: inset(0 -100vmax); }
   .tile { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     background: var(--well); overflow: hidden; }
   /* first among the outline rules: pending and failure outrank a plain hover */
