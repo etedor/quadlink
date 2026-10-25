@@ -1,4 +1,4 @@
-"""Tests for the LL-HLS slots: prefetch, progressive parts, filler and splices."""
+"""Tests for the LL-HLS slots: prefetch, progressive parts, cushion, filler and splices."""
 
 import asyncio
 import re
@@ -12,7 +12,20 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from quadlink.relay import lowlat
-from quadlink.relay.lowlat import PACE, PART_TARGET, LowLatency, _Part, next_release, with_prefetch
+from quadlink.relay.lowlat import (
+    CATCH_UP,
+    CUSHION,
+    CUSHION_SLACK,
+    MAX_LEAD,
+    PART_TARGET,
+    LowLatency,
+    _Part,
+    next_release,
+    start_back,
+    with_prefetch,
+)
+from quadlink.relay.parts import Part
+from quadlink.relay.playlist import Segment
 from quadlink.relay.tsinfo import audio_sample_rate
 
 SOURCE = """#EXTM3U
@@ -60,9 +73,10 @@ class TestWithPrefetch:
 
 
 class TestNextRelease:
-    def test_a_part_follows_the_one_before_at_the_pace(self):
+    def test_a_part_follows_the_one_before_by_its_duration(self):
         prev = _Part(b"", 0.5, False, release=100.0)
-        assert next_release(99.0, prev) == pytest.approx(100.0 + 0.5 * PACE)
+        assert next_release(99.0, prev) == pytest.approx(100.5)
+        assert next_release(99.0, prev, CATCH_UP) == pytest.approx(100.0 + 0.5 / CATCH_UP)
 
     def test_a_late_part_goes_out_now(self):
         assert next_release(200.0, _Part(b"", 0.5, False, release=100.0)) == 200.0
@@ -71,7 +85,111 @@ class TestNextRelease:
     def test_a_timestamp_jump_holds_the_next_part_back_one_part_at_most(self):
         # a PTS wrap reads as a part lasting about a day
         prev = _Part(b"", 95_000.0, False, release=100.0)
-        assert next_release(100.0, prev) == pytest.approx(100.0 + PART_TARGET * PACE)
+        assert next_release(100.0, prev) == pytest.approx(100.0 + PART_TARGET)
+
+
+def _listing(*uris: str, duration: float = 2.0) -> list[Segment]:
+    return [Segment(k, uri, duration, None, False, None) for k, uri in enumerate(uris)]
+
+
+class TestStartBack:
+    def test_a_run_starts_one_complete_segment_back_from_the_encoding_one(self):
+        # 2s complete plus about 1s of the one being encoded
+        segs = _listing("a", "b", "c", "d", "e")
+        assert start_back(segs, {"d", "e"}) == 2
+
+    def test_without_prefetch_it_starts_a_cushion_back_from_the_end(self):
+        segs = _listing("a", "b", "c", "d")
+        assert start_back(segs, set()) == 2
+        assert start_back(_listing("a", "b", "c", duration=1.0), set()) == 0
+
+    def test_only_prefetch_starts_at_the_first(self):
+        assert start_back(_listing("d", "e"), {"d", "e"}) == 0
+
+
+def _slot() -> lowlat._Slot:
+    return lowlat._Slot(types.SimpleNamespace(), 0)
+
+
+class Cuts:
+    """Feeds a slot 0.5s parts in 2s segments, each cut at a given loop time."""
+
+    def __init__(self, state: lowlat._Slot) -> None:
+        self.state = state
+        self.k = 0
+        self.released: list[float] = []
+
+    def cut(self, now: float, n: int = 1) -> None:
+        for _ in range(n):
+            self.state._add([Part(0, b"", 0.5, self.k % 4 == 0, self.k % 4 == 3)], now)
+            self.k += 1
+            last = self.state._last_part()
+            assert last is not None
+            self.released.append(last.release)
+
+    def releases(self) -> list[float]:
+        return self.released
+
+    def run(self, start: float, end: float, at: Callable[[float], int] = lambda t: 1) -> None:
+        """One step every 0.5s from start to end; `at(t)` parts are cut at each."""
+        t = start
+        while t < end - 1e-9:
+            if n := at(t):
+                self.cut(t, n)
+            t += 0.5
+
+
+class TestCushion:
+    def test_a_run_starts_with_its_cushion_queued_and_its_first_part_out(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(10.0, 5)
+        assert cuts.releases()[0] == 10.0
+        assert state.cushion(10.0) == pytest.approx(2.5)
+        # real time from there: one part every 0.5s
+        assert cuts.releases() == pytest.approx([10.0 + 0.5 * k for k in range(5)])
+
+    def test_a_gap_shorter_than_the_cushion_keeps_the_schedule(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        # the source sends nothing for 2s, then what it held back
+        cuts.run(0.5, 20.0, lambda t: 0 if 5.0 <= t < 7.0 else 5 if t == 7.0 else 1)
+        releases = cuts.releases()
+        steps = [b - a for a, b in zip(releases, releases[1:], strict=False)]
+        assert steps == pytest.approx([0.5] * len(steps))
+
+    def test_a_cushion_after_a_burst_converges_back(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        # 2s too much: a stall the source makes up with more than it held back
+        cuts.run(0.5, 120.0, lambda t: 5 if t == 10.0 else 1)
+        assert state.cushion(119.75) <= CUSHION + CUSHION_SLACK
+        releases = cuts.releases()
+        steps = [b - a for a, b in zip(releases, releases[1:], strict=False)]
+        assert min(steps) >= 0.5 / CATCH_UP - 1e-9
+        # never further ahead of real time than MAX_LEAD
+        assert releases[-1] - releases[0] >= 0.5 * (len(releases) - 1) - MAX_LEAD - 1e-9
+
+    def test_a_cushion_stays_while_the_source_keeps_time(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        cuts.run(0.5, 60.0)
+        assert state.cushion(59.75) == pytest.approx(CUSHION, abs=0.5)
+
+    def test_a_splice_goes_out_without_waiting_for_a_cushion(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        cuts.run(0.5, 10.0)
+        state._drop_unreleased(10.0)
+        state.pending_disc = True
+        cuts.k = 0
+        cuts.cut(10.1)
+        first = state.segs[-1]
+        assert first.disc and first.parts[0].release - 10.1 <= PART_TARGET
 
 
 def _numbers(text: str) -> dict[int, int]:
@@ -114,6 +232,8 @@ class Source:
         self.segs = segs
         self.identity = identity
         self.start = time.monotonic()
+        # while set, nothing past this time is listed or sent; cleared, the held
+        # bytes go out at once
         self.stopped_at: float | None = None
         self.base = ""
 
@@ -206,26 +326,27 @@ async def _playlist(client: TestClient) -> str:
     return await resp.text()
 
 
-async def test_parts_come_out_while_the_segment_still_streams(setup):
+async def test_parts_come_out_half_a_second_apart_behind_the_cushion(setup):
     relay, add, client, _ = setup
     source = relay.source = add("chan")
     seen: dict[str, float] = {}
-    while time.monotonic() - source.start < 4:
+    while time.monotonic() - source.start < 5:
         resp = await client.get("/streams/ll/1")
         if resp.status == 200:
             text = await resp.text()
             for _, uri, _ in _parts(text):
                 seen.setdefault(uri, time.monotonic() - source.start)
-            if "#EXTINF" in text:
-                seen.setdefault("segment", time.monotonic() - source.start)
+            for uri in re.findall(r"^/streams/ll/1/seg/\S+", text, re.M):
+                seen.setdefault(uri, time.monotonic() - source.start)
         await asyncio.sleep(0.05)
-    seq = min(int(re.search(r"/part/(\d+)\.", uri)[1]) for uri in seen if "/part/" in uri)
+    # the run starts one complete segment back, as its cushion; the next one is
+    # the first still encoding, from 0s to 2s
+    seq = min(int(re.search(r"/part/(\d+)\.", uri)[1]) for uri in seen if "/part/" in uri) + 1
     first = [seen[f"/streams/ll/1/part/{seq}.{k}.ts"] for k in range(4)]
-    # the live segment streams over 2s: its parts follow it, half a second apart
-    assert first[0] < 1.0
+    assert 1.5 < first[0] < 3.0
     # the source sends 0.1s chunks and this polls every 0.05s
     assert all(abs(b - a - 0.5) <= 0.15 for a, b in zip(first, first[1:], strict=False)), first
-    assert seen["segment"] > first[2]
+    assert seen[f"/streams/ll/1/seg/{seq}.ts"] >= first[3]
 
 
 async def test_parts_are_converted_to_48k_and_segments_start_independent(setup):
@@ -270,13 +391,40 @@ async def test_far_ahead_request_is_rejected(setup):
     assert resp.status == 400
 
 
+async def test_a_run_starts_with_a_cushion(setup):
+    relay, add, client, ll = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    await asyncio.sleep(2.5)
+    cushion = ll.slot(1).cushion(asyncio.get_running_loop().time())
+    # the complete segment (2s), less the part being cut: this source's encoding
+    # segment starts with the slot, where Twitch's is on average half out
+    assert 0.9 < cushion <= CUSHION + CUSHION_SLACK
+
+
+async def test_a_stall_shorter_than_the_cushion_sends_no_filler(setup):
+    relay, add, client, ll = setup
+    source = relay.source = add("chan", count=8)
+    await _playlist(client)
+    await asyncio.sleep(3.5)
+    source.stopped_at = time.monotonic()
+    await asyncio.sleep(1.0)
+    source.stopped_at = None
+    await asyncio.sleep(4.0)
+    state = ll.slot(1)
+    assert not any(seg.filler for seg in state.segs)
+    releases = [p.release for s in state.segs for p in s.parts]
+    # released at real time throughout: no gap a player would have to wait through
+    assert max(b - a for a, b in zip(releases, releases[1:], strict=False)) < PART_TARGET + 0.1
+
+
 async def test_filler_goes_out_when_the_source_stalls(setup, monkeypatch):
     relay, add, client, ll = setup
     source = relay.source = add("chan")
     await _playlist(client)
     await asyncio.sleep(2.5)
     source.stopped_at = time.monotonic()
-    await asyncio.sleep(lowlat.FILL_AFTER + 2.5)
+    await asyncio.sleep(CUSHION + lowlat.FILL_AFTER + 1.5)
     text = await _playlist(client)
     assert "#EXT-X-DISCONTINUITY" in text
     state = ll.slot(1)
@@ -288,13 +436,21 @@ async def test_a_channel_change_splices_at_once(setup):
     relay.source = add("one")
     await _playlist(client)
     await asyncio.sleep(3)
-    before = ll.slot(1).segs[-1].seq
-    relay.source = add("two")
-    await asyncio.sleep(2)
-    text = await _playlist(client)
+    loop = asyncio.get_running_loop()
     state = ll.slot(1)
-    new = [s for s in state.segs if s.seq > before and s.disc]
-    assert new, text
+    # the splice drops segments still in the cushion; their numbers are used again
+    before = max(seg.seq for seg in state.segs if seg.released(loop.time()))
+    relay.source = add("two")
+    swapped = time.monotonic()
+    while time.monotonic() - swapped < 3:
+        new = [s for s in state.segs if s.seq > before and s.disc and s.released(loop.time())]
+        if new:
+            break
+        await asyncio.sleep(0.05)
+    # the new channel's first part goes out without waiting for its cushion
+    assert new and time.monotonic() - swapped < 1.5
+    await asyncio.sleep(1)
+    text = await _playlist(client)
     assert new[0].parts[0].independent
     assert "#EXT-X-DISCONTINUITY" in text
 
@@ -313,6 +469,34 @@ async def test_a_restarted_slot_carries_on_its_numbering(setup):
     assert first > last
     assert int(re.search(r"DISCONTINUITY-SEQUENCE:(\d+)", text)[1]) >= dseq
     assert ll.slot(1).segs[0].disc
+
+
+async def test_video_back_after_filler_starts_a_cushion_back_in_the_backlog(setup):
+    _, _, _, ll = setup
+    state = lowlat._Slot(ll, 0)
+
+    def listing(complete: list[str], prefetch: list[str]) -> str:
+        lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+        for name in complete:
+            lines += ["#EXTINF:2.000,live", f"http://127.0.0.1:9/{name}.ts"]
+        lines += [f"#EXT-X-TWITCH-PREFETCH:http://127.0.0.1:9/{name}.ts" for name in prefetch]
+        return "\n".join(lines) + "\n"
+
+    def queued() -> list[str]:
+        return [q.seg.uri.rsplit("/", 1)[1] for q in state.queue]
+
+    state._take("chan", listing(["a"], ["b", "c"]))
+    # one complete segment back from the one being encoded
+    assert queued() == ["a.ts", "b.ts", "c.ts"]
+    # all of it fed, then the source went quiet and filler went out
+    state.queue.clear()
+    filler = lowlat._Seg(1, True, 1, filler=True, complete=True)
+    filler.parts.append(_Part(b"", 0.5, True, release=0.0))
+    state.segs.append(filler)
+    state._take("chan", listing(["a", "b", "c", "d", "e"], ["f", "g"]))
+    assert queued() == ["e.ts", "f.ts", "g.ts"]
+    assert state.queue[0].fresh and all(q.gen == state.gen for q in state.queue)
+    await state.stop()
 
 
 async def test_a_segment_listed_again_with_a_later_time_is_fed_once(setup):
