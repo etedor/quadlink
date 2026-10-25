@@ -12,56 +12,67 @@
 <link rel="stylesheet" href="/web/base.css">
 <style>
   html, body { height: 100%; }
-  body { display: grid; grid-template: 58px 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
+  /* --cols and --grid-gap are shared by the quad and the Explore grid, so their columns line up;
+     the header row is as tall as the rail's tools row, so the logo centres on the search field.
+     312px is the rail's one width */
+  body { --cols: 4; --grid-gap: var(--edge); --bar: calc(var(--control) + 2 * var(--edge));
+    display: grid; grid-template: var(--bar) 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
+  /* the logo is content and starts where the quad's tiles do: 4% of the stage, never less than
+     the phone's tile edge. the Explore button is a surface, on --edge */
   header { grid-area: top; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 19px; }
+    padding: 0 var(--edge) 0 max(var(--edge) + var(--inset), 4%); }
   .logo { display: flex; align-items: center; }
+  /* the wordmark's own proportions */
   .logo svg { width: 143.4px; height: 24.7px; }
   .explore-btn { padding-inline-end: var(--s4); }
-  aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column;
-    position: relative; }
-  .tools { display: flex; gap: 7px; padding: 10px 10px 5px; }
+  aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column; }
+  /* field and buttons. margins, not padding, so its box is exactly the button row and its menus
+     hang from that */
+  .tools { position: relative; display: flex; gap: var(--s2); margin-block: var(--edge); }
+  aside .tools { margin-inline: var(--edge); }
   .tools .field { flex: 1; min-width: 0; }
   .tools .btn { position: relative; flex: none; }
   /* a dot on a glyph says its choices differ from the defaults */
-  .tools .btn.changed::after { content: ""; position: absolute; top: 6px; right: 6px;
-    width: 7px; height: 7px; border-radius: 50%; background: var(--accent-ink); }
+  .tools .btn.changed::after { content: ""; position: absolute; top: var(--s1); right: var(--s1);
+    width: var(--s2); height: var(--s2); border-radius: var(--r-pill); background: var(--accent-ink); }
   /* the accent ink would vanish on the on fill */
   .tools .btn.changed[aria-expanded="true"]::after { background: currentColor; }
-  /* the gutter keeps room for the scrollbar even when it shows, so the reset glyph
-     at the row's right end never sits under it */
-  .pop { position: absolute; top: 53px; left: 10px; right: 10px; z-index: 1;
+  /* every menu hangs under its tools row, flush with the last button, at one width. the gutter
+     keeps room for the scrollbar even when it shows, so the reset glyph never sits under it */
+  .pop { position: absolute; top: calc(100% + var(--s1)); right: 0; width: min(320px, 100%); z-index: 1;
     border-radius: var(--r-outer); background: var(--overlay); max-height: 60vh;
     overflow-y: auto; scrollbar-gutter: stable; }
   .pop-head { display: flex; align-items: center; justify-content: space-between;
-    padding: 7px 7px 0 12px; color: var(--text-quiet); font-size: 14px; }
+    padding: var(--inset) var(--inset) 0 var(--edge); color: var(--text-quiet); font-size: var(--t-meta); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
-  .pop-body { padding: 0 12px 7px; }
+  .pop-body { padding: 0 var(--edge) var(--inset); }
   .pop fieldset:last-child { margin-bottom: 0; }
   /* the fade shows only while more options sit below, so the menu ends at its last item */
-  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: 38px;
-    margin-top: -32px; pointer-events: none;
+  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: var(--fade);
+    margin-top: calc(-1 * var(--fade)); pointer-events: none;
     background: linear-gradient(var(--clear), var(--overlay)); }
   .pop .reset { background-color: var(--clear); color: var(--text-quiet); }
   @media (hover: hover) { .pop .reset:hover { color: var(--text); } }
   /* fieldsets default to min-content width, which would let long names push past the edge */
-  .pop fieldset { border: 0; margin: 0 0 10px; padding: 0; min-width: 0; }
-  .pop legend { color: var(--text-quiet); font-size: 14px; margin-bottom: 5px; padding: 0; }
-  .pop label { display: flex; align-items: center; gap: 10px; padding: 5px 2px; cursor: pointer;
+  .pop fieldset { border: 0; margin: 0 0 var(--s2); padding: 0; min-width: 0; }
+  .pop legend { color: var(--text-quiet); font-size: var(--t-meta); margin-bottom: var(--s1); padding: 0; }
+  .pop label { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; cursor: pointer;
     min-width: 0; }
   .pop input { accent-color: var(--accent-fill); }
   .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; flex-direction: column; align-items: center; overflow: hidden; }
-  /* the quad as four cards, the size of Explore's: a live tile, then name and category.
-     7px wider each side, the cards' inset, so their content lines up with Explore */
-  .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
-    width: calc(92cqw + 14px); margin-top: 12px; padding: 12px 0; flex: none;
-    /* a panel nearly the stage's width, 12px in from its edges: what is on the TV, and a
-       surface Explore scrolls away beneath. wide so its edges sit clear of the column's */
-    background: var(--raised); box-shadow: 0 0 0 100vmax var(--raised);
-    clip-path: inset(0 calc(19px - 4cqw) round var(--r-outer)); }
+  /* the quad's cards and Explore's share one column: card boxes sit --inset short of 4% of the
+     stage, so the tiles sit on 4%, but never nearer the stage's edge than the panel does */
+  .quad, .explore { --gutter: max(var(--edge), 4cqw - var(--inset)); }
+  /* the quad as four cards, the size of Explore's: a live tile, then name and category, on a
+     panel --edge in from the stage: what is on the TV, and a surface Explore scrolls away beneath.
+     its corners are concentric with the tiles' at the top */
+  .quad { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: var(--grid-gap);
+    align-self: stretch; flex: none; margin: var(--edge) var(--edge) 0;
+    padding: var(--edge) calc(var(--gutter) - var(--edge));
+    border-radius: calc(var(--r-inner) + var(--edge) + var(--inset)); background: var(--raised); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   /* stands in for the incoming channel until the player reaches the splice */
   .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
@@ -70,18 +81,20 @@
   .tile button { all: unset; position: absolute; inset: 0; cursor: grab; }
   .tile.armed button { cursor: copy; }
   /* the rail's chips, on a scrim so they read over any video; clicks pass to the tile */
-  .tile-marks { position: absolute; z-index: 1; top: 10px; left: 10px; display: flex; gap: 5px;
+  .tile-marks { position: absolute; z-index: 1; top: var(--s2); left: var(--s2); display: flex; gap: var(--s1);
     pointer-events: none; }
-  .rail { list-style: none; margin: 0; padding: 5px 10px 10px; display: flex; flex-direction: column;
-    gap: 5px; }
+  .rail { list-style: none; margin: 0; padding: 0 var(--edge) var(--edge); display: flex; flex-direction: column;
+    gap: var(--s1); }
   /* one channel: a picture, then name and category. a card stacks them, a row sets them side by side */
-  .item { position: relative; display: flex; flex-direction: column; gap: 6px; padding: var(--inset);
+  .item { position: relative; display: flex; flex-direction: column; gap: var(--s1); padding: var(--inset);
     border-radius: var(--r-outer); min-width: 0; }
   .item.row { flex-direction: row; align-items: center; gap: var(--edge); }
+  /* the rail's one thumbnail width */
   .item.row > .thumb { flex: none; width: 96px; }
+  /* 2px: the fixed line boxes already carry the leading */
   .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
   /* fixed heights keep neighbours level whether or not a line carries a chip */
-  .line, .sub { display: flex; align-items: center; gap: var(--inset); min-width: 0; height: var(--line); }
+  .line, .sub { display: flex; align-items: center; gap: var(--s2); min-width: 0; height: var(--line); }
   .name { font-weight: 600; }
   /* the viewer count ends the name's line; the name gives way first */
   .line .viewers { margin-left: auto; font-size: var(--t-meta); }
@@ -98,10 +111,11 @@
   .pickable.pressing { background-image: linear-gradient(var(--veil), var(--veil)); }
   .lifted { opacity: 0.5; }
   /* every viewer count on the page: a small live dot, then the compact number */
-  .viewers { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--text-quiet);
+  .viewers { flex: none; display: inline-flex; align-items: center; gap: var(--s1); color: var(--text-quiet);
     font-weight: 400; font-variant-numeric: tabular-nums; }
   .viewers:empty { display: none; }
-  .viewers::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--live); }
+  .viewers::before { content: ""; width: var(--s1); height: var(--s1); border-radius: var(--r-pill);
+    background: var(--live); }
   :where(.btn, .chip):is([aria-pressed="true"], [aria-expanded="true"]) .viewers { color: inherit; }
   :where(.btn, .chip):is([aria-pressed="true"], [aria-expanded="true"]) .viewers::before {
     background: currentColor; }
@@ -118,37 +132,38 @@
   .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   /* the Explore button switches the phone's one list; desktop shows the rail and Explore */
   @media (min-width: 721px) { .explore-btn { display: none; } }
-  .explore { flex: 1; min-height: 0; width: 92cqw; display: flex; flex-direction: column;
-    position: relative; }
-  /* the rail's menu width, under the buttons that open it */
-  .explore .pop { left: auto; right: 7px; width: min(320px, 100%); }
+  /* field, chip rows and card boxes on one edge, the quad's card column */
+  .explore { flex: 1; min-height: 0; align-self: stretch; margin-inline: var(--gutter); display: flex;
+    flex-direction: column; }
   .explore[hidden] { display: none; }
   @media (min-width: 721px) { .explore[hidden] { display: flex; } }
-  .explore .tools { padding: 16px 0 7px; }
   /* the gaps grow so every row, the last too, is flush at both edges */
-  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 0 0 16px; }
+  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--s1);
+    padding: 0 0 var(--edge); }
+  .explore-cats:empty { display: none; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
-    gap: 5px; min-width: 0; }
+    gap: var(--s1); min-width: 0; }
   .explore-cats .chip { font-weight: 400; }
-  .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
+  .explore-note { margin: 0; padding: var(--s1) var(--inset); color: var(--text-quiet); font-size: var(--t-meta); }
   .explore-note:empty { display: none; }
-  /* 7px wider each side, the cards' inset, so their content lines up with the quad.
-     the whole of Explore scrolls, its tools too, and fades out under the quad; menus
-     anchor here so they scroll with the buttons that open them */
-  .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0 -7px; padding: 0 7px;
-    position: relative; }
+  /* the whole of Explore scrolls, its tools and menus too, and fades out under the quad. it
+     reaches --inset past the column so it does not clip the focus rings at the column's edges */
+  .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
+    margin: 0 calc(-1 * var(--inset)); padding: 0 var(--inset); }
   /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
-  :is(.explore-scroll, .rail-scroll).under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
-    mask-image: linear-gradient(var(--clear), var(--black) 48px); }
-  /* Explore's fade finishes 16px short of its edge, an empty band under the quad */
-  .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px);
-    mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px); }
-  .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 16px 12px;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  :is(.explore-scroll, .rail-scroll).under {
+    -webkit-mask-image: linear-gradient(var(--clear), var(--black) var(--fade));
+    mask-image: linear-gradient(var(--clear), var(--black) var(--fade)); }
+  /* Explore's fade starts --edge below its edge, an empty band under the quad */
+  .explore-scroll.under {
+    -webkit-mask-image: linear-gradient(var(--clear) var(--edge), var(--black) calc(var(--edge) + var(--fade)));
+    mask-image: linear-gradient(var(--clear) var(--edge), var(--black) calc(var(--edge) + var(--fade))); }
+  .cards { list-style: none; margin: 0; padding: 0 0 var(--edge); min-width: 0; display: grid; gap: var(--grid-gap);
+    grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); }
   /* the title fades in at the picture's foot on hover, focus or a pick, so the grid never
      shifts; the scrim darkens only under the text */
-  .peek { display: flex; position: absolute; inset: 0; align-items: flex-end; padding: 10px;
+  .peek { display: flex; position: absolute; inset: 0; align-items: flex-end; padding: var(--s2);
     box-sizing: border-box; background: var(--scrim-foot); color: var(--text); font-size: var(--t-meta);
     opacity: 0; pointer-events: none; transition: opacity var(--t-state); }
   .peek span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
@@ -157,10 +172,13 @@
   @media (hover: hover) { .pickable:hover .peek { opacity: 1; } }
   /* a placeholder item while its list loads; under reduced motion it holds still but stays */
   .skeleton { animation: pulse 1s infinite alternate; }
+  /* about the height of the text a bar stands for */
   .skeleton .bar { width: 100%; height: 12px; border-radius: var(--r-pill); background: var(--raised); }
   .skeleton .line .bar { width: 60%; }
-  .explore-end { margin: 0; padding: 4px 7px 16px; color: var(--text-quiet); font-size: 14px; }
+  .explore-end { margin: 0; padding: var(--s1) var(--inset) var(--s4); color: var(--text-quiet);
+    font-size: var(--t-meta); }
   .explore-end:empty { display: none; }
+  /* the drag ghost's one size, between a rail thumbnail and a card's */
   .ghost { position: fixed; z-index: 10; left: 0; top: 0; width: 144px; aspect-ratio: 16 / 9;
     border-radius: var(--r-inner); background: var(--well) center / cover no-repeat;
     pointer-events: none; opacity: 0.9; transform: translate(-50%, -50%); }
@@ -187,14 +205,15 @@
   }
   /* phones: top bar, the quad as 2x2 cards, then the rail or Explore */
   @media (max-width: 720px) {
-    body { grid-template: 58px auto minmax(0, 1fr) / minmax(0, 1fr); grid-template-areas: "top" "quad" "rail"; }
+    /* the narrow gap keeps the 2x2 quad short */
+    body { --cols: 2; --grid-gap: var(--s1); grid-template: var(--bar) auto minmax(0, 1fr) / minmax(0, 1fr);
+      grid-template-areas: "top" "quad" "rail"; }
     .stage { display: contents; }
-    .quad { grid-area: quad; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 4px;
-      width: auto; margin: 0 12px; padding: 6px 0; clip-path: inset(0 -100vmax); }
-    aside { padding-top: 10px; }
+    /* the panel is a full-bleed band; every surface below it sits on --edge */
+    .quad, .explore { --gutter: var(--edge); }
+    .quad { grid-area: quad; margin: 0; padding: var(--s1) var(--edge); border-radius: 0; }
     body.exploring aside { display: none; }
-    .explore { grid-area: rail; width: auto; padding: 10px 10px 0; }
-    .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .explore { grid-area: rail; }
     /* phones keep the chips to one row that scrolls sideways */
     .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
   }
@@ -224,17 +243,17 @@
     <input type="search" class="field" placeholder="Search…" aria-label="Search channels">
     <button type="button" class="btn icon filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
     <button type="button" class="btn icon sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
-  </div>
-  <div class="pop filter-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="btn icon reset" aria-label="Reset filters" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-    <div class="pop-body">
-      <fieldset class="show"><legend class="sr-only">Show</legend></fieldset>
-      <fieldset class="cats"><legend>Category</legend></fieldset>
+    <div class="pop filter-pop" hidden>
+      <div class="pop-head"><span aria-hidden="true">Show</span><button type="button" class="btn icon reset" aria-label="Reset filters" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+      <div class="pop-body">
+        <fieldset class="show"><legend class="sr-only">Show</legend></fieldset>
+        <fieldset class="cats"><legend>Category</legend></fieldset>
+      </div>
     </div>
-  </div>
-  <div class="pop sort-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-    <div class="pop-body"><fieldset class="sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
+    <div class="pop sort-pop" hidden>
+      <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+      <div class="pop-body"><fieldset class="sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
+    </div>
   </div>
   <div class="rail-scroll"><ul class="rail"></ul></div>
 </aside>
@@ -296,14 +315,14 @@
       autocomplete="off" spellcheck="false">
     <button type="button" class="btn icon ex-filter-btn" aria-label="Filter" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4 2v-8z"></path></svg></button>
     <button type="button" class="btn icon ex-sort-btn" aria-label="Sort" aria-expanded="false"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"></path></svg></button>
-  </div>
-  <div class="pop ex-filter-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Language</span><button type="button" class="btn icon reset" aria-label="Reset language" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-    <div class="pop-body"><fieldset class="ex-langs"><legend class="sr-only">Language</legend></fieldset></div>
-  </div>
-  <div class="pop ex-sort-pop" hidden>
-    <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
-    <div class="pop-body"><fieldset class="ex-sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
+    <div class="pop ex-filter-pop" hidden>
+      <div class="pop-head"><span aria-hidden="true">Language</span><button type="button" class="btn icon reset" aria-label="Reset language" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+      <div class="pop-body"><fieldset class="ex-langs"><legend class="sr-only">Language</legend></fieldset></div>
+    </div>
+    <div class="pop ex-sort-pop" hidden>
+      <div class="pop-head"><span aria-hidden="true">Sort by</span><button type="button" class="btn icon reset" aria-label="Reset sort" title="Reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg></button></div>
+      <div class="pop-body"><fieldset class="ex-sorts"><legend class="sr-only">Sort by</legend></fieldset></div>
+    </div>
   </div>
   <div class="explore-cats"></div>
   <p class="explore-note"></p>
@@ -641,7 +660,7 @@
   function toggle(button, pop, fill) {
     const open = pop.hidden;
     document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
-    document.querySelectorAll('.tools button').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    document.querySelectorAll('.tools > button').forEach(b => b.setAttribute('aria-expanded', 'false'));
     if (open) {
       fill(); pop.hidden = false; pop.scrollTop = 0;
       button.setAttribute('aria-expanded', 'true'); edge(pop);
@@ -653,9 +672,9 @@
   sortBtn.addEventListener('click', () => toggle(sortBtn, document.querySelector('.sort-pop'), fillSorts));
   function closePops() {
     document.querySelectorAll('.pop').forEach(p => { p.hidden = true; });
-    document.querySelectorAll('.tools button').forEach(b => b.setAttribute('aria-expanded', 'false'));
+    document.querySelectorAll('.tools > button').forEach(b => b.setAttribute('aria-expanded', 'false'));
   }
-  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools button')) closePops(); });
+  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools > button')) closePops(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
   document.querySelector('.filter-pop .reset').addEventListener('click', () => {
     view.show = [...DEFAULTS.show]; view.cats = []; save(); fillFilters(); render();
@@ -839,7 +858,9 @@
   // ms before a failed Explore request asks again
   const RETRY_AFTER = 3000;
   const CHIP_ROWS = 3;
-  const SKELETONS = 6;
+  const ROW_SKELETONS = 6;
+  // the grid's column count, from the CSS that lays it out
+  const columns = () => Number(getComputedStyle(cards).getPropertyValue('--cols'));
   // lang: a Twitch code, '' for all
   const ex = { category: null, lang: null, sort: 'viewers', listing: null,
     found: [], searching: false, searchTimer: null, request: 0, catRequest: 0, foundRequest: 0 };
@@ -1083,7 +1104,7 @@
   }
 
   function placeholders() {
-    cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
+    cards.replaceChildren(...Array.from({ length: 2 * columns() }, () => skeleton('card')));
     endNote.textContent = '';
   }
 
@@ -1098,8 +1119,8 @@
     // found cards from an earlier search must not stay while the listing loads
     if (!ex.listing) { placeholders(); return; }
     const { streams, more, category } = ex.listing;
-    // a top-N cut ends on a full row: 4 columns on desktop, 2 on phones
-    const shown = more ? streams.slice(0, streams.length - (streams.length % 4)) : streams;
+    // a top-N cut ends on a full row
+    const shown = more ? streams.slice(0, streams.length - (streams.length % columns())) : streams;
     cards.replaceChildren(...shown.map(card));
     note.replaceChildren();
     // the grid's end needs no words; only an empty grid gets a line
@@ -1178,7 +1199,7 @@
   phone.addEventListener('change', () => { if (!phone.matches) setExploring(true); });
 
   // placeholder rows until the first snapshot
-  rail.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('row')));
+  rail.replaceChildren(...Array.from({ length: ROW_SKELETONS }, () => skeleton('row')));
   const events = new EventSource('/api/events?token=' + encodeURIComponent(token));
   events.onmessage = e => {
     const before = latest;
