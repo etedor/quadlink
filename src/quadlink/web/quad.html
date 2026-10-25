@@ -1055,17 +1055,25 @@
   exploreQ.addEventListener('keydown', e => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      const chip = cats.querySelector('.chip');
-      if (chip) chip.click(); else if (ex.found[0]) pick(ex.found[0].channel);
+      clearTimeout(ex.searchTimer);
+      searched().then(chooseExact);
     }
     if (e.key === 'Escape' && exploreQ.value) { e.stopPropagation(); exploreQ.value = ''; searched(); }
   });
 
   // the search persists until cleared; clearing it ends a choice the top categories do not hold
+  // Enter takes only an exact name: a channel, picked for a tile, before a category
+  function chooseExact() {
+    const q = exploreQ.value.trim().toLowerCase();
+    if (!q) return;
+    const s = ex.found.find(x => x.channel === q || x.display_name.toLowerCase() === q);
+    if (s) { pick(s.channel); return; }
+    [...cats.querySelectorAll('.chip')].find(b => b.firstChild.textContent.toLowerCase() === q)?.click();
+  }
+
   async function searched() {
     saveExplore();
-    showFound();
-    const found = await showCats();
+    const [found] = await Promise.all([showCats(), showFound()]);
     if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
   }
 
