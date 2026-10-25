@@ -53,5 +53,49 @@
 body { margin: 0; font: var(--t-body)/var(--lh) system-ui, sans-serif; background: var(--ground);
   color: var(--text); }
 :focus-visible { outline: var(--focus) solid var(--text); outline-offset: 2px; }
-/* only where a clipping ancestor would hide an outside ring */
-.inset-focus:focus-visible { outline-offset: calc(-1 * var(--focus)); }
+/* only where a clipping ancestor would hide an outside ring; it restates the outline
+   so an `all: unset` on the element cannot drop it */
+.inset-focus:focus-visible { outline: var(--focus) solid var(--text);
+  outline-offset: calc(-1 * var(--focus)); }
+button { cursor: pointer; }
+/* the ring moves from a menu's radio or checkbox to its whole row */
+label:has(> input:focus-visible) { outline: var(--focus) solid var(--text); outline-offset: 0; }
+label > input:focus-visible { outline: 0; }
+
+/* every button: .icon is a square control, .link a button that reads as text */
+.btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--s2); height: var(--control); padding: 0 var(--edge); margin: 0; border: 0;
+  border-radius: var(--r-inner); background: var(--raised); color: var(--text); font: inherit;
+  transition: background-color var(--t-state); }
+.btn svg { flex: none; width: var(--icon); height: var(--icon); }
+.btn.icon { width: var(--control); padding: 0; }
+.btn.link { display: inline-block; vertical-align: top; max-width: 100%; height: auto; padding: 0; border-radius: 0;
+  background: none; color: inherit; text-align: start; }
+/* display above would otherwise show a hidden button */
+.btn[hidden] { display: none; }
+
+.field { box-sizing: border-box; height: var(--control); padding: 0 var(--edge); margin: 0; border: 0;
+  border-radius: var(--r-inner); background: var(--raised); color: var(--text); font: inherit; }
+.field::placeholder { color: var(--text-quiet); }
+
+/* a variant sets --chip-bg and --chip-fg; the on state below overrides both */
+.chip { box-sizing: border-box; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; gap: var(--s1); height: var(--chip); min-width: var(--chip);
+  padding: 0 var(--s2); margin: 0; border: 0; border-radius: var(--r-pill);
+  background: var(--chip-bg, var(--raised)); color: var(--chip-fg, var(--text)); font: inherit;
+  font-size: var(--t-chip); font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums;
+  transition: background-color var(--t-state); }
+.chip svg { flex: none; width: var(--icon-s); height: var(--icon-s); }
+.chip.on-media { --chip-bg: var(--scrim); }
+
+.truncate { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+/* states. hover and on share one specificity, so on wins by order: its background
+   shorthand clears the veil, and nothing restates it */
+@media (hover: hover) {
+  :where(.btn:not(.link), button.chip):hover { background-image: linear-gradient(var(--veil), var(--veil)); }
+  .btn.link:hover { color: var(--text); }
+}
+/* on: a persistent choice (a toggle, a chosen chip, an open menu's button) */
+:where(.btn, .chip):is([aria-pressed="true"], [aria-expanded="true"]) {
+  background: var(--accent-fill); color: var(--on-accent); }
