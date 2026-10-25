@@ -226,6 +226,7 @@ class WebUI:
         """Set up HTTP routes."""
         self.app.router.add_get("/", self._handle_index)
         self.app.router.add_get("/quad", self._handle_quad)
+        self.app.router.add_get("/web/{name}", self._handle_web)
         self.app.router.add_get("/api/config", self._handle_get_config)
         self.app.router.add_post("/api/config", self._handle_post_config)
         self.app.router.add_post("/api/validate", self._handle_validate)
@@ -252,6 +253,16 @@ class WebUI:
             text=(WEB_DIR / "quad.html").read_text().replace(TOKEN_PLACEHOLDER, self.token),
             content_type="text/html",
             headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
+        )
+
+    async def _handle_web(self, request: web.Request) -> web.FileResponse:
+        """Serve a stylesheet shared by the pages."""
+        name = request.match_info["name"]
+        path = (WEB_DIR / name).resolve()
+        if path.suffix != ".css" or path.parent != WEB_DIR.resolve() or not path.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(
+            path, headers={"Cache-Control": "no-store", "Content-Type": "text/css"}
         )
 
     def _read_file_config(self) -> dict[str, Any]:

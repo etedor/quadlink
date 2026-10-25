@@ -1,0 +1,57 @@
+/* every colour is a token here, and every purple is mixed from --twitch.
+   ratios are WCAG contrast against --ground unless named */
+:root {
+  color-scheme: dark;
+  --twitch: #9147ff;
+  --black: #000;
+  --white: #fff;
+  --clear: transparent;
+  --live: #eb0400;
+  /* two text tones only */
+  --text: color-mix(in oklab, var(--twitch) 6%, var(--white));           /* 18.8 */
+  --text-quiet: color-mix(in oklab, var(--text) 70%, var(--ground));     /* 8.2; 4.5 on --overlay under the veil */
+  /* elevation by lightness, hue kept; names say level, not component */
+  --ground: color-mix(in oklab, var(--twitch) 22%, var(--black));
+  --raised: color-mix(in oklab, var(--text) 12%, var(--ground));         /* 1.19 */
+  --overlay: color-mix(in oklab, var(--text) 18%, var(--ground));        /* 1.16 vs --raised */
+  /* browsers composite alpha in sRGB, so 9% lifts as far as --raised's 12% oklab step */
+  --veil: color-mix(in oklab, var(--text) 9%, var(--clear));
+  --well: var(--black);
+  --scrim: color-mix(in oklab, var(--black) 65%, var(--clear));
+  --scrim-foot: linear-gradient(var(--clear) 40%, color-mix(in oklab, var(--black) 80%, var(--clear)));
+  /* purple as a fill behind white text, or as ink on dark */
+  --accent-fill: var(--twitch);                                          /* white on it 4.6 */
+  --accent-ink: color-mix(in oklab, var(--twitch) 60%, var(--white));    /* 8.8; 9.1 on black */
+  --on-accent: var(--white);
+  --error: var(--live);
+  --drop-wash: color-mix(in oklab, var(--twitch) 22%, var(--clear));
+  --s1: 4px;
+  --s2: 8px;
+  --edge: 12px;
+  --s4: 16px;
+  /* surface to content inside rows, cards, menus */
+  --inset: 7px;
+  /* concentric corners: outer = inner + inset */
+  --r-inner: 10px;
+  --r-outer: calc(var(--r-inner) + var(--inset));
+  --r-pill: 999px;
+  --control: 38px;
+  --chip: 24px;
+  --line: 22px;
+  --icon: 18px;
+  --icon-s: 14px;
+  --ring: 3px;
+  --focus: 2px;
+  --fade: 40px;
+  --t-body: 16px;
+  --t-meta: 14px;
+  --t-chip: 13px;
+  --lh: 1.25;
+  --t-state: 120ms;
+}
+@media (prefers-reduced-motion: reduce) { :root { --t-state: 0s; } }
+body { margin: 0; font: var(--t-body)/var(--lh) system-ui, sans-serif; background: var(--ground);
+  color: var(--text); }
+:focus-visible { outline: var(--focus) solid var(--text); outline-offset: 2px; }
+/* only where a clipping ancestor would hide an outside ring */
+.inset-focus:focus-visible { outline-offset: calc(-1 * var(--focus)); }

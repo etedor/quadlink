@@ -93,6 +93,30 @@ class TestPage:
         assert "'X-QuadLink-Token': token" in api_fn
         assert "'Content-Type'] = 'application/json'" in api_fn
 
+    async def test_quad_page_links_base_css(self, client: TestClient) -> None:
+        html = await (await client.get("/quad")).text()
+        assert '<link rel="stylesheet" href="/web/base.css">' in html
+
+    async def test_web_serves_css(self, client: TestClient) -> None:
+        resp = await client.get("/web/base.css")
+        assert resp.status == 200
+        assert resp.content_type == "text/css"
+        assert resp.headers["Cache-Control"] == "no-store"
+        assert "--ground:" in await resp.text()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/web/quad.html",
+            "/web/missing.css",
+            "/web/..%2Fwebui.py",
+            "/web/%2E%2E%2F%2E%2E%2Fx.css",
+        ],
+    )
+    async def test_web_refuses_other_files(self, client: TestClient, path: str) -> None:
+        resp = await client.get(path)
+        assert resp.status == 404
+
     async def test_token_differs_per_instance(self, config_file: Path) -> None:
         loader = ConfigLoader(explicit_path=str(config_file))
         assert WebUI(loader).token != WebUI(loader).token
