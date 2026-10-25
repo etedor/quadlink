@@ -103,7 +103,9 @@
   /* the quad as four cards, the size of Explore's: a live tile, then name and category.
      7px wider each side, the cards' inset, so their content lines up with Explore */
   .quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
-    width: calc(92cqw + 14px); margin-top: 5px; flex: none; font: 16px system-ui, sans-serif; }
+    width: calc(92cqw + 14px); margin-top: 5px; flex: none; font: 16px system-ui, sans-serif;
+    /* its own panel: what is on the TV, and a surface Explore scrolls away beneath */
+    border-radius: var(--radius); background: var(--current); }
   .tile { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     background: var(--well); overflow: hidden; }
   /* first among the outline rules: pending and failure outrank a plain hover */
@@ -213,6 +215,9 @@
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
   :is(.explore-scroll, .rail-scroll).under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
     mask-image: linear-gradient(var(--clear), var(--black) 48px); }
+  /* Explore's fade finishes 16px short of its edge, an empty band under the quad */
+  .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px);
+    mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px); }
   .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 16px 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
   .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--radius);
