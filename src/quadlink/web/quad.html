@@ -211,7 +211,7 @@
     position: relative; }
   /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
-  .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
+  :is(.explore-scroll, .rail-scroll).under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
     mask-image: linear-gradient(var(--clear), var(--black) 48px); }
   .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 16px 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
@@ -1050,7 +1050,10 @@
   const exSortPop = explore.querySelector('.ex-sort-pop');
   const EX_SORTS = [['viewers', 'Viewers: high to low'], ['fewest', 'Viewers: low to high'], ['new', 'New']];
   const scroller = explore.querySelector('.explore-scroll');
-  scroller.addEventListener('scroll', () => scroller.classList.toggle('under', scroller.scrollTop > 0), { passive: true });
+  // the rail and Explore fade out at their top edge once anything sits above it
+  for (const area of [scroller, document.querySelector('.rail-scroll')]) {
+    area.addEventListener('scroll', () => area.classList.toggle('under', area.scrollTop > 0), { passive: true });
+  }
   const SEARCH_AFTER = 250;
   // ms before a failed Explore request asks again
   const RETRY_AFTER = 3000;
