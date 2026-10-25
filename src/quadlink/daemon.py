@@ -20,7 +20,7 @@ from quadlink.explore import Directory, GQLDirectory
 from quadlink.health import HealthServer
 from quadlink.logconfig import apply_config_level
 from quadlink.overrides import OverrideError
-from quadlink.quad import Overrides, QuadState, compose, waiting
+from quadlink.quad import Overrides, QuadState, compose
 from quadlink.quadstream import QuadStreamClient
 from quadlink.relay.segments import SegmentProxy
 from quadlink.relay.server import SlotRelay
@@ -425,12 +425,6 @@ class Daemon:
         """End the tile's hold; the channel it replaced gets the tile back."""
         self._apply(*actions.unpin(self.overrides, self.quad_state, slot))
 
-    async def put_back(self, channel: str) -> None:
-        """End the hold that replaced channel, so it gets its tile back."""
-        if channel not in {c.stream.channel for c in self._pool}:
-            raise OverrideError(f"{channel} is offline: putting it back would leave the tile empty")
-        self._apply(*actions.put_back(self.overrides, self.quad_state, channel))
-
     async def unpin_all(self) -> None:
         """End every hold."""
         self._apply(*actions.unpin_all(self.overrides, self.quad_state))
@@ -471,14 +465,10 @@ class Daemon:
 
     def snapshot(self) -> Snapshot:
         """The quad and every configured channel's dashboard state."""
-        pending: list[str] = []
-        if self._config is not None:
-            pending = waiting(self._pool, self.quad_state, self.overrides, self._config)
         return snapshot(
             self.channel_statuses,
             self.quad_state,
             self.overrides,
-            pending,
             self.statuses_at,
             self._quadstream_login(),
             self.viewers.stats,

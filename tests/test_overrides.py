@@ -11,13 +11,12 @@ from quadlink.overrides import (
     age,
     drop_unconfigured,
     place,
-    put_back,
     remove_extra,
     swap,
     unpin,
     unpin_all,
 )
-from quadlink.quad import Hold, Overrides, QuadState, compose, waiting
+from quadlink.quad import Hold, Overrides, QuadState, compose
 from quadlink.types import Metadata, PrioritizedStream, Stream
 
 
@@ -75,9 +74,6 @@ class Scene:
     def drop(self, channel: str, slot: int) -> tuple[str, ...]:
         return self.act(place(self.overrides, self.state, channel, slot, self.configured))
 
-    def waiting(self) -> list[str]:
-        return waiting(self.pool(), self.state, self.overrides, self.config)
-
 
 SIX = {"a": 100, "b": 90, "c": 80, "d": 70, "e": 60, "f": 50}
 CONFIGURED = {*SIX, "g", "h"}
@@ -96,7 +92,6 @@ class TestDrop:
     def test_a_drop_holds_the_tile_and_remembers_what_it_showed(self, scene):
         assert scene.drop("f", 3) == ("a", "b", "c", "f")
         assert scene.overrides.holds == {3: Hold("f", "d")}
-        assert scene.waiting() == []
 
     def test_a_replaced_stream_takes_no_other_tile(self, scene):
         """A drop says the tile's stream goes: the top channel does not just move."""
@@ -109,7 +104,6 @@ class TestDrop:
         assert scene.drop("e", 3) == ("a", "b", "c", "e")
         assert scene.overrides.holds == {3: Hold("e", "d")}
         assert scene.refresh() == ("a", "b", "c", "e")
-        assert scene.waiting() == []
 
     def test_a_drop_on_a_hold_that_remembers_nothing_remembers_the_holder(self, scene):
         scene.drop("f", 3)
@@ -162,16 +156,6 @@ class TestUndo:
         assert scene.act(unpin(scene.overrides, scene.state, 3)) == ("a", "b", "c", "d")
         # E and F go back to selection, which did not choose them before
         assert scene.refresh() == ("a", "b", "c", "d")
-
-    def test_put_back_unpins_the_tile_that_replaced_it(self, scene):
-        scene.drop("f", 3)
-        scene.drop("e", 3)
-        assert scene.act(put_back(scene.overrides, scene.state, "d")) == ("a", "b", "c", "d")
-        assert scene.overrides.holds == {}
-
-    def test_put_back_of_a_stream_not_replaced_is_an_error(self, scene):
-        with pytest.raises(OverrideError):
-            put_back(scene.overrides, scene.state, "e")
 
     def test_unpin_of_a_tile_with_no_hold_changes_nothing(self, scene):
         assert unpin(scene.overrides, scene.state, 2) == (scene.overrides, scene.state)
@@ -336,15 +320,6 @@ class TestCompose:
         state = compose(pool, QuadState(), Overrides(holds={0: Hold("x")}), config)
         assert state.channels[0] == "x"
         assert set(state.channels[1:]) == {"w", "r", "u"}
-
-    def test_waiting_lists_what_holders_keep_off_but_not_the_replaced(self, scene):
-        scene.drop("f", 3)
-        scene.drop("e", 0)
-        # A and D are replaced, not waiting; nothing else would be on screen
-        assert scene.waiting() == []
-        scene.live["g"] = 500
-        scene.refresh()
-        assert "g" in scene.state.channels or "g" in scene.waiting()
 
 
 class TestInvariants:

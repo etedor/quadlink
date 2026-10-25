@@ -13,8 +13,6 @@ class DashboardState(StrEnum):
     """Where a configured channel stands, as the dashboard shows it."""
 
     IN_QUAD = "in quad"
-    REPLACED = "replaced"
-    WAITING = "waiting"
     LIVE = "live"
     OFFLINE = "offline"
     NO_VIDEO = "no video"
@@ -43,7 +41,6 @@ class SlotView:
         pinned: The channel on screen holds this tile.
         reserved_for: The tile's holder while it is out of the pool; it takes the
             tile back if it returns within the grace.
-        returns: The channel that gets the tile back when its hold ends.
     """
 
     slot: int
@@ -51,7 +48,6 @@ class SlotView:
     display_name: str
     pinned: bool
     reserved_for: str | None
-    returns: str | None
 
 
 @dataclass(frozen=True)
@@ -63,8 +59,6 @@ class ChannelView:
         state: Dashboard state.
         slot: Slot it is on screen in, if any.
         pin_slot: Slot it holds, whether or not it is on screen.
-        replaced_slot: Slot a drop put it off; it takes no tile until put back.
-        replaced_by: The channel holding that slot.
         live: The last lookup found it live.
         extra: Added beside the config from the dashboard, until removed or a restart.
         status: The last refresh's lookup outcome.
@@ -76,8 +70,6 @@ class ChannelView:
     state: DashboardState
     slot: int | None
     pin_slot: int | None
-    replaced_slot: int | None
-    replaced_by: str | None
     live: bool
     extra: bool
     status: ChannelStatus
@@ -106,7 +98,6 @@ def snapshot(
     statuses: list[ChannelStatus],
     state: QuadState,
     overrides: Overrides,
-    waiting: list[str],
     refreshed_at: float | None,
     quadstream: QuadStreamLogin = QuadStreamLogin.OFF,
     stats: dict[str, Stats] | None = None,
@@ -126,18 +117,15 @@ def snapshot(
                 display_name=names.get(channel, channel),
                 pinned=bool(channel) and holder == channel,
                 reserved_for=None if holder == channel else holder,
-                returns=hold.replaced if hold else None,
             )
         )
     positions = state.positions
     channels = [
         ChannelView(
             channel=s.channel,
-            state=_state(s, positions, overrides, waiting),
+            state=_state(s, positions),
             slot=positions.get(s.channel),
             pin_slot=overrides.pins.get(s.channel),
-            replaced_slot=at,
-            replaced_by=None if at is None else holds[at].holder,
             live=s.state is ChannelState.LIVE,
             extra=s.channel in overrides.extras,
             status=s,
@@ -146,7 +134,6 @@ def snapshot(
         )
         for s in statuses
         for found in [_live_stats(s, stats)]
-        for at in [overrides.replaced_at(s.channel)]
     ]
     return Snapshot(
         slots=slots, channels=channels, refreshed_at=refreshed_at, quadstream=quadstream
@@ -160,16 +147,7 @@ def _live_stats(status: ChannelStatus, stats: dict[str, Stats]) -> Stats | None:
     return stats.get(status.channel)
 
 
-def _state(
-    status: ChannelStatus,
-    positions: dict[str, int],
-    overrides: Overrides,
-    waiting: list[str],
-) -> DashboardState:
+def _state(status: ChannelStatus, positions: dict[str, int]) -> DashboardState:
     if status.channel in positions:
         return DashboardState.IN_QUAD
-    if status.channel in overrides.replaced:
-        return DashboardState.REPLACED
-    if status.state is ChannelState.LIVE and status.channel in waiting:
-        return DashboardState.WAITING
     return DashboardState(status.state.value)

@@ -170,7 +170,6 @@
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
   /* a picked row waits for a tile click: the click alternative to dragging */
   .rail li.picked { box-shadow: inset 0 0 0 2px var(--accent); }
-  .rail li.replaced > img, .rail li.replaced .line .name { opacity: 0.55; }
   /* category and viewer count share the second line; the category gives way first */
   .rail .meta { display: flex; align-items: center; gap: 10px; color: var(--text-quiet); font-size: 14px; }
   .rail .cat { flex: 1; min-width: 0; }
@@ -585,40 +584,6 @@
     else if (exploring() && phone.matches) setExploring(false);
   });
 
-  function nameOf(channel) {
-    const c = latest?.channels.find(x => x.channel === channel);
-    return c ? c.display_name || c.channel : channel;
-  }
-
-  function backButton(c, displayName) {
-    const tile = c.replaced_slot + 1;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'chip back';
-    button.textContent = tile;
-    button.title = 'On standby for ' + nameOf(c.replaced_by);
-    button.setAttribute('aria-label', `Put ${displayName} back on tile ${tile}`);
-    // offline, it would only put filler on the tile
-    button.disabled = !c.live;
-    const target = tiles[c.replaced_slot];
-    const show = on => target.classList.toggle('target', on && !button.disabled);
-    button.addEventListener('mouseenter', () => show(true));
-    button.addEventListener('mouseleave', () => show(false));
-    button.addEventListener('focus', () => show(true));
-    button.addEventListener('blur', () => show(false));
-    button.addEventListener('pointerdown', e => e.stopPropagation());
-    button.addEventListener('click', e => {
-      e.stopPropagation();
-      show(false);
-      button.disabled = true;
-      back(c.replaced_slot, c.channel);
-      act({ action: 'put_back', channel: c.channel })
-        .catch(() => { button.disabled = false; fail(c.replaced_slot); });
-    });
-    button.addEventListener('keydown', e => e.stopPropagation());
-    return button;
-  }
-
   function section(text, gap = false) {
     const li = document.createElement('li');
     li.className = gap ? 'section gap' : 'section';
@@ -728,7 +693,7 @@
     cat.className = 'cat';
     const label = STATES.find(([s]) => s === c.state);
     // glyphs and row shading carry these states, so the line keeps to the category
-    cat.textContent = ['live', 'in quad', 'replaced', 'waiting'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
+    cat.textContent = ['live', 'in quad'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.append(cat);
@@ -737,8 +702,6 @@
     line.append(name);
     if (c.viewers != null) line.append(viewerCount(c.viewers));
     const marks = [];
-    const displayName = c.display_name || c.channel;
-    if (c.replaced_slot != null) marks.push(backButton(c, displayName));
     if (c.extra) marks.push(removeButton(c));
     if (c.slot != null) {
       const badge = document.createElement('span');
@@ -753,7 +716,6 @@
       box.append(...marks);
       meta.append(box);
     }
-    li.classList.toggle('replaced', c.replaced_slot != null);
     who.append(line, meta);
     li.dataset.channel = c.channel;
     li.classList.toggle('picked', c.channel === picked);
@@ -784,27 +746,17 @@
     const cats = new Set(view.cats);
     const matches = c => !q || [c.display_name, c.channel, c.category, c.title]
       .some(v => v && v.toLowerCase().includes(q));
-    // standby, whatever the filters: what drops put off the quad, by tile, then what holds keep off
-    const standby = [
-      ...latest.channels.filter(c => c.replaced_slot != null && c.slot == null && matches(c))
-        .sort((a, b) => a.replaced_slot - b.replaced_slot),
-      ...latest.channels.filter(c => c.state === 'waiting' && !c.extra && c.replaced_slot == null && matches(c))
-        .sort(ORDER.priority),
-    ];
     // added channels show whatever their state: they are on the list only by choice
     const added = latest.channels.filter(c => c.extra && c.slot == null && matches(c))
       .sort(ORDER.name);
     const rows = latest.channels
-      .filter(c => !c.extra && c.slot == null && c.replaced_slot == null && !['in quad', 'waiting'].includes(c.state))
+      .filter(c => !c.extra && c.slot == null && c.state !== 'in quad')
       .filter(c => show.has(c.state))
       .filter(c => !cats.size || cats.has(c.category))
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
     // the quad's channels are its cards, not rows
     const head = [];
-    if (standby.length) {
-      head.push(section('Standby'), ...standby.map(row));
-    }
     if (added.length) {
       head.push(section('Added'), ...added.map(row));
     }
@@ -945,11 +897,6 @@
     drag.ghost.style.top = e.clientY + 'px';
     const over = tileUnder(e.clientX, e.clientY);
     tiles.forEach(t => t.classList.toggle('target', t === over && t !== drag.source.tile));
-  }
-
-  function back(slot, channel) {
-    expect(slot, channel);
-    cover(tiles[slot], thumb(channel));
   }
 
   async function place(slot, channel, image) {

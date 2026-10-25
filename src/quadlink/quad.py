@@ -67,13 +67,6 @@ class Overrides:
         """Every channel a hold replaced."""
         return {h.replaced for h in self.holds.values() if h.replaced}
 
-    def replaced_at(self, channel: str) -> int | None:
-        """Slot of the hold that replaced channel, or None."""
-        for slot, hold in self.holds.items():
-            if hold.replaced == channel:
-                return slot
-        return None
-
 
 @dataclass(frozen=True)
 class QuadState:
@@ -118,24 +111,6 @@ def compose(
     new, on_screen = _compose(pool, state, overrides, config)
     _log_changes(state, new, on_screen)
     return new
-
-
-def waiting(
-    pool: list[PrioritizedStream],
-    state: QuadState,
-    overrides: Overrides,
-    config: Config,
-) -> list[str]:
-    """Channels natural selection would put on screen that holders keep off.
-
-    Replaced channels are not waiting: they are off by the operator's drop.
-    state is the quad composed from this pool with these overrides.
-    """
-    if not pool or not overrides.holds:
-        return []
-    unheld = [s for s in pool if s.stream.channel not in overrides.replaced]
-    natural, _ = _compose(unheld, state, Overrides(extras=overrides.extras), config)
-    return [c for c in natural.channels if c and c not in state.positions]
 
 
 def _eligible(channel: str, overrides: Overrides) -> bool:

@@ -51,7 +51,6 @@ def _snapshot(slots: tuple[str, ...] = ("a", "", "b", "")) -> Snapshot:
         statuses,
         QuadState(channels=slots),
         overrides,
-        [],
         1700000000.5,
         QuadStreamLogin.FAILED,
         stats,
@@ -140,9 +139,6 @@ class FakeDashboard:
 
     async def unpin(self, slot: int) -> None:
         self._act("unpin", slot=slot)
-
-    async def put_back(self, channel: str) -> None:
-        self._act("put_back", channel=channel)
 
     async def unpin_all(self) -> None:
         self._act("unpin_all")
@@ -276,7 +272,6 @@ class TestState:
                 "started_at": 1792774848,
                 "pinned": True,
                 "reserved_for": None,
-                "returns": "d",
                 "still": "/api/slots/0/still.jpg?c=a",
             },
             {
@@ -289,7 +284,6 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": "c",
-                "returns": None,
                 "still": None,
             },
             {
@@ -302,7 +296,6 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
-                "returns": None,
                 "still": "/api/slots/2/still.jpg?c=b",
             },
             {
@@ -315,7 +308,6 @@ class TestState:
                 "started_at": None,
                 "pinned": False,
                 "reserved_for": None,
-                "returns": None,
                 "still": None,
             },
         ]
@@ -329,8 +321,6 @@ class TestState:
             "state": "in quad",
             "slot": 0,
             "pin_slot": 0,
-            "replaced_slot": None,
-            "replaced_by": None,
             "live": True,
             "extra": False,
             "priorities": [100],
@@ -343,17 +333,15 @@ class TestState:
                 c["channel"],
                 c["state"],
                 c["pin_slot"],
-                c["replaced_slot"],
-                c["replaced_by"],
                 c["priorities"],
                 c["thumbnail"],
             )
             for c in body["channels"][1:]
         ]
         assert rows == [
-            ("b", "in quad", None, None, None, [100], THUMB_A.replace("_a-", "_b-")),
-            ("c", "offline", 1, None, None, [50, 10], None),
-            ("d", "replaced", None, 0, "a", [50], None),
+            ("b", "in quad", None, [100], THUMB_A.replace("_a-", "_b-")),
+            ("c", "offline", 1, [50, 10], None),
+            ("d", "rejected", None, [50], None),
         ]
         assert body["channels"][3]["reason"] == "category blocked"
         assert body["channels"][2]["display_name"] == "c"
@@ -477,7 +465,6 @@ class TestActions:
             ),
             ({"action": "swap", "a": 0, "b": 2}, ("swap", {"a": 0, "b": 2})),
             ({"action": "unpin", "slot": 1}, ("unpin", {"slot": 1})),
-            ({"action": "put_back", "channel": "b"}, ("put_back", {"channel": "b"})),
             ({"action": "unpin_all"}, ("unpin_all", {})),
         ],
     )
@@ -497,10 +484,10 @@ class TestActions:
     async def test_override_error_is_400_with_its_message(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
     ) -> None:
-        dashboard.error = OverrideError("e was not replaced on any tile")
-        resp = await self._post(client, webui, {"action": "put_back", "channel": "e"})
+        dashboard.error = OverrideError("slot 7 does not exist")
+        resp = await self._post(client, webui, {"action": "unpin", "slot": 1})
         assert resp.status == 400
-        assert await resp.json() == {"error": "e was not replaced on any tile"}
+        assert await resp.json() == {"error": "slot 7 does not exist"}
 
     @pytest.mark.parametrize(
         "body,message",
@@ -514,7 +501,7 @@ class TestActions:
             ({"action": "unpin", "slot": "1"}, "slot must be an integer"),
             ({"action": "unpin", "slot": True}, "slot must be an integer"),
             ({"action": "unpin", "slot": 1.0}, "slot must be an integer"),
-            ({"action": "put_back", "channel": 5}, "channel must be a string"),
+            ({"action": "place", "channel": 5, "slot": 1}, "channel must be a string"),
         ],
     )
     async def test_invalid_body_is_400(
@@ -674,9 +661,7 @@ class TestStills:
         self, client: TestClient, dashboard: FakeDashboard
     ) -> None:
         channel = "youtube.com/watch?v=x"
-        dashboard.snap = snapshot(
-            [], QuadState(channels=(channel, "", "", "")), Overrides(), [], None
-        )
+        dashboard.snap = snapshot([], QuadState(channels=(channel, "", "", "")), Overrides(), None)
         resp = await client.get(
             "/api/slots/0/still.jpg", params={"c": channel}, allow_redirects=False
         )

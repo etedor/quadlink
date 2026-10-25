@@ -103,14 +103,6 @@ def unpin_all(overrides: Overrides, state: QuadState) -> Result:
     return _build(overrides, holds), state
 
 
-def put_back(overrides: Overrides, state: QuadState, channel: str) -> Result:
-    """Unpin the tile whose hold replaced channel."""
-    slot = overrides.replaced_at(channel)
-    if slot is None:
-        raise OverrideError(f"{channel} was not replaced on any tile")
-    return unpin(overrides, state, slot)
-
-
 def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
     """Add a channel beside the config; the caller has checked it is live."""
     if channel in configured or channel in overrides.extras:

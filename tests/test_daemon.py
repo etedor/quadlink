@@ -603,7 +603,6 @@ ACTIONS: dict[str, tuple[Any, Any, dict[str, Any], list[str]]] = {
     "place": (None, lambda d: d.place("e", 1), E_OVER_B, ["a", "e", "c", "d"]),
     "swap": (None, lambda d: d.swap(0, 1), {}, ["b", "a", "c", "d"]),
     "unpin": (lambda d: d.place("e", 1), lambda d: d.unpin(1), {}, ["a", "b", "c", "d"]),
-    "put_back": (lambda d: d.place("e", 1), lambda d: d.put_back("b"), {}, ["a", "b", "c", "d"]),
     "unpin_all": (lambda d: d.place("e", 1), lambda d: d.unpin_all(), {}, ["a", "b", "c", "d"]),
 }
 
@@ -721,17 +720,6 @@ class TestOperatorActions:
             await loops.refresh()
         assert daemon.overrides == Overrides()
 
-    async def test_put_back_of_an_offline_channel_is_refused(self, make_daemon, twitch):
-        twitch.go_live("e")
-        daemon = make_daemon()
-        async with stepped(daemon) as loops:
-            await loops.refresh()
-            await daemon.place("e", 1)
-            twitch.go_offline("b")
-            await loops.refresh()
-            with pytest.raises(OverrideError, match="b is offline"):
-                await daemon.put_back("b")
-
     async def test_snapshot(self, make_daemon, config_path, twitch):
         twitch.display["g"] = "Gamma"
         twitch.go_live("g")
@@ -746,15 +734,9 @@ class TestOperatorActions:
             await loops.refresh()
         snap = daemon.snapshot()
         assert (snap.slots[0].channel, snap.slots[0].display_name) == ("g", "Gamma")
-        assert (snap.slots[0].pinned, snap.slots[0].returns) == (True, "a")
+        assert snap.slots[0].pinned
         views = {c.channel: c for c in snap.channels}
-        a = views["a"]
-        assert (a.state, a.replaced_slot, a.replaced_by, a.live) == (
-            DashboardState.REPLACED,
-            0,
-            "g",
-            True,
-        )
+        assert (views["a"].state, views["a"].live) == (DashboardState.LIVE, True)
         assert (views["g"].state, views["g"].pin_slot) == (DashboardState.IN_QUAD, 0)
         assert views["f"].state == DashboardState.LOOKUP_FAILED
         assert snap.refreshed_at == daemon.statuses_at
@@ -769,10 +751,9 @@ class TestOperatorActions:
             await loops.refresh()
         snap = daemon.snapshot()
         held = snap.slots[3]
-        assert (held.pinned, held.reserved_for, held.returns) == (False, "e", "d")
+        assert (held.pinned, held.reserved_for) == (False, "e")
         views = {c.channel: c for c in snap.channels}
         assert (views["e"].state, views["e"].pin_slot) == (DashboardState.OFFLINE, 3)
-        assert views["d"].state == DashboardState.REPLACED
 
     async def test_swap_waits_for_a_live_pool(self, make_daemon, twitch):
         daemon = make_daemon()
@@ -880,16 +861,6 @@ class TestDashboardFeed:
             write_config(config_path, mode="local")
             await loops.refresh()
             assert daemon.snapshot().quadstream == QuadStreamLogin.OFF
-
-    async def test_snapshot_marks_replaced_channels(self, make_daemon, twitch):
-        twitch.go_live("e")
-        daemon = make_daemon()
-        async with stepped(daemon) as loops:
-            await loops.refresh()
-            await daemon.place("e", 0)
-            await settle()
-        replaced = {c.channel: c.replaced_slot for c in daemon.snapshot().channels}
-        assert replaced == {"a": 0, "b": None, "c": None, "d": None, "e": None}
 
     async def test_api_drives_the_daemon(self, make_daemon):
         daemon = make_daemon()
