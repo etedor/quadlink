@@ -233,8 +233,6 @@
     overflow: hidden; overflow-wrap: anywhere; }
   .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .peek { opacity: 1; }
   .card .pic .chip { z-index: 1; }
-  /* channels found by name lead the grid, ruled off from the listing */
-  .cards .rule { grid-column: 1 / -1; height: 1px; margin: 0 7px; background: var(--field); }
   .card.skeleton { cursor: default; }
   .card.skeleton .pic { animation: pulse 1s infinite alternate; }
   .card.skeleton .bar { height: 14px; border-radius: 7px; background: var(--field); }
@@ -885,7 +883,7 @@
   const SKELETONS = 6;
   // lang: a Twitch code, '' for all
   const ex = { category: null, lang: null, sort: 'viewers', listing: null, opened: 0,
-    found: [], searchTimer: null, request: 0, catRequest: 0, foundRequest: 0 };
+    found: [], searching: false, searchTimer: null, request: 0, catRequest: 0, foundRequest: 0 };
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
     if (saved.category?.id) ex.category = saved.category;
@@ -939,9 +937,10 @@
   function choose(c) {
     const same = ex.category?.id === c.id;
     ex.category = { id: c.id, name: c.name, viewers: c.viewers };
+    ex.searching = false;
     saveExplore();
     markPills();
-    if (!same || !ex.listing) loadStreams();
+    if (!same || !ex.listing) loadStreams(); else showStreams();
   }
 
   async function chooseNamed(name) {
@@ -955,6 +954,7 @@
   // back to the default view: no search, all of Twitch
   function unchoose() {
     ex.category = null;
+    ex.searching = false;
     exploreQ.value = '';
     saveExplore();
     showCats();
@@ -1035,20 +1035,21 @@
     const request = ++ex.foundRequest;
     if (!q) {
       ex.found = [];
-      if (ex.listing) showStreams();
+      showStreams();
       return;
     }
     try {
       const body = await getJSON('/api/explore/channels?q=' + encodeURIComponent(q));
       if (request !== ex.foundRequest) return;
       ex.found = body.streams;
-      if (ex.listing) showStreams();
+      showStreams();
     } catch {
       if (request !== ex.foundRequest) return;
       setTimeout(() => { if (exploring() && request === ex.foundRequest) showFound(); }, RETRY_AFTER);
     }
   }
   exploreQ.addEventListener('input', () => {
+    ex.searching = true;
     clearTimeout(ex.searchTimer);
     ex.searchTimer = setTimeout(searched, SEARCH_AFTER);
   });
@@ -1140,19 +1141,22 @@
     return latest?.channels.find(c => c.channel === channel) || null;
   }
 
+  // a typed search shows the channels it found, if any; a chosen category, its listing
   function showStreams() {
+    if (ex.searching && ex.found.length) {
+      cards.replaceChildren(...ex.found.map(card));
+      note.replaceChildren();
+      endNote.textContent = '';
+      return;
+    }
+    if (!ex.listing) return;
     const { streams, more, category } = ex.listing;
     // a top-N cut ends on a full row: 4 columns on desktop, 2 on phones
     const shown = more ? streams.slice(0, streams.length - (streams.length % 4)) : streams;
-    const found = new Set(ex.found.map(s => s.channel));
-    const rest = shown.filter(s => !found.has(s.channel)).map(card);
-    const rule = document.createElement('li');
-    rule.className = 'rule';
-    rule.setAttribute('role', 'presentation');
-    cards.replaceChildren(...ex.found.map(card), ...(ex.found.length && rest.length ? [rule] : []), ...rest);
+    cards.replaceChildren(...shown.map(card));
     note.replaceChildren();
     // the grid's end needs no words; only an empty grid gets a line
-    endNote.textContent = streams.length || ex.found.length ? '' : `No one is live${category ? ' in ' + category.name : ''}.`;
+    endNote.textContent = streams.length ? '' : `No one is live${category ? ' in ' + category.name : ''}.`;
   }
 
   // Twitch knows a stream's language, not its country: each language shows the flag of
