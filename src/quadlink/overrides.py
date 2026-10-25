@@ -200,7 +200,8 @@ def _end(holds: dict[int, Hold], state: QuadState, slot: int) -> tuple[dict[int,
 
 
 def _forget(hold: Hold) -> Hold:
-    return replace(hold, replaced=None, priority=0)
+    # the priority stays: a soft hold keeps the standing of what it replaced
+    return replace(hold, replaced=None)
 
 
 def _build(

@@ -18,8 +18,8 @@ class Hold:
     """A tile the operator filled by a drop or locked.
 
     A hard hold keeps the tile until its holder goes offline. A soft hold
-    competes for it as an on-screen stream scored as the stream it replaced
-    (see quad._soft_score), and ends when it loses.
+    competes for it as an on-screen stream scored at least as the stream it
+    replaced (see quad._soft_score), and ends when it loses.
 
     Attributes:
         holder: The channel the tile shows while it is in the pool.
@@ -27,7 +27,8 @@ class Hold:
             tile while the hold lasts; when a hard hold ends, it gets the tile back.
         soft: The hold is soft.
         priority: The replaced channel's priority when the hold was made; 0
-            when the hold replaced nothing.
+            when the hold replaced nothing. It outlives the replaced channel
+            being forgotten.
     """
 
     holder: str
@@ -67,8 +68,6 @@ class Overrides:
             raise ValueError(f"outside channels are never replaced: {sorted(listed_extras)}")
         if idle := self.extras - set(holders):
             raise ValueError(f"outside channels must hold a tile: {sorted(idle)}")
-        if stray := [h.holder for h in self.holds.values() if h.priority and not h.replaced]:
-            raise ValueError(f"holds with a priority but nothing replaced: {stray}")
 
     @property
     def pins(self) -> dict[str, int]:
@@ -241,13 +240,12 @@ def _existing_streams(
 
 
 def _soft_score(candidate: PrioritizedStream, hold: Hold, config: Config) -> PrioritizedStream:
-    """The soft holder's candidate, scored as what it replaced plus pin_bonus.
+    """The soft holder's candidate, scored as the better of itself and its replaced, plus pin_bonus.
 
-    With nothing replaced, its own priority stands in. The stability bonus comes
-    on top, as for any on-screen stream, so anything that beats replaced priority
-    + stability_bonus + pin_bonus takes the tile.
+    The stability bonus comes on top, as for any on-screen stream, so anything
+    that beats that priority + stability_bonus + pin_bonus takes the tile.
     """
-    base = hold.priority if hold.replaced else candidate.priority
+    base = max(candidate.priority, hold.priority)
     return replace(candidate, priority=base + config.pin_bonus)
 
 

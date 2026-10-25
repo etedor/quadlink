@@ -351,10 +351,6 @@ class TestInvariants:
         with pytest.raises(ValueError):
             Overrides(holds={0: Hold("a", "x"), 1: Hold("x")}, extras=frozenset({"x"}))
 
-    def test_a_priority_needs_a_replaced_channel(self):
-        with pytest.raises(ValueError, match="nothing replaced"):
-            Overrides(holds={0: Hold("a", priority=5)})
-
     def test_outside_channels_hold_a_tile(self):
         with pytest.raises(ValueError):
             Overrides(extras=frozenset({"x"}))
@@ -465,6 +461,26 @@ class TestSoft:
         scene.live["g"] = 151
         assert scene.refresh() == ("a", "b", "c", "g")
         assert scene.overrides.holds == {}
+
+    def test_a_strong_holder_over_a_weak_stream_keeps_its_own_standing(self):
+        scene = strong()
+        scene.live["e"] = 200
+        scene.pin("e", 3)
+        assert scene.lock(3, soft=True) == ("a", "b", "c", "e")
+        # E scores its own 200, not D's 70: 200 + 30 + 50
+        scene.live["g"] = 270
+        assert scene.refresh() == ("a", "b", "c", "e")
+        scene.live["g"] = 281
+        assert scene.refresh() == ("a", "b", "c", "g")
+
+    def test_it_keeps_the_replaced_priority_after_the_replaced_is_forgotten(self, soft):
+        del soft.live["d"]
+        for _ in range(GRACE_REFRESHES + 1):
+            soft.refresh()
+        assert soft.overrides.holds == {3: Hold("f", soft=True, priority=70)}
+        # still 70 + 30 + 50, not F's own 50
+        soft.live["g"] = 140
+        assert soft.refresh() == ("a", "b", "c", "f")
 
     def test_a_holder_back_within_the_grace_competes_for_its_tile(self, soft):
         soft.live["e"] = 75
