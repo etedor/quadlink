@@ -205,15 +205,15 @@
   /* the rail's menu width, under the buttons that open it */
   .explore .pop { left: auto; right: 0; width: min(320px, 100%); }
   .explore[hidden] { display: none; }
-  .explore .tools { padding: 10px 0 5px; }
+  .explore .tools { padding: 16px 0 7px; }
   /* the gaps grow so every row, the last too, is flush at both edges */
-  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 5px 0; }
+  .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 0 0 16px; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: 5px; min-width: 0; }
   /* each quad tile's category, under the tile */
   .quad-cats { display: none; }
   body.exploring .quad-cats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
-    width: 92cqw; padding-top: 6px; flex: none; }
+    width: 92cqw; padding-top: 7px; flex: none; }
   .quad-cats > div { display: flex; justify-content: center; min-width: 0; padding: 0 5px; }
   .quad-cats .chip { max-width: 100%; }
   .quad-cats .chip .name { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -232,7 +232,7 @@
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
   .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
     mask-image: linear-gradient(var(--clear), var(--black) 48px); }
-  .cards { list-style: none; margin: 0 -7px; padding: 5px 0 10px; min-width: 0; display: grid; gap: 12px;
+  .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
   .card { display: flex; flex-direction: column; gap: 6px; padding: 7px; border-radius: var(--radius);
     cursor: grab; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
@@ -303,7 +303,6 @@
   /* calm pass: color, edges and fills only for state and actions; plain facts are
      quiet text. scoped to html.calm so /quad?calm=off shows the page without it */
   html.calm .chip { border-color: var(--clear); }
-  html.calm .card .pic .uptime { color: var(--text-quiet); font-weight: 400; }
   html.calm .chip.slot { border-color: var(--accent); }
   html.calm .chip.back { border-color: var(--accent); }
   html.calm .explore-cats .chip { background: var(--current); }
@@ -311,12 +310,18 @@
   html.calm .explore-cats button.chip:hover, html.calm .explore-cats button.chip:focus-visible {
     border-color: var(--clear); background: var(--hover); }
   html.calm .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent); }
-  html.calm .quad-cats .chip { font-size: 13px; font-weight: 400; color: var(--text-quiet); }
+  html.calm .quad-cats .chip { font-weight: 400; color: var(--text-quiet); background: var(--current); }
   html.calm .quad-cats .chip .viewers { display: none; }
   html.calm .quad-cats button.chip:hover, html.calm .quad-cats button.chip:focus-visible {
     border-color: var(--clear); background: var(--hover); color: var(--text); }
   html.calm .card .tags { display: none; }
-  html.calm .explore.filtered .card .cat { display: none; }
+  /* the card's second line: category and uptime, the category dropped once chosen */
+  .card .cat .when { display: none; }
+  html.calm .card .cat .when { display: inline; }
+  html.calm .card .cat .when::before { content: " · "; }
+  html.calm .explore.filtered .card .cat .what { display: none; }
+  html.calm .explore.filtered .card .cat .when::before { content: none; }
+  html.calm .card .pic .uptime { display: none; }
   /* the title is opt-in: a cleaned copy fades in over the picture on hover, focus or
      a pick, so the grid never shifts */
   .card .peek { display: none; }
@@ -328,19 +333,16 @@
   html.calm .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .peek { opacity: 1; }
   html.calm .card .pic .chip { z-index: 1; }
   @media (prefers-reduced-motion: reduce) { html.calm .card .peek { transition: none; } }
-  html.calm .cards { gap: 24px 12px; }
+  html.calm .cards { gap: 16px 12px; }
   html.calm .explore-btn[aria-pressed="true"] { background: var(--current); color: var(--text); }
   html.calm .explore-btn[aria-pressed="true"] svg { color: var(--accent); }
-  /* uptime and the add chip wait for the pointer; slot, back and viewers always show */
+  /* the add chip waits for the pointer; slot and back chips always show */
   @media (hover: hover) {
-    html.calm .card .pic :is(.uptime, .act:not(.slot):not(.back)) { opacity: 0; transition: opacity 0.12s; }
-    html.calm .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .pic :is(.uptime, .act) { opacity: 1; }
-  }
-  @media (hover: none) {
-    html.calm .card .pic .uptime { display: none; }
+    html.calm .card .pic .act:not(.slot):not(.back) { opacity: 0; transition: opacity 0.12s; }
+    html.calm .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .pic .act { opacity: 1; }
   }
   @media (prefers-reduced-motion: reduce) {
-    html.calm .card .pic :is(.uptime, .act) { transition: none; }
+    html.calm .card .pic .act { transition: none; }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
@@ -1534,7 +1536,13 @@
     // the category sits under the name, as on the rail's rows
     const cat = document.createElement('div');
     cat.className = 'cat';
-    cat.textContent = s.category;
+    const what = document.createElement('span');
+    what.className = 'what';
+    what.textContent = s.category;
+    const when = document.createElement('span');
+    when.className = 'when';
+    when.textContent = uptime(s.started_at);
+    cat.append(what, when);
     li.append(pic, line, cat, title);
     // Twitch tags most streams with their language's name, which the chip already shows
     const spoken = languageNames(s.language);
