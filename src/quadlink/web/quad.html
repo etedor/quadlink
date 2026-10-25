@@ -325,7 +325,7 @@
     padding: 34px 10px 36px; box-sizing: border-box; background: var(--scrim); color: var(--text);
     font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity 0.12s;
     overflow: hidden; overflow-wrap: anywhere; }
-  html.calm .card:is(:hover, :focus-within, .picked) .peek { opacity: 1; }
+  html.calm .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .peek { opacity: 1; }
   html.calm .card .pic .chip { z-index: 1; }
   @media (prefers-reduced-motion: reduce) { html.calm .card .peek { transition: none; } }
   html.calm .cards { gap: 24px 12px; }
@@ -334,7 +334,7 @@
   /* uptime and the add chip wait for the pointer; slot, back and viewers always show */
   @media (hover: hover) {
     html.calm .card .pic :is(.uptime, .act:not(.slot):not(.back)) { opacity: 0; transition: opacity 0.12s; }
-    html.calm .card:is(:hover, :focus-within, .picked) .pic :is(.uptime, .act) { opacity: 1; }
+    html.calm .card:is(:hover, :focus-visible, :has(:focus-visible), .picked) .pic :is(.uptime, .act) { opacity: 1; }
   }
   @media (hover: none) {
     html.calm .card .pic .uptime { display: none; }

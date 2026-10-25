@@ -111,6 +111,15 @@ class TestDrop:
         assert scene.refresh() == ("a", "b", "c", "e")
         assert scene.waiting() == []
 
+    def test_a_drop_on_a_hold_that_remembers_nothing_remembers_the_holder(self, scene):
+        scene.drop("f", 3)
+        del scene.live["d"]
+        for _ in range(GRACE_REFRESHES + 1):
+            scene.refresh()
+        assert scene.overrides.holds == {3: Hold("f")}
+        assert scene.drop("e", 3) == ("a", "b", "c", "e")
+        assert scene.overrides.holds == {3: Hold("e", "f")}
+
     def test_dropping_a_shown_stream_on_another_tile_swaps_them(self, scene):
         assert scene.drop("a", 3) == ("d", "b", "c", "a")
         assert scene.overrides.holds == {}

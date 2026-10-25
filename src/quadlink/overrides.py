@@ -40,8 +40,9 @@ def place(
 
     A channel shown on another tile swaps with this one instead, and one already
     on this tile changes nothing. A tile keeps what it showed before the first
-    drop; a later drop sends the previous holder back to selection. An added
-    channel is never replaced: it reaches the quad only as a holder.
+    drop; a later drop sends the previous holder back to selection, unless the
+    hold remembers nothing, when the previous holder is remembered instead. An
+    added channel is never replaced: it reaches the quad only as a holder.
     """
     _check_slot(slot)
     _check_channel(channel, configured)
@@ -57,7 +58,9 @@ def place(
     for held in [s for s, h in holds.items() if h.holder == channel]:
         holds, state = _end(holds, state, held)
     old = holds.get(slot)
-    replaced = old.replaced if old is not None else state.channels[slot] or None
+    # the stream before the first drop, else (none remembered, or it was forgotten
+    # offline) the one this drop puts off the tile
+    replaced = (old.replaced if old is not None and old.replaced else state.channels[slot]) or None
     if replaced in overrides.extras:
         replaced = None
     holds[slot] = Hold(channel, replaced)
