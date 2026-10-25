@@ -358,7 +358,7 @@ class Daemon:
         # then has its result arrive late rather than twice
         if self._viewers_task is not None and not self._viewers_task.done():
             return
-        channels = sorted(configured_channels(config))
+        channels = sorted(configured_channels(config) | self.overrides.extras)
         self._viewers_task = asyncio.create_task(self._viewer_counts(channels))
 
     async def _viewer_counts(self, channels: list[str]) -> None:

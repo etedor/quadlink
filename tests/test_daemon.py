@@ -820,6 +820,17 @@ class TestViewerCounts:
         assert (views["b"].viewers, views["b"].started_at) == (None, None)
         assert (views["e"].viewers, views["e"].started_at) == (None, None)
 
+    async def test_outside_holders_are_counted_too(self, make_daemon, twitch, stats):
+        twitch.go_live("zed")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.place("zed", 2)
+            await settle()
+            await loops.refresh()
+            await settle()
+        assert stats.calls[-1] == sorted({*CONFIGURED, "zed"})
+
     async def test_a_slow_fetch_does_not_hold_the_quad(self, make_daemon, quadstream, stats):
         stats.gate = asyncio.Event()
         daemon = make_daemon()
