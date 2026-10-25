@@ -502,17 +502,16 @@
     if (n != null) span.textContent = viewerFormat.format(n).toLowerCase();
     return span;
   }
-  const STATES = [['live', 'Live'], ['waiting', 'Waiting'], ['replaced', 'Standby'],
-                  ['offline', 'Offline']];
+  const STATES = [['live', 'Live'], ['offline', 'Offline']];
   const SORTS = [['priority', 'Priority'], ['viewers', 'Viewers'], ['name', 'Name'],
                  ['newest', 'Newest stream'], ['longest', 'Longest stream']];
-  const DEFAULTS = { show: ['live', 'waiting', 'replaced'], cats: [], sort: 'priority' };
+  const DEFAULTS = { show: ['live'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
-  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.3') || '{}'), { q: '' }); } catch {}
+  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.4') || '{}'), { q: '' }); } catch {}
   let latest = null;
 
   function save() {
-    try { localStorage.setItem('quadlink.view.3', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+    try { localStorage.setItem('quadlink.view.4', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
   }
 
   function glyph(kind, paths, label) {
@@ -729,7 +728,7 @@
     cat.className = 'cat';
     const label = STATES.find(([s]) => s === c.state);
     // glyphs and row shading carry these states, so the line keeps to the category
-    cat.textContent = ['live', 'in quad', 'replaced'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
+    cat.textContent = ['live', 'in quad', 'replaced', 'waiting'].includes(c.state) ? (c.category || '') : [label ? label[1] : c.state, c.category].filter(Boolean).join(' · ');
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.append(cat);
@@ -785,22 +784,26 @@
     const cats = new Set(view.cats);
     const matches = c => !q || [c.display_name, c.channel, c.category, c.title]
       .some(v => v && v.toLowerCase().includes(q));
-    // what drops put off the quad, by tile, whatever the filters
-    const replaced = latest.channels.filter(c => c.replaced_slot != null && c.slot == null && matches(c))
-      .sort((a, b) => a.replaced_slot - b.replaced_slot);
+    // standby, whatever the filters: what drops put off the quad, by tile, then what holds keep off
+    const standby = [
+      ...latest.channels.filter(c => c.replaced_slot != null && c.slot == null && matches(c))
+        .sort((a, b) => a.replaced_slot - b.replaced_slot),
+      ...latest.channels.filter(c => c.state === 'waiting' && !c.extra && c.replaced_slot == null && matches(c))
+        .sort(ORDER.priority),
+    ];
     // added channels show whatever their state: they are on the list only by choice
     const added = latest.channels.filter(c => c.extra && c.slot == null && matches(c))
       .sort(ORDER.name);
     const rows = latest.channels
-      .filter(c => !c.extra && c.slot == null && c.replaced_slot == null && c.state !== 'in quad')
+      .filter(c => !c.extra && c.slot == null && c.replaced_slot == null && !['in quad', 'waiting'].includes(c.state))
       .filter(c => show.has(c.state))
       .filter(c => !cats.size || cats.has(c.category))
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
     // the quad's channels are its cards, not rows
     const head = [];
-    if (replaced.length) {
-      head.push(section('Standby'), ...replaced.map(row));
+    if (standby.length) {
+      head.push(section('Standby'), ...standby.map(row));
     }
     if (added.length) {
       head.push(section('Added'), ...added.map(row));
