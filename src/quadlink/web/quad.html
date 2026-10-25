@@ -27,6 +27,8 @@
     --text: color-mix(in oklab, var(--twitch) 6%, var(--white));
     --text-quiet: color-mix(in oklab, var(--twitch) 35%, var(--white));
     --accent: var(--twitch);
+    /* white on it is 5.9:1, and it stays 3.3:1 off --current */
+    --accent-hover: color-mix(in oklab, var(--twitch) 90%, var(--black));
     --field: color-mix(in oklab, var(--twitch) 30%, var(--black));
     --popover: color-mix(in oklab, var(--twitch) 32%, var(--black));
     --live: #eb0400;
@@ -142,10 +144,7 @@
     font-weight: 400; font-variant-numeric: tabular-nums; }
   .viewers:empty { display: none; }
   .viewers::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--live); }
-  /* red on hover says a click takes it away */
   button.chip { cursor: pointer; appearance: none; }
-  button.chip:hover, button.chip:focus-visible { border-color: var(--error);
-    color: var(--error); background: var(--popover); }
   button.chip:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
   /* WCAG 1.4.1: a state needs more than color, and the in-quad tint is only 1.05:1 */
   .rail li:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
@@ -175,13 +174,15 @@
   .explore-cats { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px; padding: 0 0 16px; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: 5px; min-width: 0; }
-  /* category chips choose, so they light up in the accent rather than the red of removal */
   .explore-cats .chip { color: var(--text); background: var(--current); }
   .explore-cats .chip span:first-child { font-weight: 400; }
   .explore-cats button.chip:hover, .explore-cats button.chip:focus-visible {
     border-color: var(--clear); color: var(--text); background: var(--hover); }
   .explore-cats .chip[aria-pressed="true"] { border-color: var(--accent);
     background: var(--accent); color: var(--white); }
+  /* the hover rule outranks the chosen one, so the chosen chip restates itself under the pointer */
+  .explore-cats .chip[aria-pressed="true"]:is(:hover, :focus-visible) { border-color: var(--accent);
+    background: var(--accent-hover); color: var(--white); }
   .explore-cats .chip[aria-pressed="true"] .viewers { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
