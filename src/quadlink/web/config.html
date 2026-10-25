@@ -19,7 +19,8 @@
   section { margin-block: var(--s4) var(--edge); }
   .head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
     min-height: var(--control); margin-bottom: var(--s2); }
-  h2 { margin: 0; font-size: var(--t-meta); font-weight: normal; color: var(--text-quiet); }
+  /* the dashboard's name weight, so section titles stand above the quiet path and labels */
+  h2 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--text); }
   .head label { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta);
     color: var(--text-quiet); }
   .head select { color: var(--text); }
@@ -29,6 +30,9 @@
   /* the bar keeps the actions in reach while the textareas scroll under it */
   .actions { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--s2);
     padding-block: var(--edge); background: var(--ground); }
+  /* the textareas fade out above the bar instead of cutting off at its edge */
+  .actions::before { content: ""; position: absolute; inset: auto 0 100%; height: var(--fade);
+    background: linear-gradient(var(--clear), var(--ground)); pointer-events: none; }
   .actions output { min-width: 0; margin-inline-end: auto; font-size: var(--t-meta); color: var(--text-quiet); }
   .actions output.error { color: var(--error-ink); }
 </style>

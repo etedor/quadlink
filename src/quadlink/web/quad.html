@@ -40,7 +40,7 @@
   /* every menu hangs under its tools row, flush with the last button, at one width. the gutter
      keeps room for the scrollbar even when it shows, so the reset glyph never sits under it */
   .pop { position: absolute; top: calc(100% + var(--s1)); right: 0; width: min(320px, 100%); z-index: 1;
-    border-radius: var(--r-outer); background: var(--overlay); max-height: 60vh;
+    border-radius: var(--r-outer); background: var(--overlay); box-shadow: var(--shadow); max-height: 60vh;
     overflow-y: auto; scrollbar-gutter: stable; }
   .pop-head { display: flex; align-items: center; justify-content: space-between;
     padding: var(--inset) var(--inset) 0 var(--edge); color: var(--text-quiet); font-size: var(--t-meta); }
@@ -58,7 +58,13 @@
   .pop legend { color: var(--text-quiet); font-size: var(--t-meta); margin-bottom: var(--s1); padding: 0; }
   .pop label { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; cursor: pointer;
     min-width: 0; }
-  .pop input { accent-color: var(--accent-fill); }
+  /* drawn, not native: WebKit's dark controls ignore accent-color, and a chosen option must
+     read as on. the centre mark is the white left inside a 4px purple ring */
+  .pop input { appearance: none; -webkit-appearance: none; flex: none; width: var(--icon-s);
+    height: var(--icon-s); margin: 0; border-radius: var(--s1);
+    box-shadow: inset 0 0 0 var(--focus) var(--text-quiet); }
+  .pop input[type=radio] { border-radius: var(--r-pill); }
+  .pop input:checked { background: var(--on-accent); box-shadow: inset 0 0 0 var(--s1) var(--accent-fill); }
   .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; flex-direction: column; align-items: center; overflow: hidden; }
@@ -120,13 +126,13 @@
     background: currentColor; }
   /* a picked row or card waits for a tile click: the click alternative to dragging */
   .picked { box-shadow: inset 0 0 0 var(--ring) var(--accent-ink); }
-  /* one 16:9 picture well; a missing picture shows the raised surface, not a black hole.
-     a tile's video fills its well, so the tile keeps the black behind letterboxing */
+  /* one 16:9 picture well; a missing or loading picture shows the raised surface. only a
+     tile is black, behind its video's letterboxing */
   .thumb { position: relative; display: block; aspect-ratio: 16 / 9; border-radius: var(--r-inner);
-    background: var(--well); overflow: hidden; }
+    background: var(--raised); overflow: hidden; }
+  .tile { background: var(--well); }
   /* zero specificity, so the tile's .cover keeps its contain fit */
   :where(.thumb) > img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .thumb:not(:has(video, img[src])) { background: var(--raised); }
   /* long-press callouts would steal touch drags */
   .tile { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
   /* the Explore button switches the phone's one list; desktop shows the rail and Explore */
@@ -142,7 +148,6 @@
   .explore-cats:empty { display: none; }
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: var(--s1); min-width: 0; }
-  .explore-cats .chip { font-weight: 400; }
   /* the whole of Explore scrolls, its tools and menus too, and fades out under the quad. it
      reaches --inset past the column so it does not clip the focus rings at the column's edges */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
@@ -212,7 +217,9 @@
     body.exploring aside { display: none; }
     .explore { grid-area: rail; }
     /* phones keep the chips to one row that scrolls sideways */
-    .explore-cats { flex-wrap: nowrap; overflow-x: auto; }
+    .explore-cats { flex-wrap: nowrap; overflow-x: auto;
+      -webkit-mask-image: linear-gradient(to left, var(--clear), var(--black) var(--fade));
+      mask-image: linear-gradient(to left, var(--clear), var(--black) var(--fade)); }
   }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
@@ -447,6 +454,7 @@
       el.classList.toggle('picked', on);
       el.querySelector('.pick').setAttribute('aria-pressed', String(on));
     });
+    markTiles();
   }
 
   function markTiles() {
@@ -473,7 +481,9 @@
       what.hidden = !s?.category;
       const button = tile.querySelector('button');
       const who = s?.display_name || s?.channel || 'empty';
-      button.setAttribute('aria-label', `Slot ${i + 1}: ${who}${s?.pinned ? ', pinned' : ''}`);
+      // while a pick waits, a click places it rather than toggling sound
+      button.setAttribute('aria-label', picked !== null ? `Place in slot ${i + 1}`
+        : `Slot ${i + 1}: ${who}${s?.pinned ? ', pinned' : ''}`);
       button.setAttribute('aria-pressed', String(loud));
     });
   }
@@ -882,7 +892,7 @@
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
     if (saved.category?.id) ex.category = saved.category;
-    if (saved.sort === 'new') ex.sort = 'new';
+    if (EX_SORTS.some(([k]) => k === saved.sort)) ex.sort = saved.sort;
     if (typeof saved.q === 'string') exploreQ.value = saved.q;
     ex.searching = saved.searching === true && Boolean(exploreQ.value.trim());
     if (typeof saved.lang === 'string') ex.lang = saved.lang;
@@ -923,6 +933,7 @@
     // a choice saved by an earlier page has no count
     b.append(name, viewerCount(c.viewers));
     b.dataset.id = c.id;
+    b.dataset.name = c.name;
     b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
     // the chosen category's chip clears the choice
     b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
@@ -1068,7 +1079,7 @@
     if (!q) return;
     const s = ex.found.find(x => x.channel === q || x.display_name.toLowerCase() === q);
     if (s) { pick(s.channel); return; }
-    [...cats.querySelectorAll('.chip')].find(b => b.firstChild.textContent.toLowerCase() === q)?.click();
+    [...cats.querySelectorAll('.chip')].find(b => b.dataset.name.toLowerCase() === q)?.click();
   }
 
   // the search persists until cleared; clearing it ends a choice the top categories do not hold
