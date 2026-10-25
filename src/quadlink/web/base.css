@@ -18,7 +18,10 @@
   --veil: color-mix(in oklab, var(--text) 9%, var(--clear));
   --well: var(--black);
   --scrim: color-mix(in oklab, var(--black) 65%, var(--clear));
-  --scrim-foot: linear-gradient(var(--clear) 40%, color-mix(in oklab, var(--black) 80%, var(--clear)));
+  /* full strength under two lines of text and their padding, in em of the text it backs, so
+     even a white frame keeps the text near 11:1; the top 40% of the picture stays clear */
+  --scrim-foot: linear-gradient(to top, color-mix(in oklab, var(--black) 80%, var(--clear)) min(3.5em, 60%),
+    var(--clear) min(6em, 60%));
   /* purple as a fill behind white text, or as ink on dark */
   --accent-fill: var(--twitch);                                          /* white on it 4.6 */
   --accent-ink: color-mix(in oklab, var(--twitch) 60%, var(--white));    /* 8.8; 9.1 on black */

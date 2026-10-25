@@ -148,13 +148,15 @@
     mask-image: linear-gradient(var(--clear) 16px, var(--black) 56px); }
   .cards { list-style: none; margin: 0 -7px; padding: 0 0 10px; min-width: 0; display: grid; gap: 16px 12px;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
-  /* the title is opt-in: a cleaned copy fades in over the picture on hover, focus or
-     a pick, so the grid never shifts */
-  .peek { display: flex; position: absolute; inset: 0; align-items: flex-end;
-    padding: 34px 10px 36px; box-sizing: border-box; background: var(--scrim); color: var(--text);
-    font-size: 14px; line-height: 1.35; opacity: 0; pointer-events: none; transition: opacity 0.12s;
-    overflow: hidden; overflow-wrap: anywhere; }
-  .pickable:is(:hover, :has(:focus-visible), .picked) .peek { opacity: 1; }
+  /* the title fades in at the picture's foot on hover, focus or a pick, so the grid never
+     shifts; the scrim darkens only under the text */
+  .peek { display: flex; position: absolute; inset: 0; align-items: flex-end; padding: 10px;
+    box-sizing: border-box; background: var(--scrim-foot); color: var(--text); font-size: var(--t-meta);
+    opacity: 0; pointer-events: none; transition: opacity var(--t-state); }
+  .peek span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+    overflow-wrap: break-word; }
+  .pickable:is(:has(:focus-visible), .picked) .peek { opacity: 1; }
+  @media (hover: hover) { .pickable:hover .peek { opacity: 1; } }
   /* a placeholder item while its list loads; under reduced motion it holds still but stays */
   .skeleton { animation: pulse 1s infinite alternate; }
   .skeleton .bar { width: 100%; height: 12px; border-radius: var(--r-pill); background: var(--raised); }
@@ -175,7 +177,7 @@
   @keyframes pulse { to { opacity: 0.35; } }
   @media (prefers-reduced-motion: reduce) {
     .tile.pending::after, .skeleton { animation: none; }
-    .cover, .peek { transition: none; }
+    .cover { transition: none; }
   }
   /* phones: top bar, the quad as 2x2 cards, then the rail or Explore */
   @media (max-width: 720px) {
@@ -345,11 +347,10 @@
     });
   }
 
-  // Twitch refreshes previews every few minutes; the bucket keeps the browser cache in step
-  function thumb(channel) {
-    const c = latest?.channels.find(x => x.channel === channel);
-    return c?.thumbnail ? c.thumbnail + '?t=' + Math.floor(Date.now() / 300000) : null;
-  }
+  // Twitch refreshes previews every few minutes; the bucket keeps the browser cache in step,
+  // and the rail, Explore and covers show the same still
+  const preview = url => url ? url + '?t=' + Math.floor(Date.now() / 300000) : null;
+  const thumb = channel => preview(latest?.channels.find(x => x.channel === channel)?.thumbnail);
 
   function cover(tile, image) {
     const img = tile.querySelector('.cover');
@@ -513,7 +514,11 @@
       img.src = image;
       pic.append(img);
     }
-    if (title != null) pic.append(el('div', 'peek', title));
+    if (title) {
+      const peek = el('div', 'peek');
+      peek.append(el('span', '', title));
+      pic.append(peek);
+    }
     const line = el('div', 'line');
     line.append(el('span', 'name truncate', name));
     // only Explore knows the language; the viewer's own goes without saying
@@ -567,7 +572,7 @@
     const q = view.q.trim().toLowerCase();
     const show = new Set(view.show);
     const cats = new Set(view.cats);
-    const matches = c => !q || [c.display_name, c.channel, c.category, c.title]
+    const matches = c => !q || [c.display_name, c.channel, c.category]
       .some(v => v && v.toLowerCase().includes(q));
     // outside channels reach the quad from Explore and leave it with their hold
     const rows = latest.channels
@@ -799,10 +804,7 @@
     if (e.button !== 0 || drag) return;
     const source = () => ({
       slot, tile,
-      image: () => {
-        const channel = latest?.slots[slot]?.channel;
-        return channel ? '/api/slots/' + slot + '/still.jpg?c=' + encodeURIComponent(channel) : null;
-      },
+      image: () => latest?.slots[slot]?.still ?? null,
     });
     drag = { x: e.clientX, y: e.clientY, id: e.pointerId, el: tile, active: false, touch: e.pointerType === 'touch', pending: source };
     if (drag.touch) drag.timer = setTimeout(() => { if (drag && !drag.active) start(e, source()); }, LONG_PRESS);
@@ -833,7 +835,7 @@
   const CHIP_ROWS = 3;
   const SKELETONS = 6;
   // lang: a Twitch code, '' for all
-  const ex = { category: null, lang: null, sort: 'viewers', listing: null, opened: 0,
+  const ex = { category: null, lang: null, sort: 'viewers', listing: null,
     found: [], searching: false, searchTimer: null, request: 0, catRequest: 0, foundRequest: 0 };
   try {
     const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
@@ -861,7 +863,6 @@
     exploreBtn.setAttribute('aria-pressed', String(on));
     try { history.replaceState(null, '', on ? '#explore' : location.pathname + location.search); } catch {}
     if (on) {
-      ex.opened = Date.now();
       showCats();
       showFound();
       loadStreams();
@@ -990,10 +991,6 @@
       showStreams();
       return;
     }
-    if (ex.searching) {
-      cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
-      endNote.textContent = '';
-    }
     try {
       const body = await getJSON('/api/explore/channels?q=' + encodeURIComponent(q));
       if (request !== ex.foundRequest) return;
@@ -1001,6 +998,8 @@
       showStreams();
     } catch {
       if (request !== ex.foundRequest) return;
+      // the cards stand for another search until the retry answers
+      if (ex.searching) placeholders();
       setTimeout(() => { if (exploring() && request === ex.foundRequest) showFound(); }, RETRY_AFTER);
     }
   }
@@ -1061,8 +1060,7 @@
     const id = ex.category?.id ?? '';
     ex.listing = null;
     note.textContent = '';
-    endNote.textContent = '';
-    cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
+    placeholders();
     scroller.scrollTop = 0;
     scroller.classList.remove('under');
     try {
@@ -1078,6 +1076,11 @@
     }
   }
 
+  function placeholders() {
+    cards.replaceChildren(...Array.from({ length: SKELETONS }, () => skeleton('card')));
+    endNote.textContent = '';
+  }
+
   // a typed search shows the channels it found, if any; a chosen category, its listing
   function showStreams() {
     if (ex.searching && ex.found.length) {
@@ -1086,7 +1089,8 @@
       endNote.textContent = '';
       return;
     }
-    if (!ex.listing) return;
+    // found cards from an earlier search must not stay while the listing loads
+    if (!ex.listing) { placeholders(); return; }
     const { streams, more, category } = ex.listing;
     // a top-N cut ends on a full row: 4 columns on desktop, 2 on phones
     const shown = more ? streams.slice(0, streams.length - (streams.length % 4)) : streams;
@@ -1147,31 +1151,22 @@
   exFilterPop.querySelector('.reset').addEventListener('click', () => { setLang(ownLang()); fillExLangs(); });
   markExploreTools();
 
-  // a title as a person would write it: no emoji, no !commands, no shouting
-  function cleanTitle(text) {
-    let t = text
-      .replace(/\p{Extended_Pictographic}|\uFE0F|\u200D/gu, '')
-      .replace(/(^|\s)![\w-]+/g, '$1')
-      .replace(/\s*([|•·~\-–—/])(\s*[|•·~\-–—/])+\s*/g, ' $1 ')
-      .replace(/^\s*[|•·~\-–—/]\s*|\s*[|•·~\-–—/]\s*$/g, '')
+  // safe edits only: Twitch shows titles as typed, so case stays, and a !command stays
+  // unless it is part of the run that ends the title. ©®™ are pictographic but not emoji
+  const TITLE_SEPS = '|•·~\\-–—/║';
+  const TITLE_EMOJI = /(?![©®™])[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u200D\uFE0F\u20E3]/gu;
+  const TITLE_COMMANDS = new RegExp(`(?:(?:^|[\\s${TITLE_SEPS}]+)![\\p{L}\\p{N}_-]+)+[\\s${TITLE_SEPS}]*$`, 'u');
+  const TITLE_REPEATS = new RegExp(`\\s*([${TITLE_SEPS}])(?:\\s*[${TITLE_SEPS}])+\\s*`, 'gu');
+  function streamTitle(text) {
+    return (text || '')
+      .replace(TITLE_EMOJI, ' ')
+      .replace(TITLE_COMMANDS, '')
+      .replace(TITLE_REPEATS, ' $1 ')
       .replace(/\s+/g, ' ')
       .trim();
-    // shouting goes to lower case. in a mostly-capitals title every all-caps word does,
-    // but words with digits (G2, BO1); elsewhere only words of 4+ capitals, so short
-    // names in mixed titles (LOS, IG) stay
-    const letters = t.match(/\p{L}/gu) || [];
-    const capitals = letters.filter(ch => ch !== ch.toLowerCase()).length;
-    const shouted = letters.length >= 8 && capitals / letters.length > 0.6
-      ? /\b\p{Lu}{2,}\b/gu : /\b\p{Lu}{4,}\b/gu;
-    if (shouted.test(t)) {
-      t = t.replace(shouted, w => w.toLowerCase())
-        .replace(/(^|[.!?]\s+)(\p{Ll})/gu, (_, a, b) => a + b.toUpperCase());
-    }
-    return t;
   }
 
-  // Twitch refreshes previews every few minutes; each opening of Explore gets fresh ones
-  const card = s => item(s, { image: s.thumbnail && s.thumbnail + '?t=' + ex.opened, title: cleanTitle(s.title) });
+  const card = s => item(s, { image: preview(s.thumbnail), title: streamTitle(s.title) });
 
   if (!phone.matches || location.hash === '#explore') setExploring(true);
   phone.addEventListener('change', () => { if (!phone.matches) setExploring(true); });
