@@ -14,7 +14,9 @@ about CUSHION seconds behind the newest part it has cut. Each run (a new
 channel, or video back after filler) starts that far back in the source, in
 segments already complete, so their bytes arrive at once and fill the cushion
 while the first part goes out at once. A source hiccup shorter than the cushion
-then drains it instead of the player's buffer.
+then drains it instead of the player's buffer. A cushion grown a whole
+segment past CUSHION sheds that segment: QuadStream never skips ahead, so
+releasing the excess faster would only move it into the player.
 
 QuadStream rebuilds any player that stalls, so a slot never lets its parts run
 dry: once the cushion is empty and the next part is FILL_AFTER seconds past
@@ -78,16 +80,19 @@ PROBE_MAX = 1 << 20
 # goes unseen; each second of it is a second of latency. Twitch segments are 2s,
 # so a run starts one complete segment back from the one being encoded
 CUSHION = 2.5
-# a cushion over CUSHION + CUSHION_SLACK (after a burst, or a stall the source
-# makes up) releases CATCH_UP times faster than real time until back at CUSHION,
-# or each hiccup would add its length to the latency for good. Never slower than
-# real time: that would drain the player's buffer until it stalls
+# after the released edge stood still, a cushion over CUSHION + CUSHION_SLACK
+# releases CATCH_UP times faster than real time until back at CUSHION, refilling
+# what the stall took from the player's buffer. The release line caps it at real
+# time since the player started: QuadStream never skips ahead, so media released
+# faster than that is delay the player keeps for good. Never slower than real
+# time either: that would drain the player's buffer until it stalls
 CUSHION_SLACK = 0.5
 CATCH_UP = 1.05
-# seconds a run's released media may run ahead of the real time since its first
-# part. QuadStream never skips ahead, so catching up moves delay from the relay
-# into the player's buffer; this keeps that within one more PART-HOLD-BACK
-MAX_LEAD = PART_HOLD_BACK
+# a cushion that stays under LOW_CUSHION for LOW_FOR seconds, with complete
+# segments queued, restarts back in them; at most every RESTART_GAP seconds
+LOW_CUSHION = 0.5
+LOW_FOR = 5.0
+RESTART_GAP = 30.0
 # seconds between two "nothing released" reports for one slot, and between two
 # reports of skipped repeats
 EMPTY_REPORT = 10.0
@@ -341,10 +346,16 @@ class _Slot:
         self._repeats_logged = -math.inf
         # the release schedule runs at CATCH_UP; see _add
         self._catching = False
-        # (release of the run's first part, media scheduled since): bounds the lead
-        self._line = (0.0, 0.0)
+        # (loop time the player started, media scheduled since): no part goes out
+        # before start + media, so the player's buffer never grows past its start
+        self._line: tuple[float, float] | None = None
         # a restart back in the source is under way; no other until a part is cut
         self._restarting = False
+        # loop time of the last restart back, and since when the cushion is low
+        self._restarted = -math.inf
+        self._low_since: float | None = None
+        # a new channel waits for a listing with segments to pick its start
+        self._start_pending = False
 
     def start(self) -> None:
         self.tasks = [
@@ -393,21 +404,26 @@ class _Slot:
         before_seq = self.source.next_seq
         ingest(self.source, text, identity)
         new = [s for s in self.source.segments if s.seq >= before_seq]
-        if not new:
-            return
         if switched:
-            start = new[start_back(new, prefetch)]
+            # before any return: ingest has taken the identity, and a first listing
+            # of only ads has no segments
             self._restarting = False
+            self._start_pending = True
             self._taken.clear()
-            # the older segments skipped here count as taken, or one listed again
-            # would be fed behind the edge, back in time
-            self._taken.extend(s.uri.split("?", 1)[0] for s in new if s.seq < start.seq)
-            new = [s for s in new if s.seq >= start.seq]
             self.gen += 1
             for queued in [*self.queue, *([self.current] if self.current else [])]:
                 if queued.fetch is not None:
                     queued.fetch.cancel()
             self.queue.clear()
+        if not new:
+            return
+        if self._start_pending:
+            self._start_pending = False
+            start = new[start_back(new, prefetch)]
+            # the older segments skipped here count as taken, or one listed again
+            # would be fed behind the edge, back in time
+            self._taken.extend(s.uri.split("?", 1)[0] for s in new if s.seq < start.seq)
+            new = [s for s in new if s.seq >= start.seq]
         for seg in new:
             # ingest takes a segment again when it returns with a later time, its test
             # for a restarted broadcast; a playlist whose times run ahead of the
@@ -419,14 +435,30 @@ class _Slot:
                 continue
             self._taken.append(path)
             self.queue.append(_Queued(seg, identity, self.gen))
-        if not switched and self.segs and self.segs[-1].filler and not self._restarting:
+        if not switched and not self._restarting and self._starved():
             self._restart_back(prefetch)
         self._report_repeats()
         self._fetch_ahead()
         self.wake.set()
 
+    def _starved(self) -> bool:
+        """Filler plays, or the cushion has stayed low LOW_FOR seconds."""
+        if not self.segs:
+            return False
+        if self.segs[-1].filler:
+            return True
+        now = asyncio.get_running_loop().time()
+        if self.cushion(now) >= LOW_CUSHION:
+            self._low_since = None
+            return False
+        if self._low_since is None:
+            self._low_since = now
+        # each restart skips media; without the gap a source that stays slow would
+        # skip again and again
+        return now - self._low_since >= LOW_FOR and now - self._restarted >= RESTART_GAP
+
     def _restart_back(self, prefetch: set[str]) -> None:
-        """Filler plays and complete segments wait: start a new run back in them.
+        """Complete segments wait behind a starved slot: start a new run back in them.
 
         The segment being fed has stalled, or the source came back with a backlog;
         feeding all of it would keep its delay for good, and its newest part alone
@@ -436,6 +468,8 @@ class _Slot:
         if not queued or queued[0].seg.uri in prefetch:
             return
         start = start_back([q.seg for q in queued], prefetch)
+        self._restarted = asyncio.get_running_loop().time()
+        self._low_since = None
         self.gen += 1
         for q in [*queued[:start], *([self.current] if self.current else [])]:
             if q.fetch is not None:
@@ -565,14 +599,20 @@ class _Slot:
             or queued.seg.discontinuity
             or (key is not None and not run.continues(key))
         ):
-            await self._new_run(queued.identity, audio_sample_rate(prefix) is not None, switch)
+            await self._new_run(
+                queued.identity,
+                audio_sample_rate(prefix) is not None,
+                switch,
+                # a restart leaves the old run's ffmpeg stalled: draining it would wait
+                cut=switch or queued.fresh,
+            )
             self.played = queued.identity
         assert self.run is not None
         if key is not None:
             self.run.expect(key)
         await self.run.write(prefix)
 
-    async def _new_run(self, identity: str, audio: bool, switch: bool) -> None:
+    async def _new_run(self, identity: str, audio: bool, switch: bool, cut: bool) -> None:
         if switch and self.segs:
             # a channel change: parts no player has fetched yet are dropped, so the
             # new channel goes out now instead of after the old one's queue
@@ -586,7 +626,7 @@ class _Slot:
                 dropped_parts=dropped,
                 cushion=round(cushion, 2),
             )
-        await self._end_run(cut=switch)
+        await self._end_run(cut=cut)
         run = _Run(self.ll.ffmpeg if audio else None, identity, self._on_parts)
         try:
             await run.start()
@@ -638,11 +678,8 @@ class _Slot:
             elif cushion <= CUSHION:
                 self._catching = False
             release = next_release(now, prev, CATCH_UP if self._catching else 1.0)
-            start, media = self._line
-            if fresh:
-                # a new run: its line starts at its first part
-                start, media = release, 0.0
-            release = max(release, start + media - MAX_LEAD)
+            start, media = self._line or (release, 0.0)
+            release = max(release, start + media)
             self._line = (start, media + min(part.duration, PART_TARGET))
             self._restarting = False
             if not seg.parts and not seg.wall:
@@ -651,6 +688,54 @@ class _Slot:
             if part.last:
                 seg.complete = True
                 self.target = max(self.target, math.ceil(seg.duration - 0.001))
+            self._shed(now)
+
+    def _shed(self, now: float) -> None:
+        """Drop the oldest whole unreleased segment while the cushion holds one more.
+
+        Catch-up cannot take back excess the player has not had (see CATCH_UP), so a
+        burst would keep its delay for good. A segment opens on a keyframe, so the
+        next one starts clean after a discontinuity.
+        """
+        while True:
+            index = next(
+                (
+                    i
+                    for i, s in enumerate(self.segs[:-1])
+                    if s.complete and not s.filler and s.parts and s.released(now) == 0
+                ),
+                None,
+            )
+            if index is None:
+                return
+            seg, after = self.segs[index], self.segs[index + 1 :]
+            media = sum(min(p.duration, PART_TARGET) for p in seg.parts)
+            if self.cushion(now) - media < CUSHION:
+                return
+            # RFC 8216 6.2.2: the next segment now opens with a discontinuity
+            delta = int(not after[0].disc) - int(seg.disc)
+            after[0].disc = True
+            shift = seg.parts[0].release - after[0].parts[0].release
+            for later in after:
+                later.seq -= 1
+                later.dseq += delta
+                later.wall += shift
+                for p in later.parts:
+                    p.release += shift
+            del self.segs[index]
+            self._schedule(-media)
+            logger.info("relay ll cushion shed", slot=self.slot, seconds=round(media, 2))
+
+    def _schedule(self, media: float) -> None:
+        """Add media to the release line; negative for parts dropped unreleased."""
+        if self._line is not None:
+            start, scheduled = self._line
+            self._line = (start, scheduled + media)
+
+    def player_start(self, now: float) -> None:
+        """A new player holds its buffer from here: the release line starts over."""
+        self._line = (now, self.cushion(now))
+        self._catching = False
 
     def cushion(self, now: float) -> float:
         """Seconds until the released edge passes the newest cut part, on its schedule."""
@@ -697,6 +782,7 @@ class _Slot:
         for seg in self.segs:
             released = seg.released(now)
             dropped += len(seg.parts) - released
+            self._schedule(-sum(min(p.duration, PART_TARGET) for p in seg.parts[released:]))
             if released == 0:
                 continue
             if released < len(seg.parts):
@@ -734,6 +820,8 @@ class _Slot:
             for part in filler:
                 seg.parts.append(_Part(part.data, part.duration, part.independent, release))
                 release += part.duration
+            # the player plays filler as media: it counts on the release line
+            self._schedule(seg.duration)
             seg.complete = True
             # each filler repeats the same timestamps (see playlist.add_filler)
             self.pending_disc = True
@@ -931,6 +1019,7 @@ class LowLatency:
                 last=state.last_seq(),
                 agent=request.headers.get("User-Agent", "")[:60],
             )
+            state.player_start(loop.time())
             # a fresh slot needs its first parts; QuadStream retries a 503 itself
             deadline = loop.time() + 10
             while not state.render(loop.time()) and loop.time() < deadline:

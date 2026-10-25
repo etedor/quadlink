@@ -16,7 +16,7 @@ from quadlink.relay.lowlat import (
     CATCH_UP,
     CUSHION,
     CUSHION_SLACK,
-    MAX_LEAD,
+    LOW_FOR,
     PART_TARGET,
     LowLatency,
     _Part,
@@ -118,6 +118,7 @@ class Cuts:
         self.state = state
         self.k = 0
         self.released: list[float] = []
+        self.out: dict[int, _Part] = {}
 
     def cut(self, now: float, n: int = 1) -> None:
         for _ in range(n):
@@ -130,12 +131,23 @@ class Cuts:
     def releases(self) -> list[float]:
         return self.released
 
+    def watch(self, now: float) -> None:
+        for seg in self.state.segs:
+            for p in seg.parts:
+                if p.release <= now:
+                    self.out[id(p)] = p
+
+    def released_media(self) -> float:
+        """Media of every part that went out, as a player received it."""
+        return sum(p.duration for p in self.out.values())
+
     def run(self, start: float, end: float, at: Callable[[float], int] = lambda t: 1) -> None:
         """One step every 0.5s from start to end; `at(t)` parts are cut at each."""
         t = start
         while t < end - 1e-9:
             if n := at(t):
                 self.cut(t, n)
+            self.watch(t)
             t += 0.5
 
 
@@ -159,18 +171,63 @@ class TestCushion:
         steps = [b - a for a, b in zip(releases, releases[1:], strict=False)]
         assert steps == pytest.approx([0.5] * len(steps))
 
-    def test_a_cushion_after_a_burst_converges_back(self):
+    def test_excess_cushion_sheds_a_whole_segment(self):
         state = _slot()
         cuts = Cuts(state)
         cuts.cut(0.0, 5)
-        # 2s too much: a stall the source makes up with more than it held back
-        cuts.run(0.5, 120.0, lambda t: 5 if t == 10.0 else 1)
-        assert state.cushion(119.75) <= CUSHION + CUSHION_SLACK
-        releases = cuts.releases()
+        cuts.run(0.5, 10.0)
+        # 3s too much at once: more than one whole segment over CUSHION
+        cuts.cut(10.0, 7)
+        assert state.cushion(10.0) <= CUSHION + 2.0
+        seqs = [seg.seq for seg in state.segs]
+        assert seqs == list(range(seqs[0], seqs[0] + len(seqs)))
+        disc = [seg for seg in state.segs if seg.disc]
+        assert len(disc) == 1 and disc[0].parts[0].independent
+        assert disc[0].dseq == state.segs[0].dseq + 1
+        # what is left goes on at real time, from where the dropped segment would have
+        assert all(seg.dseq == disc[0].dseq for seg in state.segs if seg.seq > disc[0].seq)
+        releases = [p.release for seg in state.segs for p in seg.parts]
         steps = [b - a for a, b in zip(releases, releases[1:], strict=False)]
+        assert steps == pytest.approx([0.5] * len(steps))
+        # PROGRAM-DATE-TIME runs on by duration
+        for a, b in zip(state.segs, state.segs[1:], strict=False):
+            assert b.wall == pytest.approx(a.wall + a.duration)
+
+    def test_catch_up_only_refills_what_a_stall_took(self):
+        state = _slot()
+        state.player_start(0.0)
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        # 4s without a part: the released edge stands still about 1.5s, then a burst
+        cuts.run(0.5, 120.0, lambda t: 0 if 10.0 <= t < 14.0 else 9 if t == 14.0 else 1)
+        steps = [b - a for a, b in zip(cuts.releases(), cuts.releases()[1:], strict=False)]
         assert min(steps) >= 0.5 / CATCH_UP - 1e-9
-        # never further ahead of real time than MAX_LEAD
-        assert releases[-1] - releases[0] >= 0.5 * (len(releases) - 1) - MAX_LEAD - 1e-9
+        # back on real time since the player started, and never past it
+        assert cuts.released_media() == pytest.approx(120.0, abs=0.5)
+        assert state.cushion(119.75) <= CUSHION + CUSHION_SLACK
+
+    def test_player_latency_stays_bounded_across_swaps(self):
+        state = _slot()
+        state.player_start(0.0)
+        cuts = Cuts(state)
+        cuts.cut(0.1, 5)
+        t = 0.5
+        for _ in range(10):
+            cuts.run(t, t + 40.0)
+            t += 40.0
+            state._drop_unreleased(t)
+            state.pending_disc = True
+            cuts.k = 0
+            # each channel starts with more than its cushion in hand at once, which
+            # catch-up alone would push into the player
+            cuts.cut(t + 0.2, 7)
+            cuts.watch(t + 0.2)
+            t += 0.5
+        cuts.run(t, t + 6.0)
+        t += 6.0
+        # the player receives no more media than real time since it started: its
+        # buffer, and so its delay, does not grow with each swap
+        assert cuts.released_media() <= t + 0.5
 
     def test_a_cushion_stays_while_the_source_keeps_time(self):
         state = _slot()
@@ -496,6 +553,58 @@ async def test_video_back_after_filler_starts_a_cushion_back_in_the_backlog(setu
     state._take("chan", listing(["a", "b", "c", "d", "e"], ["f", "g"]))
     assert queued() == ["e.ts", "f.ts", "g.ts"]
     assert state.queue[0].fresh and all(q.gen == state.gen for q in state.queue)
+    await state.stop()
+
+
+def _source_listing(complete: list[str], prefetch: list[str], ads: list[str] = ()) -> str:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:0"]
+    for name in ads:
+        lines += ["#EXTINF:2.000,Amazon", f"http://127.0.0.1:9/{name}.ts"]
+    for name in complete:
+        lines += ["#EXTINF:2.000,live", f"http://127.0.0.1:9/{name}.ts"]
+    lines += [f"#EXT-X-TWITCH-PREFETCH:http://127.0.0.1:9/{name}.ts" for name in prefetch]
+    return "\n".join(lines) + "\n"
+
+
+def _queued(state: lowlat._Slot) -> list[str]:
+    return [q.seg.uri.rsplit("/", 1)[1] for q in state.queue]
+
+
+async def test_a_new_channel_listing_only_ads_still_switches(setup):
+    _, _, _, ll = setup
+    state = lowlat._Slot(ll, 0)
+    state._take("one", _source_listing(["a"], ["b", "c"]))
+    gen = state.gen
+    state._take("two", _source_listing([], [], ads=["x", "y"]))
+    assert state.gen > gen and not state.queue
+    # the first listing with segments picks the start, a cushion back
+    state._take("two", _source_listing(["p", "q"], ["r", "s"], ads=["x", "y"]))
+    assert _queued(state) == ["q.ts", "r.ts", "s.ts"]
+    await state.stop()
+
+
+async def test_a_cushion_low_for_long_restarts_back_once(setup):
+    _, _, _, ll = setup
+    state = lowlat._Slot(ll, 0)
+    now = asyncio.get_running_loop().time()
+    state._take("chan", _source_listing(["a"], ["b", "c"]))
+    # video out long ago, nothing since: the segment being fed has stalled
+    seg = lowlat._Seg(1, False, 1, complete=True)
+    seg.parts.append(_Part(b"", 0.5, True, release=now - 30))
+    state.segs.append(seg)
+    state.queue.popleft()
+    listing = _source_listing(["a", "b", "c", "d"], ["e", "f"])
+    state._take("chan", listing)
+    assert not any(q.fresh for q in state.queue)
+    state._low_since = now - LOW_FOR - 1
+    state._take("chan", _source_listing(["a", "b", "c", "d", "e"], ["f", "g"]))
+    assert _queued(state) == ["e.ts", "f.ts", "g.ts"] and state.queue[0].fresh
+    # still low, but a restart just happened: no other
+    gen = state.gen
+    state._restarting = False
+    state._low_since = now - LOW_FOR - 1
+    state._take("chan", _source_listing(["a", "b", "c", "d", "e", "f"], ["g", "h"]))
+    assert state.gen == gen
     await state.stop()
 
 
