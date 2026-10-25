@@ -75,7 +75,7 @@ label > input:focus-visible { outline: 0; }
 .btn { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
   gap: var(--s2); height: var(--control); padding: 0 var(--edge); margin: 0; border: 0;
   border-radius: var(--r-inner); background: var(--raised); color: var(--text); font: inherit;
-  transition: background-color var(--t-state); }
+  text-decoration: none; transition: background-color var(--t-state); }
 .btn svg { flex: none; width: var(--icon); height: var(--icon); }
 .btn.icon { width: var(--control); padding: 0; }
 .btn.link { display: inline-block; vertical-align: top; max-width: 100%; height: auto; padding: 0; border-radius: 0;

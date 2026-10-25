@@ -25,6 +25,7 @@
   /* the wordmark's own proportions */
   .logo svg { width: 143.4px; height: 24.7px; }
   .explore-btn { padding-inline-end: var(--s4); }
+  .header-tools { display: flex; gap: var(--s2); }
   aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column; }
   /* field and buttons. margins, not padding, so its box is exactly the button row and its menus
      hang from that */
@@ -240,7 +241,10 @@
       </g>
     </svg>
   </a>
-  <button type="button" class="btn explore-btn" aria-pressed="false" data-icon="explore">Explore</button>
+  <div class="header-tools">
+    <button type="button" class="btn explore-btn" aria-pressed="false" data-icon="explore">Explore</button>
+    <a class="btn icon" href="/" aria-label="Settings" data-icon="settings"></a>
+  </div>
 </header>
 <aside aria-label="Online streamers">
   <div class="tools">
@@ -435,6 +439,8 @@
     sort: '<path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/>',
     reset: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>',
     sound: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>',
+    // Lucide "settings" (ISC)
+    settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
   };
   function icon(name) {
     const t = document.createElement('template');

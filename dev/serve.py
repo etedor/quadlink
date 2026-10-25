@@ -35,7 +35,7 @@ def _mtimes() -> dict[Path, float]:
 
 
 async def _page(request: web.Request) -> web.Response:
-    name = request.match_info["name"] or "quad"
+    name = request.match_info["name"] or "config"
     path = (WEB_DIR / f"{name}.html").resolve()
     if path.parent != WEB_DIR or not path.is_file():
         raise web.HTTPNotFound()
