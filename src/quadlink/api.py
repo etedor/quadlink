@@ -47,8 +47,6 @@ ACTIONS: dict[str, dict[str, type]] = {
     "swap": {"a": int, "b": int},
     "unpin": {"slot": int},
     "unpin_all": {},
-    "add": {"channel": str},
-    "remove": {"channel": str},
 }
 
 
@@ -70,10 +68,6 @@ class Dashboard(Protocol):
     async def unpin(self, slot: int) -> None: ...
 
     async def unpin_all(self) -> None: ...
-
-    async def add(self, channel: str) -> None: ...
-
-    async def remove(self, channel: str) -> None: ...
 
 
 def snapshot_json(snap: Snapshot) -> dict[str, Any]:
@@ -247,6 +241,7 @@ class DashboardAPI:
         app.router.add_get("/api/slots/{slot}/still.jpg", self._handle_still)
         app.router.add_get("/api/explore/categories", self._handle_categories)
         app.router.add_get("/api/explore/streams", self._handle_streams)
+        app.router.add_get("/api/explore/channels", self._handle_channels)
         app.on_shutdown.append(self._shutdown)
 
     def _changed(self) -> None:
@@ -380,6 +375,18 @@ class DashboardAPI:
             return web.json_response({"error": "Twitch did not answer"}, status=502)
         return web.json_response(
             {"categories": [_category_json(c) for c in found]},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    async def _handle_channels(self, request: web.Request) -> web.Response:
+        query = request.query.get("q", "").strip()
+        try:
+            found = await self.dashboard.directory.channels(query)
+        except DirectoryError as e:
+            logger.warning("explore channel search failed", query=query, error=str(e))
+            return web.json_response({"error": "Twitch did not answer"}, status=502)
+        return web.json_response(
+            {"streams": [_stream_json(s) for s in found]},
             headers={"Cache-Control": "no-store"},
         )
 

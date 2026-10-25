@@ -93,6 +93,10 @@ class FakeDirectory:
         self._call("search", query)
         return [_category("2", "Destiny 2")]
 
+    async def channels(self, query: str) -> list[ExploreStream]:
+        self._call("channels", query)
+        return [_explore_stream("zed")]
+
     async def streams(
         self, category_id: str | None, sort: Sort, language: str | None = None
     ) -> Listing | None:
@@ -775,6 +779,14 @@ class TestExplore:
             ]
         }
         assert dashboard.directory.calls == [("search", "destiny")]
+
+    async def test_channels(
+        self, client: TestClient, webui: WebUI, dashboard: FakeDashboard
+    ) -> None:
+        resp = await self._get(client, webui, "/api/explore/channels?q=zed")
+        assert resp.status == 200
+        assert [s["channel"] for s in (await resp.json())["streams"]] == ["zed"]
+        assert dashboard.directory.calls == [("channels", "zed")]
 
     async def test_suggestions_are_twitchs_top_categories(
         self, client: TestClient, webui: WebUI, dashboard: FakeDashboard

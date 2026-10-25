@@ -7,7 +7,15 @@ from typing import Any
 import httpx
 import pytest
 
-from quadlink.explore import TOP_FETCH, TOP_LIMIT, Category, DirectoryError, GQLDirectory, Sort
+from quadlink.explore import (
+    CHANNEL_FETCH,
+    TOP_FETCH,
+    TOP_LIMIT,
+    Category,
+    DirectoryError,
+    GQLDirectory,
+    Sort,
+)
 
 
 def _node(id: str, name: str, viewers: int | None, live: int | None = 3) -> dict[str, Any]:
@@ -49,7 +57,16 @@ class Twitch:
             return httpx.Response(200, json={"errors": self.errors, "data": None})
         query, variables = body["query"], body["variables"]
         assert request.headers["Client-ID"]
-        if "searchCategories" in query:
+        if "searchUsers" in query:
+            assert variables["first"] == CHANNEL_FETCH
+            other = {**STREAM, "viewersCount": 900, "broadcaster": {"login": "zedd"}}
+            nodes = [
+                {"login": "zedd", "stream": other},
+                {"login": "zeb", "stream": None},
+                {"login": "zed", "stream": STREAM},
+            ]
+            data = {"searchUsers": {"edges": [{"node": n} for n in nodes]}}
+        elif "searchCategories" in query:
             nodes = [
                 _node("1", "Destiny", 12),
                 _node("2", "Destiny 2", 1907),
@@ -101,7 +118,18 @@ async def test_search_puts_live_categories_first(directory: GQLDirectory) -> Non
 
 async def test_empty_search_asks_nothing(directory: GQLDirectory, twitch: Twitch) -> None:
     assert await directory.search("  ") == []
+    assert await directory.channels("  ") == []
     assert twitch.requests == []
+
+
+async def test_channels_are_the_live_matches_an_exact_name_first(
+    directory: GQLDirectory,
+) -> None:
+    found = await directory.channels(" Zed ")
+    assert [(s.login, s.display_name, s.viewers) for s in found] == [
+        ("zed", "Zed", 42),
+        ("zedd", "zedd", 900),
+    ]
 
 
 async def test_top_is_the_most_watched_by_the_reported_counts(directory: GQLDirectory) -> None:

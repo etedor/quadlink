@@ -407,12 +407,15 @@ class Daemon:
     async def place(self, channel: str, slot: int) -> None:
         """Make channel hold the tile; what it showed is put off it (see overrides.place).
 
-        Every operator action raises OverrideError for invalid input, and
-        otherwise saves the overrides and requests one recompose.
+        A channel outside the config must be live with video; it is looked up
+        until its hold ends. Every operator action raises OverrideError for
+        invalid input, and otherwise saves the overrides and requests one recompose.
         """
-        self._apply(
-            *actions.place(self.overrides, self.quad_state, channel, slot, self._configured())
-        )
+        channel = channel.strip().lower()
+        configured = self._configured()
+        if channel not in configured and channel not in self.overrides.extras:
+            await self._look_up_outside(channel)
+        self._apply(*actions.place(self.overrides, self.quad_state, channel, slot, configured))
 
     async def swap(self, a: int, b: int) -> None:
         """Swap the channels of two slots; holds move with their holders."""
@@ -429,13 +432,12 @@ class Daemon:
         """End every hold."""
         self._apply(*actions.unpin_all(self.overrides, self.quad_state))
 
-    async def add(self, channel: str) -> None:
-        """Add a live Twitch channel beside the config, until removed or a restart."""
-        channel = channel.strip().lower()
-        # names and duplicates fail before the lookup, which takes seconds
-        actions.add_extra(self.overrides, channel, self._configured())
-        if self.processor is None:
-            raise OverrideError("no config is loaded yet: wait for the first refresh")
+    async def _look_up_outside(self, channel: str) -> None:
+        """Check a channel outside the config is live with video, and pool it at once."""
+        # a bad name fails before the lookup, which takes seconds
+        if not actions.is_login(channel):
+            raise OverrideError(f"{channel!r} is not a Twitch channel name")
+        assert self.processor is not None
         try:
             stream = await self.processor.look_up(channel)
         except Exception as e:
@@ -444,24 +446,12 @@ class Daemon:
             raise OverrideError(f"{channel} is not live or does not exist")
         if not stream.has_video:
             raise OverrideError(f"{channel} is live without video")
-        overrides = actions.add_extra(self.overrides, channel, self._configured())
-        self.processor.extras = overrides.extras
-        # listed at once instead of after the next refresh's lookups
+        # pooled now instead of after the next refresh's lookups
         self._pool = [*self._pool, PrioritizedStream(stream, EXTRA_PRIORITY, 0.0)]
         self.channel_statuses = [
             *self.channel_statuses,
             ChannelStatus(channel, ChannelState.LIVE, [], stream=stream, priority=EXTRA_PRIORITY),
         ]
-        self._apply(overrides)
-
-    async def remove(self, channel: str) -> None:
-        """Remove an added channel; a tile it holds goes back as Unpin gives it."""
-        overrides, state = actions.remove_extra(self.overrides, self.quad_state, channel)
-        if self.processor is not None:
-            self.processor.extras = overrides.extras
-        self._pool = [c for c in self._pool if c.stream.channel != channel]
-        self.channel_statuses = [s for s in self.channel_statuses if s.channel != channel]
-        self._apply(overrides, state)
 
     def snapshot(self) -> Snapshot:
         """The quad and every configured channel's dashboard state."""
@@ -492,15 +482,20 @@ class Daemon:
         return QuadStreamLogin.PENDING
 
     def _configured(self) -> set[str]:
-        if self._config is None:
+        if self._config is None or self.processor is None:
             raise OverrideError("no config is loaded yet: wait for the first refresh")
-        return configured_channels(self._config) | self.overrides.extras
+        return configured_channels(self._config)
 
     def _apply(self, overrides: Overrides, state: QuadState | None = None) -> None:
         # swap moves channels between slots ahead of the recompose that seats them
         if state is not None:
             self.quad_state = state
+        if gone := self.overrides.extras - overrides.extras:
+            self._pool = [c for c in self._pool if c.stream.channel not in gone]
+            self.channel_statuses = [s for s in self.channel_statuses if s.channel not in gone]
         self.overrides = overrides
+        if self.processor is not None:
+            self.processor.extras = overrides.extras
         self._save_state()
         self.request_recompose()
         self._notify()

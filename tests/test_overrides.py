@@ -1,4 +1,4 @@
-"""Tests for tile holds: drops, put back, unpin, expiry and added channels."""
+"""Tests for tile holds: drops, unpin, expiry and channels outside the config."""
 
 import pytest
 
@@ -7,11 +7,9 @@ from quadlink.overrides import (
     GRACE_REFRESHES,
     OverrideError,
     Result,
-    add_extra,
     age,
     drop_unconfigured,
     place,
-    remove_extra,
     swap,
     unpin,
     unpin_all,
@@ -55,7 +53,9 @@ class Scene:
         self.overrides = Overrides()
 
     def pool(self) -> list[PrioritizedStream]:
-        pool = [stream(c, p) for c, p in self.live.items()]
+        # an outside channel is in the pool only while it holds a tile, as in the daemon
+        known = self.configured | self.overrides.extras
+        pool = [stream(c, p) for c, p in self.live.items() if c in known]
         return sorted(pool, key=lambda s: (s.priority, s.tiebreaker), reverse=True)
 
     def compose(self) -> tuple[str, ...]:
@@ -63,7 +63,9 @@ class Scene:
         return self.state.channels
 
     def refresh(self) -> tuple[str, ...]:
-        self.overrides, self.state = drop_unconfigured(self.overrides, self.state, self.configured)
+        # the daemon counts outside holders as configured
+        known = self.configured | self.overrides.extras
+        self.overrides, self.state = drop_unconfigured(self.overrides, self.state, known)
         self.overrides, self.state = age(self.overrides, self.state, set(self.live))
         return self.compose()
 
@@ -137,9 +139,7 @@ class TestDrop:
         assert overrides.holds == {1: Hold("f", "b")}
         assert state.channels[3] == "d"
 
-    def test_rejects_an_unknown_channel_and_a_bad_slot(self, scene):
-        with pytest.raises(OverrideError):
-            place(scene.overrides, scene.state, "zz", 0, CONFIGURED)
+    def test_rejects_a_bad_slot(self, scene):
         with pytest.raises(OverrideError):
             place(scene.overrides, scene.state, "e", 4, CONFIGURED)
 
@@ -232,50 +232,50 @@ class TestGrace:
         assert scene.overrides.holds == {3: Hold("f", "d")}
 
 
-class TestExtras:
-    """Channels added beside the config reach the quad only as holders."""
+class TestOutside:
+    """Channels outside the config reach the quad by a drop and leave with their hold."""
 
-    def added(self, scene: Scene) -> None:
-        # the daemon counts added channels as configured
-        scene.configured |= {"xy"}
-        scene.overrides = add_extra(scene.overrides, "xy", CONFIGURED)
+    def test_a_drop_holds_the_tile_while_it_is_live(self, scene):
         scene.live["xy"] = 500
-
-    def test_an_added_channel_stays_off_screen_until_dropped(self, scene):
-        self.added(scene)
-        assert scene.refresh() == ("a", "b", "c", "d")
         assert scene.drop("xy", 1) == ("a", "xy", "c", "d")
+        assert scene.overrides.extras == {"xy"}
+        assert scene.refresh() == ("a", "xy", "c", "d")
 
-    def test_an_added_holder_replaced_by_a_drop_is_not_remembered(self, scene):
-        self.added(scene)
+    def test_it_takes_no_tile_without_a_hold(self, scene):
+        scene.live["xy"] = 500
+        assert scene.refresh() == ("a", "b", "c", "d")
+
+    def test_a_drop_over_it_ends_it_and_keeps_the_original(self, scene):
+        scene.live["xy"] = 500
         scene.drop("xy", 3)
         assert scene.drop("e", 3) == ("a", "b", "c", "e")
         assert scene.overrides.holds == {3: Hold("e", "d")}
-
-    def test_remove_ends_its_hold_as_unpin(self, scene):
-        self.added(scene)
-        scene.drop("xy", 3)
-        result = remove_extra(scene.overrides, scene.state, "xy")
-        # the daemon stops looking it up
-        del scene.live["xy"]
-        assert scene.act(result) == ("a", "b", "c", "d")
         assert scene.overrides.extras == frozenset()
 
-    def test_unpin_all_keeps_added_channels(self, scene):
-        self.added(scene)
-        overrides, _ = unpin_all(scene.overrides, scene.state)
-        assert overrides.extras == {"xy"}
+    def test_unpin_ends_it(self, scene):
+        scene.live["xy"] = 500
+        scene.drop("xy", 3)
+        assert scene.act(unpin(scene.overrides, scene.state, 3)) == ("a", "b", "c", "d")
+        assert scene.overrides.extras == frozenset()
 
-    def test_add_rejects_bad_names_and_listed_channels(self, scene):
+    def test_a_move_keeps_it(self, scene):
+        scene.live["xy"] = 500
+        scene.drop("xy", 3)
+        assert scene.drop("xy", 1) == ("a", "xy", "c", "b")
+        assert scene.overrides.extras == {"xy"}
+
+    def test_offline_past_the_grace_ends_it(self, scene):
+        scene.live["xy"] = 500
+        scene.drop("xy", 3)
+        del scene.live["xy"]
+        for _ in range(GRACE_REFRESHES + 1):
+            scene.refresh()
+        assert scene.state.channels == ("a", "b", "c", "d")
+        assert scene.overrides.extras == frozenset()
+
+    def test_a_bad_name_is_refused(self, scene):
         with pytest.raises(OverrideError):
-            add_extra(scene.overrides, "not a name", CONFIGURED)
-        with pytest.raises(OverrideError):
-            add_extra(scene.overrides, "a", CONFIGURED)
-        once = add_extra(scene.overrides, "xy", CONFIGURED)
-        with pytest.raises(OverrideError):
-            add_extra(once, "xy", CONFIGURED)
-        with pytest.raises(OverrideError):
-            remove_extra(scene.overrides, scene.state, "xy")
+            place(scene.overrides, scene.state, "not a name", 1, scene.configured)
 
 
 class TestUnconfigured:
@@ -335,9 +335,13 @@ class TestInvariants:
         with pytest.raises(ValueError):
             Overrides(holds={0: Hold("a", "b"), 1: Hold("b")})
 
-    def test_added_channels_are_never_listed(self):
+    def test_outside_channels_are_never_listed(self):
         with pytest.raises(ValueError):
-            Overrides(holds={0: Hold("a", "x")}, extras=frozenset({"x"}))
+            Overrides(holds={0: Hold("a", "x"), 1: Hold("x")}, extras=frozenset({"x"}))
+
+    def test_outside_channels_hold_a_tile(self):
+        with pytest.raises(ValueError):
+            Overrides(extras=frozenset({"x"}))
 
     def test_slots_are_0_to_3(self):
         with pytest.raises(ValueError):

@@ -23,6 +23,9 @@ TOP_LIMIT = 40
 # extra let the reported order pick the top ones
 TOP_FETCH = 48
 SEARCH_LIMIT = 10
+# most matching channels are offline: of 100 names, a handful are live
+CHANNEL_FETCH = 100
+CHANNEL_LIMIT = 8
 # seconds an answer serves every request with the same arguments
 SEARCH_TTL = 300.0
 LISTING_TTL = 60.0
@@ -55,17 +58,24 @@ _SEARCH_QUERY = (
     f"{{ edges {{ node {{ {_CATEGORY_FIELDS} }} }} }} }}"
 )
 
+_STREAM_FIELDS = (
+    "title viewersCount createdAt language game { name } "
+    f"previewImageURL(width: {THUMBNAIL[0]}, height: {THUMBNAIL[1]}) "
+    "broadcaster { login displayName } freeformTags { name }"
+)
+
 # Twitch filters by the broadcaster's language setting, which a stream's own language
 # tag disagrees with about one time in ten
 _STREAMS = (
     "streams(first: $first, options: {sort: $sort, broadcasterLanguages: $languages}) "
-    "{ edges { node { "
-    "title viewersCount createdAt language game { name } "
-    f"previewImageURL(width: {THUMBNAIL[0]}, height: {THUMBNAIL[1]}) "
-    "broadcaster { login displayName } freeformTags { name } } } "
-    "pageInfo { hasNextPage } }"
+    f"{{ edges {{ node {{ {_STREAM_FIELDS} }} }} pageInfo {{ hasNextPage }} }}"
 )
 _STREAMS_VARS = "$first: Int, $sort: StreamSort, $languages: [Language!]"
+
+_CHANNELS_QUERY = (
+    "query($query: String!, $first: Int) { searchUsers(userQuery: $query, first: $first) "
+    f"{{ edges {{ node {{ login stream {{ {_STREAM_FIELDS} }} }} }} }} }}"
+)
 
 _STREAMS_QUERY = (
     f"query($id: ID, {_STREAMS_VARS}) {{ game(id: $id) {{ {_CATEGORY_FIELDS} {_STREAMS} }} }}"
@@ -138,6 +148,10 @@ class Directory(Protocol):
         """Categories matching query, live ones first."""
         ...
 
+    async def channels(self, query: str) -> list[Stream]:
+        """Live streams of channels whose name matches query, an exact match first."""
+        ...
+
     async def streams(
         self, category_id: str | None, sort: Sort, language: str | None = None
     ) -> Listing | None:
@@ -164,6 +178,14 @@ class GQLDirectory:
             return []
         return await self._cached(
             ("search", query.lower()), SEARCH_TTL, lambda: self._search(query)
+        )
+
+    async def channels(self, query: str) -> list[Stream]:
+        query = query.strip()
+        if not query:
+            return []
+        return await self._cached(
+            ("channels", query.lower()), LISTING_TTL, lambda: self._channels(query)
         )
 
     async def streams(
@@ -215,6 +237,17 @@ class GQLDirectory:
         found = [_category(e["node"]) for e in data["searchCategories"]["edges"]]
         # Twitch ranks by name match; a live category beats a dead namesake
         return sorted(found, key=lambda c: c.viewers, reverse=True)
+
+    async def _channels(self, query: str) -> list[Stream]:
+        data = await self._query(_CHANNELS_QUERY, {"query": query, "first": CHANNEL_FETCH})
+        live = [
+            _stream(e["node"]["stream"])
+            for e in data["searchUsers"]["edges"]
+            if (e["node"].get("stream") or {}).get("broadcaster")
+        ]
+        exact = query.lower()
+        live.sort(key=lambda s: (s.login != exact, -s.viewers))
+        return live[:CHANNEL_LIMIT]
 
     async def _streams(
         self, category_id: str | None, sort: Sort, language: str | None

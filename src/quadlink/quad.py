@@ -35,8 +35,8 @@ class Overrides:
         holds: Slot (0-3) -> its hold.
         absent: Consecutive refreshes each held or replaced channel has been out of the pool; see
             quadlink.overrides.age.
-        extras: Channels the operator added beside the config. They are looked up
-            like configured ones but reach the quad only as holders.
+        extras: Channels outside the config that hold a tile. They are looked up
+            like configured ones while they hold it, and every one is a holder.
     """
 
     holds: Mapping[int, Hold] = field(default_factory=dict)
@@ -55,7 +55,9 @@ class Overrides:
         if both := set(holders) & set(listed):
             raise ValueError(f"channels both holding and replaced: {sorted(both)}")
         if listed_extras := set(listed) & self.extras:
-            raise ValueError(f"added channels are never replaced: {sorted(listed_extras)}")
+            raise ValueError(f"outside channels are never replaced: {sorted(listed_extras)}")
+        if idle := self.extras - set(holders):
+            raise ValueError(f"outside channels must hold a tile: {sorted(idle)}")
 
     @property
     def pins(self) -> dict[str, int]:

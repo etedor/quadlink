@@ -634,7 +634,7 @@ class TestOperatorActions:
         async with stepped(daemon) as loops:
             await loops.refresh()
             saved = state_file.read_text()
-            with pytest.raises(OverrideError, match="'zz' is not in the config"):
+            with pytest.raises(OverrideError, match="zz is not live"):
                 await daemon.place("zz", 0)
             with pytest.raises(OverrideError, match="use a slot from 0 to 3"):
                 await daemon.unpin(4)
@@ -879,7 +879,7 @@ class TestDashboardFeed:
                 headers=headers,
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "channel 'zz' is not in the config"
+            assert (await resp.json())["error"] == "zz is not live or does not exist"
             events = await client.get(f"/api/events?token={webui.token}")
             first = await events.content.readuntil(b"\n\n")
             first = first.removeprefix(b"retry: 2000\n")
@@ -1347,57 +1347,49 @@ class TestFetchSegment:
                 await daemon._fetch_segment("http://cdn/slow.ts")
 
 
-class TestAddedChannels:
-    """Channels added from the dashboard beside the config."""
+class TestOutsideChannels:
+    """Channels outside the config, placed from Explore, hold a tile until the hold ends."""
 
-    async def test_a_live_channel_is_listed_at_once_and_placeable(self, make_daemon, twitch):
+    async def test_a_live_channel_holds_the_tile_and_stays_looked_up(self, make_daemon, twitch):
         twitch.go_live("zed")
         daemon = make_daemon()
         async with stepped(daemon) as loops:
             await loops.refresh()
-            await daemon.add("Zed")
-            views = {c.channel: c for c in daemon.snapshot().channels}
-            assert views["zed"].extra
-            assert str(views["zed"].state) == "live"
-            await settle()
-            # never chosen on its own
-            assert "zed" not in daemon.quad_state.channels
-            await daemon.place("zed", 2)
+            await daemon.place("Zed", 2)
             await settle()
             assert daemon.quad_state.channels[2] == "zed"
-            # the next refresh keeps looking it up
+            assert {c.channel: c for c in daemon.snapshot().channels}["zed"].extra
             await loops.refresh()
             assert daemon.quad_state.channels[2] == "zed"
 
-    async def test_an_offline_or_listed_channel_is_refused(self, make_daemon, twitch):
+    async def test_an_offline_channel_or_a_bad_name_is_refused(self, make_daemon, twitch):
         daemon = make_daemon()
         async with stepped(daemon) as loops:
             await loops.refresh()
             with pytest.raises(OverrideError, match="not live"):
-                await daemon.add("zed")
-            with pytest.raises(OverrideError, match="already"):
-                await daemon.add("a")
+                await daemon.place("zed", 2)
+            with pytest.raises(OverrideError, match="not a Twitch channel name"):
+                await daemon.place("no such name", 2)
         assert daemon.overrides.extras == frozenset()
 
-    async def test_remove_takes_it_off_screen(self, make_daemon, twitch):
+    async def test_unpin_takes_it_off_screen_and_out_of_the_list(self, make_daemon, twitch):
         twitch.go_live("zed")
         daemon = make_daemon()
         async with stepped(daemon) as loops:
             await loops.refresh()
-            await daemon.add("zed")
             await daemon.place("zed", 2)
             await settle()
-            await daemon.remove("zed")
+            await daemon.unpin(2)
             await settle()
             assert "zed" not in daemon.quad_state.channels
             assert "zed" not in {c.channel for c in daemon.snapshot().channels}
+            assert daemon.overrides.extras == frozenset()
 
-    async def test_added_channels_do_not_survive_a_restart(self, make_daemon, twitch):
+    async def test_outside_holds_do_not_survive_a_restart(self, make_daemon, twitch):
         twitch.go_live("zed")
         first = make_daemon()
         async with stepped(first) as loops:
             await loops.refresh()
-            await first.add("zed")
             await first.place("zed", 2)
             await settle()
         second = make_daemon()

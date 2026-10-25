@@ -41,11 +41,14 @@ def place(
     A channel shown on another tile swaps with this one instead, and one already
     on this tile changes nothing. A tile keeps what it showed before the first
     drop; a later drop sends the previous holder back to selection, unless the
-    hold remembers nothing, when the previous holder is remembered instead. An
-    added channel is never replaced: it reaches the quad only as a holder.
+    hold remembers nothing, when the previous holder is remembered instead. A
+    channel outside configured joins the extras for as long as it holds a tile;
+    it is never replaced, since it reaches the quad only as a holder.
     """
     _check_slot(slot)
-    _check_channel(channel, configured)
+    outside = channel not in configured
+    if outside and not is_login(channel):
+        raise OverrideError(f"{channel!r} is not a Twitch channel name")
     on = state.positions.get(channel)
     if on == slot:
         return overrides, state
@@ -64,7 +67,8 @@ def place(
     if replaced in overrides.extras:
         replaced = None
     holds[slot] = Hold(channel, replaced)
-    return _build(overrides, holds, fresh={channel}), state
+    extras = overrides.extras | {channel} if outside else overrides.extras
+    return _build(overrides, holds, fresh={channel}, extras=extras), state
 
 
 def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> Result:
@@ -96,30 +100,11 @@ def unpin(overrides: Overrides, state: QuadState, slot: int) -> Result:
 
 
 def unpin_all(overrides: Overrides, state: QuadState) -> Result:
-    """End every hold; added channels stay added."""
+    """End every hold; outside channels leave with theirs."""
     holds = dict(overrides.holds)
     for slot in list(holds):
         holds, state = _end(holds, state, slot)
     return _build(overrides, holds), state
-
-
-def add_extra(overrides: Overrides, channel: str, configured: Collection[str]) -> Overrides:
-    """Add a channel beside the config; the caller has checked it is live."""
-    if channel in configured or channel in overrides.extras:
-        raise OverrideError(f"{channel} is already in the list")
-    if not _LOGIN.fullmatch(channel):
-        raise OverrideError(f"{channel!r} is not a Twitch channel name")
-    return replace(overrides, extras=overrides.extras | {channel})
-
-
-def remove_extra(overrides: Overrides, state: QuadState, channel: str) -> Result:
-    """Remove an added channel; a tile it holds goes back as Unpin gives it."""
-    if channel not in overrides.extras:
-        raise OverrideError(f"{channel} is not an added channel")
-    holds = dict(overrides.holds)
-    for slot in [s for s, h in holds.items() if h.holder == channel]:
-        holds, state = _end(holds, state, slot)
-    return replace(_build(overrides, holds), extras=overrides.extras - {channel}), state
 
 
 def drop_unconfigured(
@@ -157,7 +142,7 @@ def age(overrides: Overrides, state: QuadState, pool: Collection[str]) -> Result
         Overrides(
             holds=holds,
             absent={c: n for c, n in absent.items() if c in kept},
-            extras=overrides.extras,
+            extras=overrides.extras & {h.holder for h in holds.values()},
         ),
         state,
     )
@@ -184,21 +169,26 @@ def _build(
     previous: Overrides,
     holds: Mapping[int, Hold],
     fresh: Collection[str] = (),
+    extras: frozenset[str] | None = None,
 ) -> Overrides:
-    """Overrides with absence counts kept for surviving holds' channels, except fresh ones."""
+    """Overrides with absence counts kept for surviving holds' channels, except fresh ones.
+
+    An extra that no longer holds a tile leaves the extras.
+    """
     keep = {c for h in holds.values() for c in (h.holder, h.replaced) if c} - set(fresh)
+    holders = {h.holder for h in holds.values()}
     return Overrides(
         holds=dict(holds),
         absent={c: n for c, n in previous.absent.items() if c in keep},
-        extras=previous.extras,
+        extras=(previous.extras if extras is None else extras) & holders,
     )
+
+
+def is_login(channel: str) -> bool:
+    """Whether channel can be a Twitch login."""
+    return _LOGIN.fullmatch(channel) is not None
 
 
 def _check_slot(slot: int) -> None:
     if not isinstance(slot, int) or isinstance(slot, bool) or slot not in range(4):
         raise OverrideError(f"slot {slot!r} does not exist: use a slot from 0 to 3")
-
-
-def _check_channel(channel: str, configured: Collection[str]) -> None:
-    if channel not in configured:
-        raise OverrideError(f"channel {channel!r} is not in the config")
