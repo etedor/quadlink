@@ -186,7 +186,7 @@
   .explore { flex: 1; min-height: 0; width: 92cqw; display: flex; flex-direction: column;
     position: relative; font: 16px system-ui, sans-serif; }
   /* the rail's menu width, under the buttons that open it */
-  .explore .pop { left: auto; right: 0; width: min(320px, 100%); }
+  .explore .pop { left: auto; right: 7px; width: min(320px, 100%); }
   .explore[hidden] { display: none; }
   @media (min-width: 721px) { .explore[hidden] { display: flex; } }
   .explore .tools { padding: 16px 0 7px; }
@@ -204,8 +204,11 @@
   .explore-cats .chip[aria-pressed="true"] .viewers { color: var(--white); }
   .explore-note { margin: 0; padding: 4px 7px; color: var(--text-quiet); font-size: 14px; }
   .explore-note:empty { display: none; }
-  /* 7px wider each side, the cards' inset, so their content lines up with the quad */
-  .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0 -7px; padding: 0 7px; }
+  /* 7px wider each side, the cards' inset, so their content lines up with the quad.
+     the whole of Explore scrolls, its tools too, and fades out under the quad; menus
+     anchor here so they scroll with the buttons that open them */
+  .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; margin: 0 -7px; padding: 0 7px;
+    position: relative; }
   /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
   .explore-scroll.under { -webkit-mask-image: linear-gradient(var(--clear), var(--black) 48px);
@@ -371,6 +374,7 @@
   </div>
 </div>
 <section class="explore" aria-label="Explore" hidden>
+  <div class="explore-scroll">
   <div class="tools">
     <input type="search" id="explore-q" placeholder="Category…" aria-label="Find a category"
       autocomplete="off" spellcheck="false">
@@ -387,7 +391,8 @@
   </div>
   <div class="explore-cats"></div>
   <p class="explore-note"></p>
-  <div class="explore-scroll"><ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p></div>
+  <ul class="cards" aria-label="Live streams"></ul><p class="explore-end" role="status"></p>
+  </div>
 </section>
 </main>
 <script>
