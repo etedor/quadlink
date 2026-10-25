@@ -21,7 +21,6 @@
     --ground: color-mix(in oklab, var(--twitch) 22%, var(--black));
     --hover: color-mix(in oklab, var(--twitch) 36%, var(--black));
     --current: color-mix(in oklab, var(--twitch) 29%, var(--black));
-    --tile-hover: color-mix(in oklab, var(--white) 45%, var(--clear));
     --drop-wash: color-mix(in oklab, var(--twitch) 22%, var(--clear));
     --well: var(--black);
     --scrim: color-mix(in oklab, var(--black) 65%, var(--clear));
@@ -110,9 +109,6 @@
     clip-path: inset(0 calc(19px - 4cqw) round var(--radius)); }
   .tile { position: relative; aspect-ratio: 16 / 9; border-radius: calc(var(--radius) - 7px);
     background: var(--well); overflow: hidden; }
-  /* first among the outline rules: pending and failure outrank a plain hover */
-  .tile:hover::after { content: ""; position: absolute; inset: 0; pointer-events: none;
-    box-shadow: inset 0 0 0 2px var(--tile-hover); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   /* stands in for the incoming channel until the player reaches the splice */
   .cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
