@@ -7,39 +7,79 @@
 <meta name="quadlink-token" content="__QUADLINK_TOKEN__">
 <title>quadlink · config</title>
 <link rel="stylesheet" href="/web/base.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/lib/codemirror.css">
 <style>
-  body { max-width: 780px; margin: 0 auto; padding: 0 var(--s4); }
-  /* as tall as the dashboard's header row, so the logo sits at the same height on both pages */
-  h1 { display: flex; align-items: center; gap: var(--s2); height: calc(var(--control) + 2 * var(--edge));
-    margin: 0; font-size: var(--t-meta); font-weight: normal; color: var(--text-quiet); }
+  /* every syntax tone keeps 4.5:1 on either wash */
+  :root { --error-wash: color-mix(in oklab, var(--error) 30%, var(--raised));
+    --select-wash: color-mix(in oklab, var(--accent-fill) 30%, var(--raised));
+    /* the dashboard's header insets, as gutters: panel text starts where the logo does, and
+       the panels end where the Quad button does */
+    --gutter-l: max(var(--inset), 4% - var(--edge));
+    --gutter-r: max(var(--edge), 4% - var(--inset));
+    --mono: var(--t-meta)/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  /* the dashboard's header: as tall as its tools row, on the same insets */
+  header { display: flex; align-items: center; justify-content: space-between;
+    height: calc(var(--control) + 2 * var(--edge));
+    padding: 0 var(--gutter-r) 0 calc(var(--gutter-l) + var(--edge)); }
   .logo { display: flex; align-items: center; }
   /* the wordmark's own proportions */
   .logo svg { width: 143.4px; height: 24.7px; }
-  #config-path { margin: 0; font-size: var(--t-meta); color: var(--text-quiet); overflow-wrap: anywhere; }
-  section { margin-block: var(--s4) var(--edge); }
-  .head { display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
+  main { display: grid; gap: var(--edge); padding: 0 var(--gutter-r) 0 var(--gutter-l); }
+  .col { display: grid; gap: var(--edge); min-width: 0; min-height: 0; }
+  /* each editor scrolls inside its panel, so the panel needs a definite height */
+  .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 60dvh;
+    box-sizing: border-box; padding: var(--edge); border-radius: var(--r-outer); background: var(--raised); }
+  .panel.short { height: 40dvh; }
+  /* wide screens fit the viewport: the columns fill what the header and the bar leave, end on
+     one line, and the page never scrolls. Settings gets a band sized for its few keys; Rulesets takes the rest */
+  @media (min-width: 1000px) {
+    body { display: flex; flex-direction: column; height: 100dvh; }
+    main { flex: 1; min-height: 0; grid-template: minmax(0, 1fr) / minmax(0, 3fr) minmax(0, 2fr); }
+    .col { grid-template-rows: minmax(0, 1fr) clamp(200px, 45%, 360px); }
+    .panel, .panel.short { height: auto; }
+  }
+  /* the editor's own focus is only its caret */
+  .panel:has(.CodeMirror-focused) { outline: var(--focus) solid var(--text); }
+  .head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--s2);
     min-height: var(--control); margin-bottom: var(--s2); }
-  /* the dashboard's name weight, so section titles stand above the quiet path and labels */
+  /* the dashboard's name weight, so section titles stand above the quiet labels */
   h2 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--text); }
   .head label { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta);
     color: var(--text-quiet); }
-  .head select { color: var(--text); }
-  textarea.field { display: block; width: 100%; height: auto; min-height: 260px; padding: var(--edge);
-    font: var(--t-meta)/1.5 ui-monospace, "SF Mono", Menlo, monospace; resize: vertical; }
-  #editor-priorities, #editor-rulesets { min-height: 520px; }
-  /* the bar keeps the actions in reach while the textareas scroll under it */
-  .actions { position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--s2);
-    padding-block: var(--edge); background: var(--ground); }
-  /* the textareas fade out above the bar instead of cutting off at its edge */
-  .actions::before { content: ""; position: absolute; inset: auto 0 100%; height: var(--fade);
-    background: linear-gradient(var(--clear), var(--ground)); pointer-events: none; }
+  /* a field on a panel takes the next level up, or it vanishes into the panel */
+  .head select { background: var(--overlay); color: var(--text); }
+  /* shows only when CodeMirror fails to load */
+  textarea.field { flex: 1; min-height: 0; width: 100%; padding: var(--edge);
+    background: var(--overlay); font: var(--mono); resize: none; }
+  /* fills the panel under its heading; its scroller sizes from this flexed height */
+  .CodeMirror { flex: 1 1 0; min-height: 0; height: auto; background: var(--raised); color: var(--text); font: var(--mono); }
+  .CodeMirror-gutters { border: 0; background: var(--raised); }
+  .CodeMirror-linenumber { padding: 0 var(--s2) 0 0; color: var(--text-quiet); }
+  .CodeMirror-cursor { border-left-color: var(--text); }
+  .CodeMirror-selected, .CodeMirror-focused .CodeMirror-selected { background: var(--select-wash); }
+  .cm-s-ql .cm-atom { color: var(--accent-ink); }
+  .cm-s-ql :is(.cm-number, .cm-keyword, .cm-def, .cm-variable-2) { color: var(--text); }
+  .cm-s-ql :is(.cm-string, .cm-meta, .cm-comment) { color: var(--text-quiet); }
+  .cm-s-ql .cm-comment { font-style: italic; }
+  /* the edge mark carries the line for anyone who cannot tell the wash from the panel */
+  .ql-error { background: var(--error-wash); box-shadow: inset var(--ring) 0 var(--error); }
+  /* on phones the bar stays in reach while the page scrolls */
+  .actions { position: sticky; bottom: 0; flex: none; display: flex; align-items: center; gap: var(--s2);
+    padding: var(--edge) var(--gutter-r) var(--edge) var(--gutter-l); background: var(--ground); }
   .actions output { min-width: 0; margin-inline-end: auto; font-size: var(--t-meta); color: var(--text-quiet); }
   .actions output.error { color: var(--error-ink); }
+  .actions .btn { position: relative; flex: none; }
+  /* the dashboard's dot for choices that differ: here, edits not yet saved */
+  .btn.changed::after { content: ""; position: absolute; top: var(--s1); right: var(--s1);
+    width: var(--s2); height: var(--s2); border-radius: var(--r-pill); background: var(--accent-ink); }
+  footer { flex: none; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); padding: 0 var(--gutter-r) var(--edge) var(--gutter-l);
+    font-size: var(--t-meta); color: var(--text-quiet); overflow-wrap: anywhere; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/lib/codemirror.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/mode/yaml/yaml.js"></script>
 </head>
 <body>
 <header>
-<h1>
   <a class="logo" href="/quad" aria-label="QuadLink">
     <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
       <g style="fill: var(--accent-fill)">
@@ -51,12 +91,11 @@
       </g>
     </svg>
   </a>
-  <span id="version"></span>
-</h1>
-<p id="config-path">Loading…</p>
+  <a class="btn icon" href="/quad" aria-label="Quad" data-icon="quad"></a>
 </header>
 
-<section>
+<main>
+<section class="panel">
   <div class="head">
     <h2 id="title-priorities">Priorities</h2>
     <label>Sort by
@@ -69,27 +108,36 @@
   <textarea id="editor-priorities" class="field" aria-labelledby="title-priorities" spellcheck="false" placeholder="Loading…"></textarea>
 </section>
 
-<section>
+<div class="col">
+<section class="panel">
   <div class="head"><h2 id="title-rulesets">Rulesets</h2></div>
   <textarea id="editor-rulesets" class="field" aria-labelledby="title-rulesets" spellcheck="false" placeholder="Loading…"></textarea>
 </section>
 
-<section>
+<section class="panel short">
   <div class="head"><h2 id="title-settings">Settings</h2></div>
   <textarea id="editor-settings" class="field" aria-labelledby="title-settings" spellcheck="false" placeholder="Loading…"></textarea>
 </section>
+</div>
+</main>
 
 <div class="actions">
   <output id="status"></output>
   <button type="button" class="btn" onclick="loadConfig()">Reload</button>
   <button type="button" class="btn" onclick="validateConfig()">Validate</button>
-  <button type="button" class="btn" onclick="saveConfig()">Save</button>
+  <button type="button" class="btn" id="save" onclick="saveConfig()">Save</button>
 </div>
+
+<footer>
+  <span id="version"></span>
+  <span id="config-path">Loading…</span>
+</footer>
 
 <script>
   const status = document.getElementById('status');
   const configPath = document.getElementById('config-path');
   const versionEl = document.getElementById('version');
+  const saveBtn = document.getElementById('save');
   let initialized = false;
   const token = document.querySelector('meta[name="quadlink-token"]').content;
 
@@ -99,6 +147,17 @@
     return fetch(url, {...options, headers, cache: 'no-store'});
   }
 
+  // Lucide 1.61.0 (ISC, lucide.dev), on its 24-unit 2px stroke grid, as on the dashboard
+  const ICONS = {
+    quad: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  };
+  document.querySelectorAll('[data-icon]').forEach(el => {
+    const t = document.createElement('template');
+    t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[el.dataset.icon] + '</svg>';
+    el.prepend(t.content.firstChild);
+  });
+
   const sections = {
     priorities: ['priorities'],
     rulesets: ['rulesets'],
@@ -106,6 +165,71 @@
                'webhook', 'proxy_playlist', 'low_latency', 'lookup_timeout',
                'relay_segments', 'log_level']
   };
+  const names = ['priorities', 'rulesets', 'settings'];
+
+  // the textareas stay the source of truth: each editor writes back through save(). without
+  // CodeMirror (CDN down) the page edits the plain textareas
+  const editors = {};
+  for (const name of names) {
+    const ta = document.getElementById('editor-' + name);
+    if (!window.CodeMirror) { ta.addEventListener('input', onEdit); continue; }
+    const cm = CodeMirror.fromTextArea(ta, {
+      mode: 'yaml', theme: 'ql', lineNumbers: true, lineWrapping: true,
+      screenReaderLabel: document.getElementById('title-' + name).textContent,
+      // YAML forbids tab characters, and Tab keeps moving focus as it did in the textarea
+      extraKeys: {Tab: false, 'Shift-Tab': false},
+    });
+    cm.on('change', onEdit);
+    editors[name] = cm;
+  }
+
+  function getText(name) {
+    editors[name]?.save();
+    return document.getElementById('editor-' + name).value;
+  }
+
+  function setText(name, value) {
+    if (editors[name]) editors[name].setValue(value);
+    document.getElementById('editor-' + name).value = value;
+  }
+
+  // what the editors held at the last load or save; the Save dot shows any difference
+  let baseline = {};
+  function markSaved() {
+    for (const name of names) baseline[name] = getText(name);
+    saveBtn.classList.remove('changed');
+  }
+
+  function onEdit() {
+    clearErrorLines();
+    saveBtn.classList.toggle('changed', names.some(n => getText(n) !== baseline[n]));
+  }
+
+  // merged line index -> [section, editor line], built by the last mergeYamlSections()
+  let lineMap = [];
+  let errorLines = [];
+
+  function clearErrorLines() {
+    for (const [cm, handle] of errorLines) cm.removeLineClass(handle, 'background', 'ql-error');
+    errorLines = [];
+  }
+
+  // YAML errors mark "line N, column M" in the merged document: the construct it was in, then
+  // where the parser gave up, often the line after the mistake, so both get the wash. schema
+  // errors name a key path, not a line, and stay in the status only
+  function showErrorLine(message) {
+    if (!lineMap.length) return;
+    for (const [, n] of message.matchAll(/line (\d+), column/g)) {
+      const [name, line] = lineMap[Math.min(Number(n), lineMap.length) - 1];
+      const cm = editors[name];
+      if (!cm) continue;
+      if (!errorLines.length) {
+        cm.getWrapperElement().closest('.panel').scrollIntoView({block: 'center'});
+        cm.scrollIntoView({line, ch: 0}, cm.getScrollInfo().clientHeight / 3);
+      }
+      errorLines.push([cm, cm.addLineClass(line, 'background', 'ql-error')]);
+    }
+  }
 
   function showStatus(message, isError = false) {
     status.textContent = message;
@@ -154,22 +278,25 @@
   }
 
   function mergeYamlSections() {
-    const priorities = document.getElementById('editor-priorities').value.trim();
-    const rulesets = document.getElementById('editor-rulesets').value.trim();
-    const settings = document.getElementById('editor-settings').value.trim();
-
     const parts = [];
+    lineMap = [];
 
-    if (priorities) {
-      const indented = priorities.split('\n').map(l => '  ' + l).join('\n');
-      parts.push('priorities:\n' + indented);
-    }
-    if (rulesets) {
-      const indented = rulesets.split('\n').map(l => '  ' + l).join('\n');
-      parts.push('rulesets:\n' + indented);
-    }
-    if (settings) {
-      parts.push(settings);
+    for (const name of names) {
+      const raw = getText(name);
+      const body = raw.trim();
+      if (!body) continue;
+      // trim() drops leading blank lines, which shifts the editor's numbering
+      const lead = (raw.match(/^\s*/)[0].match(/\n/g) || []).length;
+      const lines = body.split('\n');
+      // the blank line between parts
+      if (parts.length) lineMap.push(lineMap[lineMap.length - 1]);
+      if (name === 'settings') {
+        parts.push(body);
+      } else {
+        lineMap.push([name, lead]);
+        parts.push(name + ':\n' + lines.map(l => '  ' + l).join('\n'));
+      }
+      lines.forEach((_, i) => lineMap.push([name, lead + i]));
     }
 
     return parts.join('\n\n');
@@ -186,9 +313,9 @@
       if (data.version) versionEl.textContent = 'v' + data.version;
 
       const split = splitYamlSections(data.yaml);
-      document.getElementById('editor-priorities').value = split.priorities;
-      document.getElementById('editor-rulesets').value = split.rulesets;
-      document.getElementById('editor-settings').value = split.settings;
+      for (const name of names) setText(name, split[name]);
+      clearErrorLines();
+      markSaved();
 
       if (initialized) showStatus('Reloaded');
       initialized = true;
@@ -198,6 +325,7 @@
   }
 
   async function validateConfig() {
+    clearErrorLines();
     try {
       const yaml = mergeYamlSections();
       const res = await api('/api/validate', {
@@ -209,6 +337,7 @@
         showStatus('Valid');
       } else {
         showStatus(data.error, true);
+        showErrorLine(data.error);
       }
     } catch (e) {
       showStatus(e.message, true);
@@ -216,6 +345,7 @@
   }
 
   async function saveConfig() {
+    clearErrorLines();
     try {
       const yaml = mergeYamlSections();
       const res = await api('/api/config', {
@@ -224,9 +354,11 @@
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      markSaved();
       showStatus('Saved');
     } catch (e) {
       showStatus('Save failed: ' + e.message, true);
+      showErrorLine(e.message);
     }
   }
 
