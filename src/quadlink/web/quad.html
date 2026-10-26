@@ -989,6 +989,19 @@
   }
   exploreBtn.addEventListener('click', () => setExploring(!exploring()));
 
+  // Explore refreshes itself on the server's listing lifetime, but never under the hand: not
+  // while the pointer or a recent touch is on it, a menu is open, or a pick or drag is under way
+  const REFRESH_EVERY = 60000;
+  const TOUCH_QUIET = 10000;
+  let touched = 0;
+  scroller.addEventListener('touchstart', () => { touched = Date.now(); }, { passive: true });
+  setInterval(() => {
+    if (!exploring() || document.hidden || openMenu || drag || picked !== null) return;
+    if (scroller.matches(':hover') || Date.now() - touched < TOUCH_QUIET) return;
+    if (!exploreQ.value.trim()) showCats();
+    if (ex.searching) showFound(); else if (ex.listing) loadStreams(true);
+  }, REFRESH_EVERY);
+
   function categoryChip(c) {
     const b = document.createElement('button');
     b.type = 'button';
@@ -1154,17 +1167,20 @@
     if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
   }
 
-  function loadStreams() {
+  // quiet: a refresh of what is shown, so the grid keeps its place and shows no placeholders
+  function loadStreams(quiet = false) {
     const id = ex.category?.id ?? '';
-    ex.listing = null;
-    placeholders();
-    scroller.scrollTop = 0;
-    scroller.classList.remove('under');
+    if (!quiet) {
+      ex.listing = null;
+      placeholders();
+      scroller.scrollTop = 0;
+      scroller.classList.remove('under');
+    }
     return retrying('streams', `/api/explore/streams?category=${id}&sort=${ex.sort}&language=${ex.lang}`, listing => {
       ex.listing = listing;
       if (ex.category && listing.category) ex.category.viewers = listing.category.viewers;
       showStreams();
-    }, loadStreams);
+    }, () => loadStreams(quiet));
   }
 
   function placeholders() {
