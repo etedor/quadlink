@@ -25,13 +25,16 @@ DROPPED = {"connection", "keep-alive", "transfer-encoding", "content-length", "c
 CROSS_SITE = {"origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"}
 TOKEN_RE = re.compile(r'<meta name="quadlink-token" content="([^"]+)"')
 RELOAD = """<script>
-new EventSource('/__reload').onmessage = () => location.reload();
+new EventSource('/__reload?page=NAME').onmessage = () => location.reload();
 </script>
 """
 
 
-def _mtimes() -> dict[Path, float]:
-    return {p: p.stat().st_mtime for p in WEB_DIR.rglob("*") if p.is_file()}
+def _mtimes(page: str) -> dict[Path, float]:
+    """The page's own file and the stylesheets every page links: an edit to one page
+    must not reload another, where it would throw away its state."""
+    files = [WEB_DIR / f"{page}.html", *WEB_DIR.glob("*.css")]
+    return {p: p.stat().st_mtime for p in files if p.is_file()}
 
 
 async def _page(request: web.Request) -> web.Response:
@@ -39,7 +42,7 @@ async def _page(request: web.Request) -> web.Response:
     path = (WEB_DIR / f"{name}.html").resolve()
     if path.parent != WEB_DIR or not path.is_file():
         raise web.HTTPNotFound()
-    html = path.read_text().replace("</body>", RELOAD + "</body>", 1)
+    html = path.read_text().replace("</body>", RELOAD.replace("NAME", name) + "</body>", 1)
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
@@ -53,10 +56,13 @@ async def _asset(request: web.Request) -> web.FileResponse:
 async def _reload(request: web.Request) -> web.StreamResponse:
     resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
     await resp.prepare(request)
-    seen = _mtimes()
+    page = request.query.get("page", "")
+    if not page.replace("-", "").replace("_", "").isalnum():
+        raise web.HTTPBadRequest()
+    seen = _mtimes(page)
     while True:
         await asyncio.sleep(0.3)
-        now = _mtimes()
+        now = _mtimes(page)
         if now != seen:
             await resp.write(b"data: reload\n\n")
             return resp
