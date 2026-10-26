@@ -425,11 +425,17 @@
 
   const rail = document.querySelector('.rail');
   // the one formatter for every viewer count, so the rail, chips and cards agree
-  const viewerFormat = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 0 });
+  // two significant figures (1-9 exact, tens below 100): 7, 40, 120, 1300, 9900, 12k, 120k, 1.2m
+  const viewerCompact = new Intl.NumberFormat('en', { notation: 'compact', maximumSignificantDigits: 2 });
+  function viewerText(n) {
+    if (n < 10) return String(n);
+    const r = n < 100 ? Math.round(n / 10) * 10 : Number(n.toPrecision(2));
+    return r < 10000 ? String(r) : viewerCompact.format(r).toLowerCase();
+  }
   function viewerCount(n) {
     const span = document.createElement('span');
     span.className = 'viewers';
-    if (n != null) span.textContent = viewerFormat.format(n).toLowerCase();
+    if (n != null) span.textContent = viewerText(n);
     return span;
   }
   const STATES = [['live', 'Live'], ['offline', 'Offline']];
