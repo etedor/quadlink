@@ -450,8 +450,9 @@
     return span;
   }
   const STATES = [['live', 'Live'], ['offline', 'Offline']];
-  const SORTS = [['priority', 'Priority'], ['viewers', 'Most viewers'], ['name', 'Name'],
-                 ['newest', 'Newest'], ['longest', 'Longest']];
+  // one order for every sort list; Explore offers the ones Twitch's listing can sort by
+  const SORTS = [['priority', 'Priority'], ['viewers', 'Most viewers'], ['fewest', 'Fewest viewers'],
+                 ['newest', 'Newest'], ['longest', 'Longest'], ['name', 'Name']];
   const DEFAULTS = { show: ['live'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
   try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.4') || '{}'), { q: '' }); } catch {}
@@ -663,6 +664,8 @@
   const ORDER = {
     priority: (a, b) => (b.priority ?? -Infinity) - (a.priority ?? -Infinity),
     viewers: (a, b) => (b.viewers ?? -1) - (a.viewers ?? -1),
+    // a channel with no count sorts last either way
+    fewest: (a, b) => (a.viewers ?? Infinity) - (b.viewers ?? Infinity),
     name: (a, b) => (a.display_name || a.channel).localeCompare(b.display_name || b.channel),
     newest: (a, b) => (b.started_at ?? -Infinity) - (a.started_at ?? -Infinity),
     longest: (a, b) => (a.started_at ?? Infinity) - (b.started_at ?? Infinity),
