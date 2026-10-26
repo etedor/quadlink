@@ -93,6 +93,13 @@ CATCH_UP = 1.05
 LOW_CUSHION = 0.5
 LOW_FOR = 5.0
 RESTART_GAP = 30.0
+# a new player gets up to PART_HOLD_BACK of cut parts at once, so it starts with
+# its hold-back in its buffer: at the bare edge any jitter stalls it, and
+# QuadStream rebuilds a stalled player. The lead counts parts cut within
+# STARTUP seconds of the start, since a cold slot has none cut at the request.
+# QuadStream opens a player with ~3 plain requests: those before its first
+# blocking reload, within STARTUP, are one player and get the lead once
+STARTUP = 10.0
 # seconds between two "nothing released" reports for one slot, and between two
 # reports of skipped repeats
 EMPTY_REPORT = 10.0
@@ -356,6 +363,11 @@ class _Slot:
         self._low_since: float | None = None
         # a new channel waits for a listing with segments to pick its start
         self._start_pending = False
+        # the current player's start (loop time), the seconds of startup lead it
+        # has left, and whether it has made a blocking reload yet
+        self._player_at = -math.inf
+        self._lead = 0.0
+        self._blocked = False
 
     def start(self) -> None:
         self.tasks = [
@@ -680,6 +692,13 @@ class _Slot:
             release = next_release(now, prev, CATCH_UP if self._catching else 1.0)
             start, media = self._line or (release, 0.0)
             release = max(release, start + media)
+            if self._lead > 0 and now - self._player_at < STARTUP:
+                # the startup lead: out now instead of on the schedule, and the line
+                # moves back with it so later parts keep their pace
+                early = min(self._lead, release - now)
+                release -= early
+                start -= early
+                self._lead -= early
             self._line = (start, media + min(part.duration, PART_TARGET))
             self._restarting = False
             if not seg.parts and not seg.wall:
@@ -733,9 +752,24 @@ class _Slot:
             self._line = (start, scheduled + media)
 
     def player_start(self, now: float) -> None:
-        """A new player holds its buffer from here: the release line starts over."""
-        self._line = (now, self.cushion(now))
+        """A new player holds its buffer from here: the line starts over, with a lead."""
+        if not self._blocked and now - self._player_at < STARTUP:
+            return
+        self._player_at = now
+        self._blocked = False
+        self._lead = PART_HOLD_BACK
         self._catching = False
+        # parts already cut: the lead moves them all earlier at once, some to now
+        early = min(self._lead, self.cushion(now))
+        for seg in self.segs:
+            for p in seg.parts:
+                if p.release > now:
+                    p.release = max(now, p.release - early)
+        self._lead -= early
+        self._line = (now - early, self.cushion(now) + early)
+
+    def player_blocked(self) -> None:
+        self._blocked = True
 
     def cushion(self, now: float) -> float:
         """Seconds until the released edge passes the newest cut part, on its schedule."""
@@ -1007,6 +1041,7 @@ class LowLatency:
             if last is not None and msn > last + 2:
                 self._miss("relay ll request too far ahead", request, state, msn=msn, part=part)
                 return web.Response(status=400, text="_HLS_msn too far ahead")
+            state.player_blocked()
             if not await self._wait(state, msn, part):
                 self._miss("relay ll block timeout", request, state, msn=msn, part=part)
                 return web.Response(status=503, text="not yet available")

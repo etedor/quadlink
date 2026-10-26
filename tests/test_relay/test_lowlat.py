@@ -17,7 +17,9 @@ from quadlink.relay.lowlat import (
     CUSHION,
     CUSHION_SLACK,
     LOW_FOR,
+    PART_HOLD_BACK,
     PART_TARGET,
+    STARTUP,
     LowLatency,
     _Part,
     next_release,
@@ -197,14 +199,74 @@ class TestCushion:
         state = _slot()
         state.player_start(0.0)
         cuts = Cuts(state)
-        cuts.cut(0.0, 5)
-        # 4s without a part: the released edge stands still about 1.5s, then a burst
+        cuts.cut(0.0, 9)
+        # the startup lead is out; then 4s without a part: the released edge
+        # stands still about 1.5s, then a burst
         cuts.run(0.5, 120.0, lambda t: 0 if 10.0 <= t < 14.0 else 9 if t == 14.0 else 1)
-        steps = [b - a for a, b in zip(cuts.releases(), cuts.releases()[1:], strict=False)]
+        later = cuts.releases()[9:]
+        steps = [b - a for a, b in zip(later, later[1:], strict=False)]
         assert min(steps) >= 0.5 / CATCH_UP - 1e-9
-        # back on real time since the player started, and never past it
-        assert cuts.released_media() == pytest.approx(120.0, abs=0.5)
+        # back on real time since the player started plus its lead, never past it
+        assert cuts.released_media() == pytest.approx(120.0 + PART_HOLD_BACK, abs=0.5)
         assert state.cushion(119.75) <= CUSHION + CUSHION_SLACK
+
+    def test_a_new_player_gets_its_hold_back_at_once(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        cuts.run(0.5, 10.0)
+        before = cuts.released_media()
+        state.player_start(10.0)
+        cuts.watch(10.0)
+        assert cuts.released_media() - before == pytest.approx(PART_HOLD_BACK, abs=0.5)
+        # paid from the cushion, and at real time from there
+        assert state.cushion(10.0) == pytest.approx(2.0 - PART_HOLD_BACK, abs=0.25)
+        cuts.run(10.5, 20.0)
+        assert cuts.released_media() == pytest.approx(20.0 + PART_HOLD_BACK, abs=0.5)
+
+    def test_a_cold_slot_gives_the_lead_as_parts_are_cut(self):
+        # the request comes before any part: a prefetch source has none cut yet
+        state = _slot()
+        state.player_start(0.0)
+        cuts = Cuts(state)
+        cuts.cut(0.6, 1)
+        cuts.cut(1.0, 1)
+        cuts.cut(1.1, 3)
+        cuts.watch(1.1)
+        # what is cut goes out as soon as cut, up to the hold-back
+        assert cuts.released_media() >= PART_HOLD_BACK - 0.5
+        cuts.run(1.5, 20.0)
+        assert cuts.released_media() <= 20.0 + PART_HOLD_BACK
+
+    def test_plain_requests_of_one_player_open_get_the_lead_once(self):
+        state = _slot()
+        cuts = Cuts(state)
+        cuts.cut(0.0, 5)
+        cuts.run(0.5, 10.0)
+        state.player_start(10.0)
+        # the source sends more at once: a second lead would take it at once
+        cuts.cut(10.1, 4)
+        state.player_start(10.2)
+        state.player_start(10.4)
+        cuts.run(10.5, 30.0)
+        assert cuts.released_media() == pytest.approx(30.0 + PART_HOLD_BACK, abs=0.5)
+
+    def test_a_later_player_gets_its_own_lead(self):
+        for gap, blocked in [(STARTUP + 1, False), (1.0, True)]:
+            state = _slot()
+            cuts = Cuts(state)
+            cuts.cut(0.0, 5)
+            cuts.run(0.5, 10.0)
+            state.player_start(10.0)
+            if blocked:
+                state.player_blocked()
+            cuts.run(10.5, 10.0 + gap)
+            # the first lead took the cushion; a burst brings some back
+            cuts.cut(10.0 + gap - 0.1, 4)
+            before = cuts.released_media()
+            state.player_start(10.0 + gap)
+            cuts.watch(10.0 + gap)
+            assert cuts.released_media() - before >= 1.0, (gap, blocked)
 
     def test_player_latency_stays_bounded_across_swaps(self):
         state = _slot()
@@ -225,9 +287,9 @@ class TestCushion:
             t += 0.5
         cuts.run(t, t + 6.0)
         t += 6.0
-        # the player receives no more media than real time since it started: its
-        # buffer, and so its delay, does not grow with each swap
-        assert cuts.released_media() <= t + 0.5
+        # the player receives no more media than real time since it started, plus
+        # its startup lead: its buffer, and so its delay, does not grow with swaps
+        assert cuts.released_media() <= t + PART_HOLD_BACK + 0.5
 
     def test_a_cushion_stays_while_the_source_keeps_time(self):
         state = _slot()
@@ -400,7 +462,7 @@ async def test_parts_come_out_half_a_second_apart_behind_the_cushion(setup):
     # the first still encoding, from 0s to 2s
     seq = min(int(re.search(r"/part/(\d+)\.", uri)[1]) for uri in seen if "/part/" in uri) + 1
     first = [seen[f"/streams/ll/1/part/{seq}.{k}.ts"] for k in range(4)]
-    assert 1.5 < first[0] < 3.0
+    assert first[0] < 3.0
     # the source sends 0.1s chunks and this polls every 0.05s
     assert all(abs(b - a - 0.5) <= 0.15 for a, b in zip(first, first[1:], strict=False)), first
     assert seen[f"/streams/ll/1/seg/{seq}.ts"] >= first[3]
@@ -448,15 +510,17 @@ async def test_far_ahead_request_is_rejected(setup):
     assert resp.status == 400
 
 
-async def test_a_run_starts_with_a_cushion(setup):
+async def test_a_cold_slot_lists_its_first_player_a_hold_back_at_once(setup):
     relay, add, client, ll = setup
+    # a prefetch source: the first request comes before any part is cut
     relay.source = add("chan")
+    loop = asyncio.get_running_loop()
     await _playlist(client)
-    await asyncio.sleep(2.5)
-    cushion = ll.slot(1).cushion(asyncio.get_running_loop().time())
-    # the complete segment (2s), less the part being cut: this source's encoding
-    # segment starts with the slot, where Twitch's is on average half out
-    assert 0.9 < cushion <= CUSHION + CUSHION_SLACK
+    await asyncio.sleep(1.0)
+    now = loop.time()
+    parts = [p for s in ll.slot(1).segs for p in s.parts if p.release <= now]
+    ahead = sum(p.duration for p in parts) - (now - parts[0].release)
+    assert ahead >= PART_HOLD_BACK - 0.3
 
 
 async def test_a_stall_shorter_than_the_cushion_sends_no_filler(setup):
@@ -471,8 +535,9 @@ async def test_a_stall_shorter_than_the_cushion_sends_no_filler(setup):
     state = ll.slot(1)
     assert not any(seg.filler for seg in state.segs)
     releases = [p.release for s in state.segs for p in s.parts]
-    # released at real time throughout: no gap a player would have to wait through
-    assert max(b - a for a, b in zip(releases, releases[1:], strict=False)) < PART_TARGET + 0.1
+    # the startup lead took most of this source's short cushion into the player's
+    # buffer; the edge stands still for less than that buffer
+    assert max(b - a for a, b in zip(releases, releases[1:], strict=False)) < PART_HOLD_BACK
 
 
 async def test_filler_goes_out_when_the_source_stalls(setup, monkeypatch):
