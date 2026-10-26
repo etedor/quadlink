@@ -27,6 +27,8 @@
     height: calc(var(--control) + 2 * var(--edge));
     padding: 0 var(--gutter-r) 0 calc(var(--gutter-l) + var(--edge)); }
   .logo { display: flex; align-items: center; }
+  .brand { display: flex; align-items: center; gap: var(--s2); }
+  #version { font-size: var(--t-meta); color: var(--text-quiet); }
   /* the wordmark's own proportions */
   .logo svg { width: 143.4px; height: 24.7px; }
   main { display: grid; gap: var(--edge); padding: 0 var(--gutter-r) 0 var(--gutter-l); }
@@ -72,30 +74,32 @@
   .actions { position: sticky; bottom: 0; flex: none; display: flex; align-items: center; gap: var(--s2);
     padding: var(--edge) var(--gutter-r) var(--edge) var(--gutter-l); background: var(--ground); }
   .actions output { min-width: 0; margin-inline-end: auto; font-size: var(--t-meta); color: var(--text-quiet); }
+  #config-path { flex: 0 1 auto; min-width: 0; font-size: var(--t-meta); color: var(--text-quiet); }
   .actions output.error { color: var(--error-ink); }
   .actions .btn { position: relative; flex: none; }
   /* the dashboard's dot for choices that differ: here, edits not yet saved */
   .btn.changed::after { content: ""; position: absolute; top: var(--s1); right: var(--s1);
     width: var(--s2); height: var(--s2); border-radius: var(--r-pill); background: var(--accent-ink); }
-  footer { flex: none; display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); padding: 0 var(--gutter-r) var(--edge) var(--gutter-l);
-    font-size: var(--t-meta); color: var(--text-quiet); overflow-wrap: anywhere; }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/lib/codemirror.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.21/mode/yaml/yaml.js"></script>
 </head>
 <body>
 <header>
-  <a class="logo" href="/quad" aria-label="QuadLink">
-    <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
-      <g style="fill: var(--accent-fill)">
-        <g transform="scale(0.3863)">
-        <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.03 14.03 0 1 0 38.45 15.19Z"/>
-        <path d="M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z"/>
+  <div class="brand">
+    <a class="logo" href="/quad" aria-label="QuadLink">
+      <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
+        <g style="fill: var(--accent-fill)">
+          <g transform="scale(0.3863)">
+          <path d="M39.53 12.39A21 21 0 1 1 24.47 12.39L25.55 15.19A14.03 14.03 0 1 0 38.45 15.19Z"/>
+          <path d="M24.58 30.5H39.42L36.80 35H35.35L34.13 57L32 63.5L29.87 57L28.65 35H27.20Z"/>
+          </g>
+          <path d="M24.92 16.02V4.25H28.82V16.02Q28.82 17.12 29.54 17.54Q30.25 17.95 32 17.95Q33.72 17.95 34.41 17.54Q35.1 17.12 35.1 16.02V4.25H39V16.02Q39 20.72 31.95 20.72Q24.92 20.72 24.92 16.02Z M48.25 4.25H53L58.85 20.47H54.9L53.45 16.2H47.52L46.1 20.47H42.25ZM52.6 13.6 50.55 7.5H50.45L48.4 13.6Z M62.15 4.25H69.05Q71.9 4.25 73.55 4.69Q75.2 5.12 75.97 6.2Q76.75 7.27 76.75 9.17V15.77Q76.75 17.62 76.02 18.64Q75.3 19.65 73.65 20.06Q72 20.47 69.07 20.47H62.15ZM68.9 17.7Q70.5 17.7 71.31 17.56Q72.12 17.42 72.49 17.02Q72.85 16.62 72.85 15.77V9.1Q72.85 7.95 71.94 7.49Q71.02 7.02 69.02 7.02H66.05V17.7Z M81.4 4.25H85.3V17.7H93.27V20.47H81.4Z M97.4 4.25H101.3V20.47H97.4Z M106.3 4.25H110.25L118.1 15.32V4.25H121.57V20.47H117.62L109.77 9.22V20.47H106.3Z M126.57 4.25H130.47V20.47H126.57ZM130.57 11.87 136.65 4.25H141.22L135.07 11.8L141.9 20.47H137.15Z"/>
         </g>
-        <path d="M24.92 16.02V4.25H28.82V16.02Q28.82 17.12 29.54 17.54Q30.25 17.95 32 17.95Q33.72 17.95 34.41 17.54Q35.1 17.12 35.1 16.02V4.25H39V16.02Q39 20.72 31.95 20.72Q24.92 20.72 24.92 16.02Z M48.25 4.25H53L58.85 20.47H54.9L53.45 16.2H47.52L46.1 20.47H42.25ZM52.6 13.6 50.55 7.5H50.45L48.4 13.6Z M62.15 4.25H69.05Q71.9 4.25 73.55 4.69Q75.2 5.12 75.97 6.2Q76.75 7.27 76.75 9.17V15.77Q76.75 17.62 76.02 18.64Q75.3 19.65 73.65 20.06Q72 20.47 69.07 20.47H62.15ZM68.9 17.7Q70.5 17.7 71.31 17.56Q72.12 17.42 72.49 17.02Q72.85 16.62 72.85 15.77V9.1Q72.85 7.95 71.94 7.49Q71.02 7.02 69.02 7.02H66.05V17.7Z M81.4 4.25H85.3V17.7H93.27V20.47H81.4Z M97.4 4.25H101.3V20.47H97.4Z M106.3 4.25H110.25L118.1 15.32V4.25H121.57V20.47H117.62L109.77 9.22V20.47H106.3Z M126.57 4.25H130.47V20.47H126.57ZM130.57 11.87 136.65 4.25H141.22L135.07 11.8L141.9 20.47H137.15Z"/>
-      </g>
-    </svg>
-  </a>
+      </svg>
+    </a>
+    <span id="version"></span>
+  </div>
   <a class="btn icon" href="/quad" aria-label="Quad" data-icon="quad"></a>
 </header>
 
@@ -127,16 +131,13 @@
 </main>
 
 <div class="actions">
+  <span id="config-path" class="truncate">Loading…</span>
   <output id="status"></output>
   <button type="button" class="btn" onclick="loadConfig()">Reload</button>
   <button type="button" class="btn" onclick="validateConfig()">Validate</button>
   <button type="button" class="btn" id="save" onclick="saveConfig()">Save</button>
 </div>
 
-<footer>
-  <span id="version"></span>
-  <span id="config-path">Loading…</span>
-</footer>
 
 <script>
   const status = document.getElementById('status');
