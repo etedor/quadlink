@@ -18,9 +18,10 @@
   body { --cols: 4; --grid-gap: var(--edge); --bar: calc(var(--control) + 2 * var(--edge));
     display: grid; grid-template: var(--bar) 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
   /* the logo is content and starts where the quad's tiles do: 4% of the stage, never less than
-     the phone's tile edge. the Explore button is a surface, on --edge */
+     the phone's tile edge. the buttons are surfaces and end where Explore's tools do, --inset
+     short of that (the header spans the stage, so % here is the stage's cqw) */
   header { grid-area: top; display: flex; align-items: center; justify-content: space-between;
-    padding: 0 var(--edge) 0 max(var(--edge) + var(--inset), 4%); }
+    padding: 0 max(var(--edge), 4% - var(--inset)) 0 max(var(--edge) + var(--inset), 4%); }
   .logo { display: flex; align-items: center; }
   /* the wordmark's own proportions */
   .logo svg { width: 143.4px; height: 24.7px; }
