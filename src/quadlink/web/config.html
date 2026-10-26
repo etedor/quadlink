@@ -71,7 +71,8 @@
   /* the edge mark carries the line for anyone who cannot tell the wash from the panel */
   .ql-error { background: var(--error-wash); box-shadow: inset var(--ring) 0 var(--error); }
   /* on phones the bar stays in reach while the page scrolls */
-  .actions { position: sticky; bottom: 0; flex: none; display: flex; align-items: center; gap: var(--s2);
+  /* text tops on the buttons' tops, so the path sits as far below the panels as they do */
+  .actions { position: sticky; bottom: 0; flex: none; display: flex; align-items: flex-start; gap: var(--s2);
     padding: var(--edge) var(--gutter-r) var(--edge) var(--gutter-l); background: var(--ground); }
   .actions output { min-width: 0; margin-inline-end: auto; font-size: var(--t-meta); color: var(--text-quiet); }
   #config-path { flex: 0 1 auto; min-width: 0; font-size: var(--t-meta); color: var(--text-quiet); }
