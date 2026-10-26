@@ -73,11 +73,11 @@
      stage, so the tiles sit on 4%, but never nearer the stage's edge than the panel does */
   .quad, .explore { --gutter: max(var(--edge), 4cqw - var(--inset)); }
   /* the quad as four cards, the size of Explore's: a live tile, then name and category, on a
-     panel --edge in from the stage: what is on the TV, and a surface Explore scrolls away beneath.
-     its corners are concentric with the tiles' at the top */
+     panel that pads them by --edge on every side: what is on the TV, and a surface Explore
+     scrolls away beneath. its corners are concentric with the tiles' */
   .quad { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: var(--grid-gap);
-    align-self: stretch; flex: none; margin: var(--edge) var(--edge) 0;
-    padding: var(--edge) calc(var(--gutter) - var(--edge));
+    align-self: stretch; flex: none; margin: var(--edge) calc(var(--gutter) - var(--edge)) 0;
+    padding: var(--edge);
     border-radius: calc(var(--r-inner) + var(--edge) + var(--inset)); background: var(--raised); }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
   /* stands in for the incoming channel until the player reaches the splice */
