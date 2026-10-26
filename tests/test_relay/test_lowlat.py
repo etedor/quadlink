@@ -206,23 +206,25 @@ class TestCushion:
         later = cuts.releases()[9:]
         steps = [b - a for a, b in zip(later, later[1:], strict=False)]
         assert min(steps) >= 0.5 / CATCH_UP - 1e-9
-        # back on real time since the player started plus its lead, never past it
-        assert cuts.released_media() == pytest.approx(120.0 + PART_HOLD_BACK, abs=0.5)
-        assert state.cushion(119.75) <= CUSHION + CUSHION_SLACK
+        # back on real time since the player started plus its lead (which counts
+        # the first part), never past it
+        assert cuts.released_media() == pytest.approx(120.0 + PART_HOLD_BACK - 0.5, abs=0.5)
+        # measured as _add does, at the low point of its sawtooth
+        assert state.cushion(119.99) <= CUSHION + CUSHION_SLACK
 
-    def test_a_new_player_gets_its_hold_back_at_once(self):
+    def test_a_player_start_on_a_warm_slot_grants_nothing(self):
         state = _slot()
         cuts = Cuts(state)
         cuts.cut(0.0, 5)
         cuts.run(0.5, 10.0)
-        before = cuts.released_media()
-        state.player_start(10.0)
-        cuts.watch(10.0)
-        assert cuts.released_media() - before == pytest.approx(PART_HOLD_BACK, abs=0.5)
-        # paid from the cushion, and at real time from there
-        assert state.cushion(10.0) == pytest.approx(2.0 - PART_HOLD_BACK, abs=0.25)
-        cuts.run(10.5, 20.0)
-        assert cuts.released_media() == pytest.approx(20.0 + PART_HOLD_BACK, abs=0.5)
+        releases = [p.release for seg in state.segs for p in seg.parts]
+        cushion = state.cushion(10.0)
+        # a rebuild, a retry, a probe or a second client: the slot lists plenty
+        for t in (10.0, 10.0 + STARTUP + 1):
+            state.player_blocked()
+            state.player_start(t)
+        assert [p.release for seg in state.segs for p in seg.parts] == releases
+        assert state.cushion(10.0) == cushion
 
     def test_a_cold_slot_gives_the_lead_as_parts_are_cut(self):
         # the request comes before any part: a prefetch source has none cut yet
@@ -238,35 +240,27 @@ class TestCushion:
         cuts.run(1.5, 20.0)
         assert cuts.released_media() <= 20.0 + PART_HOLD_BACK
 
+    def test_a_player_start_keeps_program_date_times_running_on(self):
+        state = _slot()
+        cuts = Cuts(state)
+        # cut before the request: the next segment's first part moves earlier
+        cuts.cut(0.0, 6)
+        state.player_start(0.0)
+        for a, b in zip(state.segs, state.segs[1:], strict=False):
+            assert b.wall == pytest.approx(a.wall + a.duration)
+
     def test_plain_requests_of_one_player_open_get_the_lead_once(self):
         state = _slot()
         cuts = Cuts(state)
-        cuts.cut(0.0, 5)
-        cuts.run(0.5, 10.0)
-        state.player_start(10.0)
-        # the source sends more at once: a second lead would take it at once
-        cuts.cut(10.1, 4)
-        state.player_start(10.2)
-        state.player_start(10.4)
-        cuts.run(10.5, 30.0)
-        assert cuts.released_media() == pytest.approx(30.0 + PART_HOLD_BACK, abs=0.5)
-
-    def test_a_later_player_gets_its_own_lead(self):
-        for gap, blocked in [(STARTUP + 1, False), (1.0, True)]:
-            state = _slot()
-            cuts = Cuts(state)
-            cuts.cut(0.0, 5)
-            cuts.run(0.5, 10.0)
-            state.player_start(10.0)
-            if blocked:
-                state.player_blocked()
-            cuts.run(10.5, 10.0 + gap)
-            # the first lead took the cushion; a burst brings some back
-            cuts.cut(10.0 + gap - 0.1, 4)
-            before = cuts.released_media()
-            state.player_start(10.0 + gap)
-            cuts.watch(10.0 + gap)
-            assert cuts.released_media() - before >= 1.0, (gap, blocked)
+        state.player_start(0.0)
+        cuts.cut(0.6, 1)
+        state.player_start(0.7)
+        cuts.cut(1.0, 8)
+        state.player_start(1.1)
+        cuts.watch(1.1)
+        assert cuts.released_media() == pytest.approx(PART_HOLD_BACK, abs=0.5)
+        cuts.run(1.5, 30.0)
+        assert cuts.released_media() <= 30.0 - 0.6 + PART_HOLD_BACK + 0.5
 
     def test_player_latency_stays_bounded_across_swaps(self):
         state = _slot()
@@ -515,12 +509,40 @@ async def test_a_cold_slot_lists_its_first_player_a_hold_back_at_once(setup):
     # a prefetch source: the first request comes before any part is cut
     relay.source = add("chan")
     loop = asyncio.get_running_loop()
-    await _playlist(client)
+    # the first playlist the player sees already holds its hold-back
+    first = await _playlist(client)
+    # (to within the part the lead ends inside)
+    assert sum(d for d, _, _ in _parts(first)) >= PART_HOLD_BACK - PART_TARGET
     await asyncio.sleep(1.0)
     now = loop.time()
     parts = [p for s in ll.slot(1).segs for p in s.parts if p.release <= now]
     ahead = sum(p.duration for p in parts) - (now - parts[0].release)
-    assert ahead >= PART_HOLD_BACK - 0.3
+    # the hold-back counts the first part, which is no lead
+    assert ahead >= PART_HOLD_BACK - PART_TARGET - 0.2
+
+
+async def test_the_first_playlist_waits_for_the_hold_back(setup):
+    relay, add, client, _ = setup
+    source = relay.source = add("chan")
+    # nothing complete yet: the first segment is still encoding, its parts come
+    # at real time
+    source.start = time.monotonic() + 2
+    first = await _playlist(client)
+    assert sum(d for d, _, _ in _parts(first)) >= PART_HOLD_BACK - 0.01
+
+
+async def test_a_plain_request_mid_play_grants_nothing(setup):
+    relay, add, client, ll = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    await asyncio.sleep(4.0)
+    state = ll.slot(1)
+    before = [p.release for s in state.segs for p in s.parts]
+    # after the startup window: a QuadStream rebuild, or a probe
+    state._player_at -= STARTUP
+    await _playlist(client)
+    after = [p.release for s in state.segs for p in s.parts]
+    assert after[: len(before)] == before
 
 
 async def test_a_stall_shorter_than_the_cushion_sends_no_filler(setup):

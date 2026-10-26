@@ -93,10 +93,12 @@ CATCH_UP = 1.05
 LOW_CUSHION = 0.5
 LOW_FOR = 5.0
 RESTART_GAP = 30.0
-# a new player gets up to PART_HOLD_BACK of cut parts at once, so it starts with
-# its hold-back in its buffer: at the bare edge any jitter stalls it, and
-# QuadStream rebuilds a stalled player. The lead counts parts cut within
-# STARTUP seconds of the start, since a cold slot has none cut at the request.
+# a new player on a slot listing less than PART_HOLD_BACK gets the shortfall in
+# cut parts at once, so it starts with its hold-back in its buffer: at the bare
+# edge any jitter stalls it, and QuadStream rebuilds a stalled player. A slot
+# already listing that much gives nothing, or every rebuild, retry or second
+# client would drain the cushion into a playing player. The lead counts parts
+# cut within STARTUP seconds of the start, since a cold slot has none cut yet.
 # QuadStream opens a player with ~3 plain requests: those before its first
 # blocking reload, within STARTUP, are one player and get the lead once
 STARTUP = 10.0
@@ -695,6 +697,7 @@ class _Slot:
             if self._lead > 0 and now - self._player_at < STARTUP:
                 # the startup lead: out now instead of on the schedule, and the line
                 # moves back with it so later parts keep their pace
+                self._lead = min(self._lead, max(0.0, PART_HOLD_BACK - self.listed(now)))
                 early = min(self._lead, release - now)
                 release -= early
                 start -= early
@@ -757,19 +760,36 @@ class _Slot:
             return
         self._player_at = now
         self._blocked = False
-        self._lead = PART_HOLD_BACK
+        self._lead = max(0.0, PART_HOLD_BACK - self.listed(now))
         self._catching = False
         # parts already cut: the lead moves them all earlier at once, some to now
         early = min(self._lead, self.cushion(now))
+        prev: _Seg | None = None
         for seg in self.segs:
+            if seg.parts and seg.parts[0].release > now and (seg.disc or prev is None):
+                # PROGRAM-DATE-TIME follows a run's first release; see _add
+                seg.wall -= seg.parts[0].release - max(now, seg.parts[0].release - early)
+            elif prev is not None and not seg.disc:
+                seg.wall = prev.wall + prev.duration
             for p in seg.parts:
                 if p.release > now:
                     p.release = max(now, p.release - early)
+            prev = seg
         self._lead -= early
         self._line = (now - early, self.cushion(now) + early)
 
     def player_blocked(self) -> None:
         self._blocked = True
+
+    def listed(self, now: float) -> float:
+        """Seconds of released media the playlist lists."""
+        return sum(p.duration for s in self.segs for p in s.parts if p.release <= now)
+
+    def starting(self, now: float) -> bool:
+        """The player's startup lead is still due: it lists less than its hold-back."""
+        return (
+            self._lead > 0 and now - self._player_at < STARTUP and self.listed(now) < PART_HOLD_BACK
+        )
 
     def cushion(self, now: float) -> float:
         """Seconds until the released edge passes the newest cut part, on its schedule."""
@@ -1055,9 +1075,12 @@ class LowLatency:
                 agent=request.headers.get("User-Agent", "")[:60],
             )
             state.player_start(loop.time())
-            # a fresh slot needs its first parts; QuadStream retries a 503 itself
+            # a fresh slot needs its first parts, and the first playlist a player sees
+            # holds its hold-back; QuadStream retries a 503 itself
             deadline = loop.time() + 10
-            while not state.render(loop.time()) and loop.time() < deadline:
+            while (
+                not state.render(loop.time()) or state.starting(loop.time())
+            ) and loop.time() < deadline:
                 await asyncio.sleep(0.1)
         body = state.render(loop.time())
         if not body:
