@@ -306,9 +306,17 @@ class Daemon:
             self.quadstream_client = None
         if not self.one_shot:
             self._start_viewer_counts(config)
-        self.processor.extras = self.overrides.extras
+        looked_up = self.overrides.extras
+        self.processor.extras = looked_up
         candidates = await self.processor.process_stream_groups()
-        self.channel_statuses = self.processor.statuses()
+        # a channel placed from Explore while these lookups ran is not among them: the lookup
+        # it got at its placement stands until the next refresh, or it would read as offline
+        late = self.overrides.extras - looked_up
+        self.channel_statuses = [
+            *(s for s in self.processor.statuses() if s.channel not in late),
+            *(s for s in self.channel_statuses if s.channel in late),
+        ]
+        candidates += [c for c in self._pool if c.stream.channel in late]
         self.statuses_at = time.time()
         self.display_names |= {
             s.channel: s.stream.metadata.author for s in self.channel_statuses if s.stream

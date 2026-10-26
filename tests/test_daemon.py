@@ -54,8 +54,9 @@ class Twitch:
         self.live: dict[str, tuple[str, str] | Exception] = {}
         self.lookups = 0
         self.minted = 0
-        # while set and clear, lookups wait for it
+        # while set and clear, lookups wait for it: of every channel, or only of these
         self.gate: asyncio.Event | None = None
+        self.held: set[str] | None = None
         self.fetchers: list[FakeFetcher] = []
         # channel -> display name, when it differs from the login
         self.display: dict[str, str] = {}
@@ -70,9 +71,9 @@ class Twitch:
 
     async def lookup(self, url: str) -> Stream | None:
         self.lookups += 1
-        if self.gate is not None:
-            await self.gate.wait()
         channel = channel_login(url)
+        if self.gate is not None and (self.held is None or channel in self.held):
+            await self.gate.wait()
         found = self.live.get(channel)
         if isinstance(found, Exception):
             raise found
@@ -1395,6 +1396,23 @@ class TestOutsideChannels:
             assert {c.channel: c for c in daemon.snapshot().channels}["zed"].extra
             await loops.refresh()
             assert daemon.quad_state.channels[2] == "zed"
+
+    async def test_a_placement_during_a_refresh_survives_it(self, make_daemon, twitch):
+        twitch.go_live("zed")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            # one of the refresh's lookups waits; the placement's own lookup does not
+            twitch.gate, twitch.held = asyncio.Event(), {"a"}
+            refresh = asyncio.create_task(loops.refresh())
+            await settle()
+            await daemon.place("zed", 2)
+            await settle()
+            twitch.gate.set()
+            await refresh
+            assert daemon.quad_state.channels[2] == "zed"
+            views = {c.channel: c for c in daemon.snapshot().channels}
+            assert views["zed"].live
 
     async def test_an_offline_channel_or_a_bad_name_is_refused(self, make_daemon, twitch):
         daemon = make_daemon()
