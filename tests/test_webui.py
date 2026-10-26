@@ -72,7 +72,8 @@ class TestPage:
         assert resp.status == 200
         text = await resp.text()
         assert text.count("<video") == 4
-        assert "'/streams/' + (i + 1)" in text
+        assert "'/streams/ll/' : '/streams/'" in text
+        assert "play(video, streams + (i + 1), tile)" in text
         assert TOKEN_PLACEHOLDER not in text
         assert webui.token in text
 
