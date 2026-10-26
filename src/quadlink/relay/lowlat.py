@@ -93,7 +93,7 @@ CATCH_UP = 1.05
 LOW_CUSHION = 0.5
 LOW_FOR = 5.0
 RESTART_GAP = 30.0
-# a new player on a slot listing less than PART_HOLD_BACK gets the shortfall in
+# a new player on a slot listing less than STARTUP_HOLD gets the shortfall in
 # cut parts at once, so it starts with its hold-back in its buffer: at the bare
 # edge any jitter stalls it, and QuadStream rebuilds a stalled player. A slot
 # already listing that much gives nothing, or every rebuild, retry or second
@@ -102,6 +102,11 @@ RESTART_GAP = 30.0
 # QuadStream opens a player with ~3 plain requests: those before its first
 # blocking reload, within STARTUP, are one player and get the lead once
 STARTUP = 10.0
+# media a cold player's first playlist lists: one whole segment and a part. AVPlayer
+# fails a stream (-12312, "Media Entry discontinuity value does not match previous
+# playlist") whose first playlist holds only the parts of an open segment and whose
+# next lists that segment complete, so the first one must already close a segment
+STARTUP_HOLD = 2.0 + PART_TARGET
 # seconds between two "nothing released" reports for one slot, and between two
 # reports of skipped repeats
 EMPTY_REPORT = 10.0
@@ -697,7 +702,7 @@ class _Slot:
             if self._lead > 0 and now - self._player_at < STARTUP:
                 # the startup lead: out now instead of on the schedule, and the line
                 # moves back with it so later parts keep their pace
-                self._lead = min(self._lead, max(0.0, PART_HOLD_BACK - self.listed(now)))
+                self._lead = min(self._lead, max(0.0, STARTUP_HOLD - self.listed(now)))
                 early = min(self._lead, release - now)
                 release -= early
                 start -= early
@@ -760,7 +765,7 @@ class _Slot:
             return
         self._player_at = now
         self._blocked = False
-        self._lead = max(0.0, PART_HOLD_BACK - self.listed(now))
+        self._lead = max(0.0, STARTUP_HOLD - self.listed(now))
         self._catching = False
         # parts already cut: the lead moves them all earlier at once, some to now
         early = min(self._lead, self.cushion(now))
@@ -781,14 +786,20 @@ class _Slot:
     def player_blocked(self) -> None:
         self._blocked = True
 
+    def closed(self, now: float) -> bool:
+        """The playlist lists a complete segment."""
+        return any(s.complete and s.parts and s.released(now) == len(s.parts) for s in self.segs)
+
     def listed(self, now: float) -> float:
         """Seconds of released media the playlist lists."""
         return sum(p.duration for s in self.segs for p in s.parts if p.release <= now)
 
     def starting(self, now: float) -> bool:
-        """The player's startup lead is still due: it lists less than its hold-back."""
+        """A cold player's first playlist is not ready: no closed segment, or lead due."""
         return (
-            self._lead > 0 and now - self._player_at < STARTUP and self.listed(now) < PART_HOLD_BACK
+            now - self._player_at < STARTUP
+            and (self._lead > 0 or not self.closed(now))
+            and (self.listed(now) < STARTUP_HOLD or not self.closed(now))
         )
 
     def cushion(self, now: float) -> float:

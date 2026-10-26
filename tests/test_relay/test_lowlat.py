@@ -20,6 +20,7 @@ from quadlink.relay.lowlat import (
     PART_HOLD_BACK,
     PART_TARGET,
     STARTUP,
+    STARTUP_HOLD,
     LowLatency,
     _Part,
     next_release,
@@ -258,9 +259,9 @@ class TestCushion:
         cuts.cut(1.0, 8)
         state.player_start(1.1)
         cuts.watch(1.1)
-        assert cuts.released_media() == pytest.approx(PART_HOLD_BACK, abs=0.5)
+        assert cuts.released_media() == pytest.approx(STARTUP_HOLD, abs=0.5)
         cuts.run(1.5, 30.0)
-        assert cuts.released_media() <= 30.0 - 0.6 + PART_HOLD_BACK + 0.5
+        assert cuts.released_media() <= 30.0 - 0.6 + STARTUP_HOLD + 0.5
 
     def test_player_latency_stays_bounded_across_swaps(self):
         state = _slot()
@@ -452,11 +453,11 @@ async def test_parts_come_out_half_a_second_apart_behind_the_cushion(setup):
             for uri in re.findall(r"^/streams/ll/1/seg/\S+", text, re.M):
                 seen.setdefault(uri, time.monotonic() - source.start)
         await asyncio.sleep(0.05)
-    # the run starts one complete segment back, as its cushion; the next one is
-    # the first still encoding, from 0s to 2s
-    seq = min(int(re.search(r"/part/(\d+)\.", uri)[1]) for uri in seen if "/part/" in uri) + 1
+    # the run starts one complete segment back, as its cushion, and the startup lead
+    # spends into the first segment still encoding (0s to 2s); the one after is paced
+    seq = min(int(re.search(r"/part/(\d+)\.", uri)[1]) for uri in seen if "/part/" in uri) + 2
     first = [seen[f"/streams/ll/1/part/{seq}.{k}.ts"] for k in range(4)]
-    assert first[0] < 3.0
+    assert first[0] < 5.0
     # the source sends 0.1s chunks and this polls every 0.05s
     assert all(abs(b - a - 0.5) <= 0.15 for a, b in zip(first, first[1:], strict=False)), first
     assert seen[f"/streams/ll/1/seg/{seq}.ts"] >= first[3]
@@ -731,3 +732,13 @@ async def test_program_date_times_follow_segment_durations(setup):
     assert len(durations) >= 2
     for a, b, d in zip(stamps, stamps[1:], durations, strict=False):
         assert b - a == pytest.approx(d, abs=0.002)
+
+
+async def test_a_cold_first_playlist_closes_a_segment(setup):
+    # AVPlayer fails (-12312) a stream whose first playlist lists only an open
+    # segment's parts and whose next lists that segment complete
+    relay, add, client, _ = setup
+    relay.source = add("chan")
+    text = await _playlist(client)
+    assert re.search(r"^#EXTINF:", text, re.M), text
+    assert sum(d for d, _, _ in _parts(text)) >= STARTUP_HOLD - PART_TARGET
