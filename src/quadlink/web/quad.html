@@ -13,10 +13,9 @@
 <style>
   html, body { height: 100%; }
   /* --cols and --grid-gap are shared by the quad and the Explore grid, so their columns line up;
-     the header row is as tall as the rail's tools row, so the logo centres on the search field.
-     312px is the rail's one width */
+     the header row is as tall as the rail's tools row, so the logo centres on the search field */
   body { --cols: 4; --grid-gap: var(--edge); --bar: calc(var(--control) + 2 * var(--edge));
-    display: grid; grid-template: var(--bar) 1fr / 312px 1fr; grid-template-areas: "rail top" "rail quad"; }
+    display: grid; grid-template: var(--bar) 1fr / var(--rail) 1fr; grid-template-areas: "rail top" "rail quad"; }
   /* the logo is content and starts where the quad's tiles do: 4% of the stage, never less than
      the phone's tile edge. the buttons are surfaces and end where Explore's tools do, --inset
      short of that (the header spans the stage, so % here is the stage's cqw) */

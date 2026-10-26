@@ -45,6 +45,9 @@
   --r-outer: calc(var(--r-inner) + var(--inset));
   --r-pill: 999px;
   --control: 38px;
+  /* the dashboard's rail; the config page's header measures its insets past it too, so the
+     header buttons sit in one place on both pages */
+  --rail: 312px;
   --chip: 24px;
   --line: 22px;
   --icon: 18px;

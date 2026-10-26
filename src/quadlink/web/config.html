@@ -17,6 +17,11 @@
     --gutter-l: max(var(--inset), 4% - var(--edge));
     --gutter-r: max(var(--edge), 4% - var(--inset));
     --mono: var(--t-meta)/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  /* beside the rail the dashboard's header spans the window less --rail, so the Quad button
+     takes its right inset from that width and stays where the dashboard's gear is */
+  @media (min-width: 721px) {
+    :root { --gutter-r: max(var(--edge), (100vw - var(--rail)) * 0.04 - var(--inset)); }
+  }
   /* the dashboard's header: as tall as its tools row, on the same insets */
   header { display: flex; align-items: center; justify-content: space-between;
     height: calc(var(--control) + 2 * var(--edge));
