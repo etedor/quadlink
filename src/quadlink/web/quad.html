@@ -347,7 +347,8 @@
       return;
     }
     tile.hls = true;
-    const hls = new Hls({ liveSyncDurationCount: 2 });
+    // low-latency HLS: hls.js holds PART-HOLD-BACK behind the live edge, as the TV does
+    const hls = new Hls({ lowLatencyMode: true });
     hls.on(Hls.Events.FRAG_CHANGED, (_, { frag }) => {
       if (tile.cc !== undefined && frag.cc !== tile.cc && tile.awaiting) uncover(tile);
       tile.cc = frag.cc;
@@ -404,9 +405,13 @@
     return canvas.toDataURL('image/jpeg', 0.8);
   }
 
+  // low-latency tiles hold a blocking request each; over HTTP/1.1 four of them use up the
+  // browser's six connections to the host and stall the page, so they need HTTP/2
+  const multiplexed = /^h[23]/.test(performance.getEntriesByType('navigation')[0]?.nextHopProtocol || '');
+  const streams = multiplexed ? '/streams/ll/' : '/streams/';
   tiles.forEach((tile, i) => {
     const video = tile.querySelector('video');
-    play(video, '/streams/' + (i + 1), tile);
+    play(video, streams + (i + 1), tile);
     // one tile has sound at a time; click the loud one again to mute it. with a row
     // picked, the click places that channel instead
     tile.querySelector('.inset-focus').addEventListener('click', () => {
