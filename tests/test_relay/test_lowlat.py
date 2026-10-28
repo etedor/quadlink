@@ -600,6 +600,14 @@ async def test_a_channel_change_splices_at_once(setup):
     assert "#EXT-X-DISCONTINUITY" in text
 
 
+async def test_a_new_slot_counts_discontinuities_from_zero(setup):
+    relay, add, client, _ = setup
+    relay.source = add("chan")
+    text = await _playlist(client)
+    assert int(re.search(r"MEDIA-SEQUENCE:(\d+)", text)[1]) >= int(time.time() // 2) - 5
+    assert int(re.search(r"DISCONTINUITY-SEQUENCE:(\d+)", text)[1]) == 0
+
+
 async def test_a_restarted_slot_carries_on_its_numbering(setup):
     relay, add, client, ll = setup
     relay.source = add("chan")

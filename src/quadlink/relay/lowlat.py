@@ -328,11 +328,13 @@ class _Slot:
         self.slot = slot
         self.source = SlotState(window=40)
         self.segs: list[_Seg] = []
-        # numbers start from the clock in segment steps, so they only rise across idle
-        # stops and daemon restarts: a player resuming asks for numbers past its last
+        # segment numbers start from the clock in segment steps, so they only rise across
+        # idle stops and daemon restarts: a player resuming asks for numbers past its last.
+        # the discontinuity count stays small: hls.js 1.7.3 iterates initPTS.some up to it on
+        # every playlist reload, and a clock-sized count stalls playback
         clock = int(time.time() // 2)
         last_seq, last_dseq = resume or (0, 0)
-        self.next_seq, self.base_dseq = max(clock, last_seq), max(clock, last_dseq)
+        self.next_seq, self.base_dseq = max(clock, last_seq), last_dseq
         self.resumed = resume is not None
         self.target = 2
         self.queue: deque[_Queued] = deque()
