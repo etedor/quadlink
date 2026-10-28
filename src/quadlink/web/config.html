@@ -54,10 +54,6 @@
     min-height: var(--control); margin-bottom: var(--s2); }
   /* the dashboard's name weight, so section titles stand above the quiet labels */
   h2 { margin: 0; font-size: var(--t-body); font-weight: 600; color: var(--text); }
-  .head label { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-meta);
-    color: var(--text-quiet); }
-  /* a field on a panel takes the next level up, or it vanishes into the panel */
-  .head select { background: var(--overlay); color: var(--text); }
   /* shows only when CodeMirror fails to load */
   textarea.field { flex: 1; min-height: 0; width: 100%; padding: var(--edge);
     background: var(--overlay); font: var(--mono); resize: none; }
@@ -109,14 +105,9 @@
 
 <main>
 <section class="panel">
-  <div class="head">
+  <div class="head tools">
     <h2 id="title-priorities">Priorities</h2>
-    <label>Sort by
-      <select id="sort-order" class="field" onchange="loadConfig()">
-        <option value="desc">High to low</option>
-        <option value="asc">Low to high</option>
-      </select>
-    </label>
+    <button type="button" class="btn icon sort-btn" aria-label="Sort" aria-expanded="false" data-icon="sort"></button>
   </div>
   <textarea id="editor-priorities" class="field" aria-labelledby="title-priorities" spellcheck="false" placeholder="Loading…"></textarea>
 </section>
@@ -143,12 +134,14 @@
 </div>
 
 
+<script src="/web/menu.js"></script>
 <script>
   const status = document.getElementById('status');
   const configPath = document.getElementById('config-path');
   const versionEl = document.getElementById('version');
   const saveBtn = document.getElementById('save');
   let initialized = false;
+  let sortOrder = 'desc';
   const token = document.querySelector('meta[name="quadlink-token"]').content;
 
   function api(url, options = {}) {
@@ -156,17 +149,6 @@
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
     return fetch(url, {...options, headers, cache: 'no-store'});
   }
-
-  // Lucide 1.61.0 (ISC, lucide.dev), on its 24-unit 2px stroke grid, as on the dashboard
-  const ICONS = {
-    quad: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
-  };
-  document.querySelectorAll('[data-icon]').forEach(el => {
-    const t = document.createElement('template');
-    t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[el.dataset.icon] + '</svg>';
-    el.prepend(t.content.firstChild);
-  });
 
   const sections = {
     priorities: ['priorities'],
@@ -314,7 +296,6 @@
 
   async function loadConfig() {
     try {
-      const sortOrder = document.getElementById('sort-order').value;
       const res = await api(`/api/config?t=${Date.now()}&sort=${sortOrder}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -371,6 +352,11 @@
       showErrorLine(e.message);
     }
   }
+
+  menu({ button: document.querySelector('.sort-btn'), title: 'Sort by', reset: 'Reset sort', apply: loadConfig,
+    groups: [{ type: 'radio', name: 'sort', choices: () => [['desc', 'High to low'], ['asc', 'Low to high']],
+      fallback: 'desc', get: () => sortOrder, set: v => { sortOrder = v; } }] });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && openMenu) closeMenu(true); });
 
   loadConfig();
 </script>

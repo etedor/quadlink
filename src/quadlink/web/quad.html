@@ -32,43 +32,9 @@
   aside { grid-area: rail; min-height: 0; display: flex; flex-direction: column; }
   /* field and buttons. margins, not padding, so its box is exactly the button row and its menus
      hang from that */
-  .tools { position: relative; display: flex; gap: var(--s2); margin-block: var(--edge); }
+  .tools { display: flex; gap: var(--s2); margin-block: var(--edge); }
   aside .tools { margin-inline: var(--edge); }
   .tools .field { flex: 1; min-width: 0; }
-  .tools .btn { position: relative; flex: none; }
-  /* a dot on a glyph says its choices differ from the defaults */
-  .tools .btn.changed::after { content: ""; position: absolute; top: var(--s1); right: var(--s1);
-    width: var(--s2); height: var(--s2); border-radius: var(--r-pill); background: var(--accent-ink); }
-  /* the accent ink would vanish on the on fill */
-  .tools .btn.changed[aria-expanded="true"]::after { background: currentColor; }
-  /* every menu hangs under its tools row, flush with the last button, at one width. the gutter
-     keeps room for the scrollbar even when it shows, so the reset glyph never sits under it */
-  .pop { position: absolute; top: calc(100% + var(--s1)); right: 0; width: min(320px, 100%); z-index: 1;
-    border-radius: var(--r-outer); background: var(--overlay); box-shadow: var(--shadow); max-height: 60vh;
-    overflow-y: auto; scrollbar-gutter: stable; }
-  .pop-head { display: flex; align-items: center; justify-content: space-between;
-    padding: var(--inset) var(--inset) 0 var(--edge); color: var(--text-quiet); font-size: var(--t-meta); }
-  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
-    clip-path: inset(50%); white-space: nowrap; }
-  .pop-body { display: grid; gap: var(--s2); padding: 0 var(--edge) var(--inset); }
-  /* the fade shows only while more options sit below, so the menu ends at its last item */
-  .pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: var(--fade);
-    margin-top: calc(-1 * var(--fade)); pointer-events: none;
-    background: linear-gradient(var(--clear), var(--overlay)); }
-  .pop .reset { background-color: var(--clear); color: var(--text-quiet); }
-  @media (hover: hover) { .pop .reset:hover { color: var(--text); } }
-  /* fieldsets default to min-content width, which would let long names push past the edge */
-  .pop fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-  .pop legend { color: var(--text-quiet); font-size: var(--t-meta); margin-bottom: var(--s1); padding: 0; }
-  .pop label { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; cursor: pointer;
-    min-width: 0; }
-  /* drawn, not native: WebKit's dark controls ignore accent-color, and a chosen option must
-     read as on. the centre mark is the white left inside a 4px purple ring */
-  .pop input { appearance: none; -webkit-appearance: none; flex: none; width: var(--icon-s);
-    height: var(--icon-s); margin: 0; border-radius: var(--s1);
-    box-shadow: inset 0 0 0 var(--focus) var(--text-quiet); }
-  .pop input[type=radio] { border-radius: var(--r-pill); }
-  .pop input:checked { background: var(--on-accent); box-shadow: inset 0 0 0 var(--s1) var(--accent-fill); }
   .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; flex-direction: column; align-items: center; overflow: hidden; }
@@ -333,6 +299,7 @@
   </div>
 </section>
 </main>
+<script src="/web/menu.js"></script>
 <script>
   const tiles = [...document.querySelectorAll('.tile')];
 
@@ -470,25 +437,6 @@
     try { localStorage.setItem('quadlink.view.5', JSON.stringify({ show: view.show, sort: view.sort })); } catch {}
   }
 
-  // every glyph on the page: Lucide 1.61.0 (ISC, lucide.dev), on its 24-unit 2px stroke grid;
-  // the CSS around each one sets its size
-  const ICONS = {
-    explore: '<circle cx="12" cy="12" r="10"/><path d="m16.24 7.76-1.804 5.411a2 2 0 0 1-1.265 1.265L7.76 16.24l1.804-5.411a2 2 0 0 1 1.265-1.265z"/>',
-    filter: '<path d="M10 20a1 1 0 0 0 .553.895l2 1A1 1 0 0 0 14 21v-7a2 2 0 0 1 .517-1.341L21.74 4.67A1 1 0 0 0 21 3H3a1 1 0 0 0-.742 1.67l7.225 7.989A2 2 0 0 1 10 14z"/>',
-    sort: '<path d="m3 16 4 4 4-4"/><path d="M7 20V4"/><path d="m21 8-4-4-4 4"/><path d="M17 4v16"/>',
-    reset: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
-    sound: '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="M16 9a5 5 0 0 1 0 6"/><path d="M19.364 18.364a9 9 0 0 0 0-12.728"/>',
-    lock: '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
-    'lock-open': '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
-    settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
-  };
-  function icon(name) {
-    const t = document.createElement('template');
-    t.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + ICONS[name] + '</svg>';
-    return t.content.firstChild;
-  }
-  document.querySelectorAll('[data-icon]').forEach(b => b.prepend(icon(b.dataset.icon)));
 
   let picked = null;
 
@@ -602,13 +550,6 @@
     else if (exploring() && phone.matches) { setExploring(false); remember(); }
   });
 
-  function el(tag, className, text) {
-    const node = document.createElement(tag);
-    node.className = className;
-    if (text != null) node.textContent = text;
-    return node;
-  }
-
   // one channel for the rail (row) or Explore (card); the quad's cards are the same
   // markup, written in the page, with the tile as their picture
   function item(c, { row = false, image = null, title = null } = {}) {
@@ -698,95 +639,6 @@
       .filter(matches)
       .sort(ORDER[view.sort] || ORDER.priority);
     rail.replaceChildren(...rows.map(c => item(c, { row: true, image: thumb(c.channel) })));
-  }
-
-  function option(type, name, value, text, checked, onChange) {
-    const label = document.createElement('label');
-    const input = document.createElement('input');
-    input.type = type;
-    input.name = name;
-    input.value = value;
-    input.checked = checked;
-    input.addEventListener('change', onChange);
-    const span = document.createElement('span');
-    span.className = 'truncate';
-    span.textContent = text;
-    label.title = text;
-    label.append(input, span);
-    return label;
-  }
-
-  // a checkbox group's value is a list, so order does not count
-  const same = (a, b) => Array.isArray(a) ? [...a].sort().join('\n') === [...b].sort().join('\n') : a === b;
-
-  function edge(pop) {
-    pop.classList.toggle('more', pop.scrollTop + pop.clientHeight < pop.scrollHeight - 1);
-  }
-
-  let openMenu = null;
-  function closeMenu(refocus = false) {
-    if (!openMenu) return;
-    openMenu.pop.hidden = true;
-    openMenu.button.setAttribute('aria-expanded', 'false');
-    if (refocus) openMenu.button.focus();
-    openMenu = null;
-  }
-  document.addEventListener('click', e => { if (!e.target.closest('.pop, .tools > button')) closeMenu(); });
-
-  // a menu hangs from its button's tools row: a head (title, reset), then a fieldset per group.
-  // a group's choices() runs on every opening, so lists drawn from live data stay current.
-  // the button's dot shows while any group differs from its fallback; a reset with nothing
-  // changed does nothing, so it never reloads a listing
-  function menu({ button, title, reset, apply, groups }) {
-    const pop = el('div', 'pop');
-    pop.hidden = true;
-    const head = el('div', 'pop-head');
-    const label = el('span', '', title);
-    label.setAttribute('aria-hidden', 'true');
-    const undo = el('button', 'btn icon reset');
-    undo.type = 'button';
-    undo.title = 'Reset';
-    undo.setAttribute('aria-label', reset);
-    undo.append(icon('reset'));
-    head.append(label, undo);
-    const body = el('div', 'pop-body');
-    pop.append(head, body);
-    button.closest('.tools').append(pop);
-    const changed = () => groups.some(g => !same(g.get(), g.fallback));
-    const chose = () => { apply(); button.classList.toggle('changed', changed()); };
-    const fill = () => body.replaceChildren(...groups.map(g => {
-      const field = el('fieldset', '');
-      field.append(el('legend', g.legend ? '' : 'sr-only', g.legend || title));
-      field.append(...g.choices().map(([value, text]) => {
-        const radio = g.type === 'radio';
-        return option(g.type, g.name, value, text, radio ? g.get() === value : g.get().includes(value), e => {
-          g.set(radio ? value : e.target.checked ? [...g.get(), value] : g.get().filter(x => x !== value));
-          chose();
-        });
-      }));
-      return field;
-    }));
-    undo.addEventListener('click', () => {
-      if (!changed()) return;
-      groups.forEach(g => g.set(Array.isArray(g.fallback) ? [...g.fallback] : g.fallback));
-      chose();
-      fill();
-    });
-    const m = { button, pop };
-    button.addEventListener('click', () => {
-      const open = openMenu !== m;
-      closeMenu(!open);
-      if (!open) return;
-      fill();
-      pop.hidden = false;
-      pop.scrollTop = 0;
-      button.setAttribute('aria-expanded', 'true');
-      openMenu = m;
-      (pop.querySelector('input:checked') || pop.querySelector('input'))?.focus();
-      edge(pop);
-    });
-    pop.addEventListener('scroll', () => edge(pop));
-    button.classList.toggle('changed', changed());
   }
 
   // categories with a channel live now

@@ -115,9 +115,10 @@ class TestPage:
         assert "'Content-Type'] = 'application/json'" in api_fn
 
     @pytest.mark.parametrize("path", ["/", "/config"])
-    async def test_page_links_base_css(self, client: TestClient, path: str) -> None:
+    async def test_page_links_shared_files(self, client: TestClient, path: str) -> None:
         html = await (await client.get(path)).text()
         assert '<link rel="stylesheet" href="/web/base.css">' in html
+        assert '<script src="/web/menu.js"></script>' in html
 
     async def test_web_serves_css(self, client: TestClient) -> None:
         resp = await client.get("/web/base.css")
@@ -125,6 +126,12 @@ class TestPage:
         assert resp.content_type == "text/css"
         assert resp.headers["Cache-Control"] == "no-store"
         assert "--ground:" in await resp.text()
+
+    async def test_web_serves_js(self, client: TestClient) -> None:
+        resp = await client.get("/web/menu.js")
+        assert resp.status == 200
+        assert resp.content_type == "text/javascript"
+        assert "function menu(" in await resp.text()
 
     @pytest.mark.parametrize(
         "path",

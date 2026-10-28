@@ -29,6 +29,7 @@ TOKEN_PLACEHOLDER = "__QUADLINK_TOKEN__"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # static pages; dev/serve.py serves the same files with live reload
 WEB_DIR = Path(__file__).parent / "web"
+SHARED_TYPES = {".css": "text/css", ".js": "text/javascript"}
 
 
 # urlsplit accepts userinfo, paths and fragments in a netloc; a Host header has none
@@ -261,14 +262,13 @@ class WebUI:
         raise web.HTTPFound("/")
 
     async def _handle_web(self, request: web.Request) -> web.FileResponse:
-        """Serve a stylesheet shared by the pages."""
+        """Serve a stylesheet or script shared by the pages."""
         name = request.match_info["name"]
         path = (WEB_DIR / name).resolve()
-        if path.suffix != ".css" or path.parent != WEB_DIR.resolve() or not path.is_file():
+        kind = SHARED_TYPES.get(path.suffix)
+        if kind is None or path.parent != WEB_DIR.resolve() or not path.is_file():
             raise web.HTTPNotFound()
-        return web.FileResponse(
-            path, headers={"Cache-Control": "no-store", "Content-Type": "text/css"}
-        )
+        return web.FileResponse(path, headers={"Cache-Control": "no-store", "Content-Type": kind})
 
     def _read_file_config(self) -> dict[str, Any]:
         """Return the config file as written, without env overrides or defaults."""

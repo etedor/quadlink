@@ -137,3 +137,40 @@ label > input:focus-visible { outline: 0; }
 /* on: a persistent choice (a toggle, a chosen chip, an open menu's button) */
 :where(.btn, .chip):is([aria-pressed="true"], [aria-expanded="true"]) {
   background: var(--accent-fill); color: var(--on-accent); }
+
+/* menus (menu.js) hang from a tools row */
+.tools { position: relative; }
+.tools .btn { position: relative; flex: none; }
+/* a dot on a glyph says its choices differ from the defaults */
+.tools .btn.changed::after { content: ""; position: absolute; top: var(--s1); right: var(--s1);
+  width: var(--s2); height: var(--s2); border-radius: var(--r-pill); background: var(--accent-ink); }
+/* the accent ink would vanish on the on fill */
+.tools .btn.changed[aria-expanded="true"]::after { background: currentColor; }
+/* every menu hangs under its tools row, flush with the last button, at one width. the gutter
+   keeps room for the scrollbar even when it shows, so the reset glyph never sits under it */
+.pop { position: absolute; top: calc(100% + var(--s1)); right: 0; width: min(320px, 100%); z-index: 1;
+  border-radius: var(--r-outer); background: var(--overlay); box-shadow: var(--shadow); max-height: 60vh;
+  overflow-y: auto; scrollbar-gutter: stable; }
+.pop-head { display: flex; align-items: center; justify-content: space-between;
+  padding: var(--inset) var(--inset) 0 var(--edge); color: var(--text-quiet); font-size: var(--t-meta); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap; }
+.pop-body { display: grid; gap: var(--s2); padding: 0 var(--edge) var(--inset); }
+/* the fade shows only while more options sit below, so the menu ends at its last item */
+.pop.more::after { content: ""; position: sticky; bottom: 0; display: block; height: var(--fade);
+  margin-top: calc(-1 * var(--fade)); pointer-events: none;
+  background: linear-gradient(var(--clear), var(--overlay)); }
+.pop .reset { background-color: var(--clear); color: var(--text-quiet); }
+@media (hover: hover) { .pop .reset:hover { color: var(--text); } }
+/* fieldsets default to min-content width, which would let long names push past the edge */
+.pop fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.pop legend { color: var(--text-quiet); font-size: var(--t-meta); margin-bottom: var(--s1); padding: 0; }
+.pop label { display: flex; align-items: center; gap: var(--s2); padding: var(--s1) 0; cursor: pointer;
+  min-width: 0; }
+/* drawn, not native: WebKit's dark controls ignore accent-color, and a chosen option must
+   read as on. the centre mark is the white left inside a 4px purple ring */
+.pop input { appearance: none; -webkit-appearance: none; flex: none; width: var(--icon-s);
+  height: var(--icon-s); margin: 0; border-radius: var(--s1);
+  box-shadow: inset 0 0 0 var(--focus) var(--text-quiet); }
+.pop input[type=radio] { border-radius: var(--r-pill); }
+.pop input:checked { background: var(--on-accent); box-shadow: inset 0 0 0 var(--s1) var(--accent-fill); }
