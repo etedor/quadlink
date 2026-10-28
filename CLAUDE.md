@@ -1,4 +1,4 @@
-# QuadLink
+# Quadlink
 
 Companion to QuadStream for Apple tvOS.
 

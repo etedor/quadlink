@@ -39,7 +39,7 @@ SEGMENT_FETCH_WAIT = 8.0
 
 
 class Daemon:
-    """Main daemon for QuadLink stream curation.
+    """Main daemon for Quadlink stream curation.
 
     Two loops share the event loop. Refresh (every interval) reloads the config,
     looks up every channel and caches the live pool. Recompose (on request)

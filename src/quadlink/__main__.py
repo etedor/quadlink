@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    parser = argparse.ArgumentParser(description="QuadLink stream curation daemon")
+    parser = argparse.ArgumentParser(description="Quadlink stream curation daemon")
     parser.add_argument(
         "--config",
         type=str,

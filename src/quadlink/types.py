@@ -1,4 +1,4 @@
-"""Core data types for QuadLink."""
+"""Core data types for Quadlink."""
 
 from dataclasses import dataclass, field
 from enum import StrEnum

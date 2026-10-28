@@ -1,5 +1,5 @@
 {
-  description = "QuadLink - companion to QuadStream for Apple tvOS";
+  description = "Quadlink - companion to QuadStream for Apple tvOS";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -136,7 +136,7 @@
             fi
 
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "QuadLink Development Environment"
+            echo "Quadlink Development Environment"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo "Python: $(python --version)"
             echo "Streamlink: $(python -c 'import streamlink; print(streamlink.__version__)' 2>/dev/null || echo 'not found')"

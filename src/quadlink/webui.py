@@ -24,7 +24,7 @@ from quadlink.relay.server import SlotRelay
 
 logger = structlog.get_logger()
 
-TOKEN_HEADER = "X-QuadLink-Token"
+TOKEN_HEADER = "X-Quadlink-Token"
 TOKEN_PLACEHOLDER = "__QUADLINK_TOKEN__"
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 # static pages; dev/serve.py serves the same files with live reload
@@ -110,7 +110,7 @@ def _strip_empty(obj: Any) -> Any:
 
 
 class WebUI:
-    """Web server for viewing and editing QuadLink configuration.
+    """Web server for viewing and editing Quadlink configuration.
 
     The page and the API answer only requests whose Host header names an allowed
     host (against DNS rebinding). The API also requires same-origin JSON requests
@@ -125,7 +125,7 @@ class WebUI:
         config_loader: ConfigLoader instance for reading config.
         config_path: Path to the config file being edited.
         allowed_hosts: Host names the page and API answer to.
-        token: Per-process token the page sends in the X-QuadLink-Token header.
+        token: Per-process token the page sends in the X-Quadlink-Token header.
     """
 
     def __init__(

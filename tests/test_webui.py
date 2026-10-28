@@ -111,7 +111,7 @@ class TestPage:
         assert html.count("fetch(") == 1
         assert len(re.findall(r"await api\(", html)) == 3
         api_fn = html[html.index("function api(") : html.index("function showStatus")]
-        assert "'X-QuadLink-Token': token" in api_fn
+        assert "'X-Quadlink-Token': token" in api_fn
         assert "'Content-Type'] = 'application/json'" in api_fn
 
     @pytest.mark.parametrize("path", ["/", "/config"])

@@ -7,18 +7,18 @@ let
   quadlinkPackage = pkgs.callPackage ./package.nix { };
 in {
   options.services.quadlink = {
-    enable = mkEnableOption "QuadLink (QuadStream companion)";
+    enable = mkEnableOption "Quadlink (QuadStream companion)";
 
     package = mkOption {
       type = types.package;
       default = quadlinkPackage;
-      description = "QuadLink package to use";
+      description = "Quadlink package to use";
     };
 
     user = mkOption {
       type = types.str;
       default = "quadlink";
-      description = "User account under which QuadLink runs";
+      description = "User account under which Quadlink runs";
     };
 
     group = mkOption {
@@ -109,13 +109,13 @@ in {
       group = cfg.group;
       home = "/var/lib/quadlink";
       createHome = true;
-      description = "QuadLink daemon user";
+      description = "Quadlink daemon user";
     };
 
     users.groups.${cfg.group} = { };
 
     systemd.services.quadlink = {
-      description = "QuadLink (QuadStream Companion)";
+      description = "Quadlink (QuadStream Companion)";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];

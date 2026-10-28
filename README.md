@@ -1,4 +1,4 @@
-# QuadLink
+# Quadlink
 
 Companion to [QuadStream](https://quadstream.tv) for Apple tvOS.
 
@@ -177,7 +177,7 @@ It does not write default values, `QL_*` environment overrides, or credentials r
 
 The web UI also serves an API for the dashboard and for scripts.
 Slots are numbered 0 to 3 (the relay serves them at `/streams/1` to `/streams/4`).
-The API uses the same checks as the config API: an allowed `Host`, a same-origin request, and the page token in the `X-QuadLink-Token` header.
+The API uses the same checks as the config API: an allowed `Host`, a same-origin request, and the page token in the `X-Quadlink-Token` header.
 Two routes are different, because a browser cannot send headers for them:
 
 - `/api/events` also accepts the token as the `token` query parameter.
@@ -217,7 +217,7 @@ The body of an action is a JSON object with an `action` and its parameters, and 
 Example (the token is in the `quadlink-token` meta tag of the page):
 
 ```bash
-curl -s -H "X-QuadLink-Token: $TOKEN" -H 'Content-Type: application/json' \
+curl -s -H "X-Quadlink-Token: $TOKEN" -H 'Content-Type: application/json' \
   -d '{"action": "pin", "slot": 2}' http://localhost:8081/api/actions
 ```
 

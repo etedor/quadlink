@@ -91,7 +91,7 @@ async def _proxy(request: web.Request) -> web.StreamResponse:
     body = await request.read()
     for attempt in (0, 1):
         if api:
-            headers["X-QuadLink-Token"] = await _token(request.app, fresh=attempt > 0)
+            headers["X-Quadlink-Token"] = await _token(request.app, fresh=attempt > 0)
         upstream = await session.request(
             request.method, url, headers=headers, data=body, allow_redirects=False
         )
