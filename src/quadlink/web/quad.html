@@ -35,7 +35,9 @@
   .tools { display: flex; gap: var(--s2); margin-block: var(--edge); }
   aside .tools { margin-inline: var(--edge); }
   .tools .field { flex: 1; min-width: 0; }
-  .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+  /* overlay scrollbars take no room and run up to 15px wide on hover; the rail's right edge has
+     no gutter to lend, so it keeps --s2 clear beyond --edge */
+  .rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-right: var(--s2); }
   .stage { grid-area: quad; min-width: 0; min-height: 0; container-type: size;
     display: flex; flex-direction: column; align-items: center; overflow: hidden; }
   /* the quad's cards and Explore's share one column: card boxes sit --inset short of 4% of the
