@@ -125,9 +125,11 @@
   .explore-cats .chip-row { flex-basis: 100%; display: flex; flex-wrap: wrap; justify-content: space-between;
     gap: var(--s1); min-width: 0; }
   /* the rail and Explore each scroll whole, tools and menus included. Explore fades out under the quad; it
-     reaches --inset past the column so it does not clip the focus rings at the column's edges */
+     reaches --inset past the column so it does not clip the focus rings at the column's edges, and on
+     the right across the whole gutter, so an overlay scrollbar runs in the gutter, clear of the buttons
+     and cards */
   .explore-scroll { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto;
-    margin: 0 calc(-1 * var(--inset)); padding: 0 var(--inset); }
+    margin: 0 calc(-1 * var(--gutter)) 0 calc(-1 * var(--inset)); padding: 0 var(--gutter) 0 var(--inset); }
   /* the fade shows once cards sit above, as the menus' fade shows while options sit below.
      a mask, not an overlay: iOS Safari lets scrolling text show through a sticky overlay */
   :is(.explore-scroll, .rail-scroll).under {
