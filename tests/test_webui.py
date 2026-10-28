@@ -67,8 +67,8 @@ def _load(path: Path) -> dict:
 
 
 class TestPage:
-    async def test_quad_page_plays_each_relay_slot(self, client: TestClient, webui: WebUI) -> None:
-        resp = await client.get("/quad")
+    async def test_dashboard_is_the_landing_page(self, client: TestClient, webui: WebUI) -> None:
+        resp = await client.get("/")
         assert resp.status == 200
         text = await resp.text()
         assert text.count("<video") == 4
@@ -77,8 +77,26 @@ class TestPage:
         assert TOKEN_PLACEHOLDER not in text
         assert webui.token in text
 
+    async def test_old_quad_path_redirects_home(self, client: TestClient) -> None:
+        resp = await client.get("/quad", allow_redirects=False)
+        assert resp.status == 302
+        assert resp.headers["Location"] == "/"
+
+    async def test_pages_link_each_other(self, client: TestClient) -> None:
+        dashboard = await (await client.get("/")).text()
+        editor = await (await client.get("/config")).text()
+        assert 'href="/config" aria-label="Settings"' in dashboard
+        assert 'href="/" aria-label="Quad"' in editor
+        assert 'href="/quad"' not in dashboard + editor
+
+    @pytest.mark.parametrize("path", ["/", "/config"])
+    async def test_page_sets_theme_color_per_scheme(self, client: TestClient, path: str) -> None:
+        html = await (await client.get(path)).text()
+        for scheme in ("dark", "light"):
+            assert f'media="(prefers-color-scheme: {scheme})"' in html
+
     async def test_page_embeds_token(self, client: TestClient, webui: WebUI) -> None:
-        resp = await client.get("/")
+        resp = await client.get("/config")
         assert resp.status == 200
         html = await resp.text()
         assert f'<meta name="quadlink-token" content="{webui.token}">' in html
@@ -88,7 +106,7 @@ class TestPage:
         assert resp.headers["Referrer-Policy"] == "no-referrer"
 
     async def test_every_fetch_sends_token_and_json(self, client: TestClient) -> None:
-        html = await (await client.get("/")).text()
+        html = await (await client.get("/config")).text()
         # all API calls go through api(), the one place that calls fetch
         assert html.count("fetch(") == 1
         assert len(re.findall(r"await api\(", html)) == 3
@@ -96,7 +114,7 @@ class TestPage:
         assert "'X-QuadLink-Token': token" in api_fn
         assert "'Content-Type'] = 'application/json'" in api_fn
 
-    @pytest.mark.parametrize("path", ["/", "/quad"])
+    @pytest.mark.parametrize("path", ["/", "/config"])
     async def test_page_links_base_css(self, client: TestClient, path: str) -> None:
         html = await (await client.get(path)).text()
         assert '<link rel="stylesheet" href="/web/base.css">' in html
@@ -201,7 +219,7 @@ class TestGuards:
         )
         assert config_file.read_text() == before
 
-    @pytest.mark.parametrize("path", ["/", "/quad", "/api/config"])
+    @pytest.mark.parametrize("path", ["/", "/config", "/api/config"])
     async def test_unknown_host_is_403(self, client: TestClient, webui: WebUI, path: str) -> None:
         resp = await client.get(path, headers=_auth(webui, Host="rebind.evil.example:8081"))
         assert resp.status == 403

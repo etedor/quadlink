@@ -1,7 +1,10 @@
 /* every colour is a token here, and every purple is mixed from --twitch.
-   ratios are WCAG contrast against --ground unless named */
-:root {
-  color-scheme: dark;
+   ratios are WCAG contrast against --ground unless named.
+   .media keeps the dark tokens in either scheme: it marks what sits on video or a
+   picture, where the ink must stay light */
+:root { color-scheme: light dark; }
+.media { color-scheme: dark; color: var(--text); }
+:root, .media {
   --twitch: #9147ff;
   --black: #000;
   --white: #fff;
@@ -34,6 +37,27 @@
   --keyline: color-mix(in oklab, var(--black) 50%, var(--clear));
   /* lifts a menu off the cards and chips beneath it */
   --shadow: 0 var(--s2) var(--s4) var(--keyline);
+}
+/* the same levels on a lavender-white ground: text tones and steps darken from it */
+@media (prefers-color-scheme: light) {
+  :root {
+    --text: color-mix(in oklab, var(--twitch) 30%, var(--black));       /* 18.0 */
+    /* --text-quiet keeps its mix: 8.2; 5.8 on --overlay, 4.5 on config.html's error wash */
+    --ground: color-mix(in oklab, var(--twitch) 5%, var(--white));
+    --raised: color-mix(in oklab, var(--text) 8%, var(--ground));        /* 1.21 */
+    --overlay: color-mix(in oklab, var(--text) 14%, var(--ground));      /* 1.16 vs --raised */
+    /* sRGB alpha again: 7% darkens as far as --raised's step */
+    --veil: color-mix(in oklab, var(--text) 7%, var(--clear));
+    /* white on --accent-fill stays 4.6; the fill is 4.3 on --ground, 3.6 on --raised */
+    --accent-ink: color-mix(in oklab, var(--twitch) 70%, var(--black));  /* 8.9; 4.9 on the error wash */
+    /* --live is 3.6 on --raised, too light for a ring on config.html's error wash */
+    --error: color-mix(in oklab, var(--live) 90%, var(--black));         /* 5.5; 3.05 on its wash */
+    --error-ink: color-mix(in oklab, var(--live) 80%, var(--black));     /* 7.0 */
+    /* --keyline stays black for rings on pictures; a menu's shadow takes the ink */
+    --shadow: 0 var(--s2) var(--s4) color-mix(in oklab, var(--text) 20%, var(--clear));
+  }
+}
+:root {
   --s1: 4px;
   --s2: 8px;
   --edge: 12px;
@@ -62,6 +86,8 @@
   --t-state: 120ms;
 }
 @media (prefers-reduced-motion: reduce) { :root { --t-state: 0s; } }
+/* the ground on html too, so overscroll and the safe areas match the page */
+html { background: var(--ground); }
 body { margin: 0; font: var(--t-body)/var(--lh) system-ui, sans-serif; background: var(--ground);
   color: var(--text); }
 :focus-visible { outline: var(--focus) solid var(--text); outline-offset: 2px; }

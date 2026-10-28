@@ -166,7 +166,7 @@ class WebUI:
     ) -> web.StreamResponse:
         path = request.path
         is_api = path.startswith("/api/")
-        if not (is_api or path in ("/", "/quad")):
+        if not (is_api or path in ("/", "/config")):
             return await handler(request)
 
         # the page holds the token, so it needs the host check too
@@ -224,8 +224,10 @@ class WebUI:
 
     def _setup_routes(self) -> None:
         """Set up HTTP routes."""
-        self.app.router.add_get("/", self._handle_index)
-        self.app.router.add_get("/quad", self._handle_quad)
+        self.app.router.add_get("/", self._handle_quad)
+        self.app.router.add_get("/config", self._handle_config)
+        # bookmarks from when the dashboard lived at /quad
+        self.app.router.add_get("/quad", self._handle_quad_redirect)
         self.app.router.add_get("/web/{name}", self._handle_web)
         self.app.router.add_get("/api/config", self._handle_get_config)
         self.app.router.add_post("/api/config", self._handle_post_config)
@@ -235,8 +237,8 @@ class WebUI:
         if self.slot_relay is not None:
             self.slot_relay.register_routes(self.app.router)
 
-    async def _handle_index(self, request: web.Request) -> web.Response:
-        """Serve the main config editor page."""
+    async def _handle_config(self, request: web.Request) -> web.Response:
+        """Serve the config editor page."""
         return web.Response(
             text=(WEB_DIR / "config.html").read_text().replace(TOKEN_PLACEHOLDER, self.token),
             content_type="text/html",
@@ -254,6 +256,9 @@ class WebUI:
             content_type="text/html",
             headers={"Cache-Control": "no-store", "X-Frame-Options": "DENY"},
         )
+
+    async def _handle_quad_redirect(self, request: web.Request) -> web.Response:
+        raise web.HTTPFound("/")
 
     async def _handle_web(self, request: web.Request) -> web.FileResponse:
         """Serve a stylesheet shared by the pages."""

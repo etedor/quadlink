@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- --ground in each scheme; a meta cannot read the tokens -->
+<meta name="theme-color" content="#0a021b" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f9f7ff" media="(prefers-color-scheme: light)">
 <!-- a round tile, so the Q reads on light and dark browser chrome alike; the Q's nail
      is shorter than the logo's to hold up at 16px. An icon cannot read the
      page's tokens: the tile is --twitch, the Q --white -->
@@ -233,7 +236,7 @@
 </head>
 <body>
 <header>
-  <a class="logo" href="/quad" aria-label="QuadLink">
+  <a class="logo" href="/" aria-label="QuadLink">
     <svg viewBox="0 0 143.37 24.72" aria-hidden="true">
       <g style="fill: var(--accent-fill)">
         <!-- Q: a crescent with 3-unit tips at the gap, a nail through its foot,
@@ -249,7 +252,7 @@
   </a>
   <div class="header-tools">
     <button type="button" class="btn explore-btn" aria-pressed="false" data-icon="explore">Explore</button>
-    <a class="btn icon" href="/" aria-label="Settings" data-icon="settings"></a>
+    <a class="btn icon" href="/config" aria-label="Settings" data-icon="settings"></a>
   </div>
 </header>
 <aside aria-label="Online streamers">
@@ -265,7 +268,7 @@
 <main class="stage">
 <div class="quad">
   <div class="item quad-card">
-    <div class="tile thumb">
+    <div class="tile thumb media">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
@@ -278,7 +281,7 @@
     </div>
   </div>
   <div class="item quad-card">
-    <div class="tile thumb">
+    <div class="tile thumb media">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
@@ -291,7 +294,7 @@
     </div>
   </div>
   <div class="item quad-card">
-    <div class="tile thumb">
+    <div class="tile thumb media">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
@@ -304,7 +307,7 @@
     </div>
   </div>
   <div class="item quad-card">
-    <div class="tile thumb">
+    <div class="tile thumb media">
       <video muted autoplay playsinline></video>
       <img class="cover" alt="">
       <div class="tile-marks"></div>
@@ -455,11 +458,16 @@
                  ['newest', 'Newest'], ['longest', 'Longest'], ['name', 'Name']];
   const DEFAULTS = { show: ['live'], cats: [], sort: 'priority' };
   let view = { ...DEFAULTS, q: '' };
-  try { Object.assign(view, JSON.parse(localStorage.getItem('quadlink.view.4') || '{}'), { q: '' }); } catch {}
+  // only preferences outlive the page; what is being looked at starts fresh
+  try {
+    const saved = JSON.parse(localStorage.getItem('quadlink.view.5') || '{}');
+    if (Array.isArray(saved.show)) view.show = saved.show;
+    if (SORTS.some(([k]) => k === saved.sort)) view.sort = saved.sort;
+  } catch {}
   let latest = null;
 
   function save() {
-    try { localStorage.setItem('quadlink.view.4', JSON.stringify({ show: view.show, cats: view.cats, sort: view.sort })); } catch {}
+    try { localStorage.setItem('quadlink.view.5', JSON.stringify({ show: view.show, sort: view.sort })); } catch {}
   }
 
   // every glyph on the page: Lucide 1.61.0 (ISC, lucide.dev), on its 24-unit 2px stroke grid;
@@ -572,7 +580,7 @@
   });
 
   document.querySelectorAll('.quad-card .what').forEach(b => {
-    const open = () => { setExploring(true); chooseNamed(b.textContent); };
+    const open = () => { setExploring(true); chooseNamed(b.textContent).then(() => remember()); };
     b.addEventListener('click', open);
   });
 
@@ -591,7 +599,7 @@
     if (e.key !== 'Escape') return;
     if (openMenu) closeMenu(true);
     else if (picked) pick(null);
-    else if (exploring() && phone.matches) setExploring(false);
+    else if (exploring() && phone.matches) { setExploring(false); remember(); }
   });
 
   function el(tag, className, text) {
@@ -622,7 +630,7 @@
       pic.append(img);
     }
     if (title) {
-      const peek = el('div', 'peek');
+      const peek = el('div', 'peek media');
       peek.append(el('span', '', title));
       pic.append(peek);
     }
@@ -873,7 +881,7 @@
   }
 
   function start(e) {
-    const ghost = el('div', 'ghost');
+    const ghost = el('div', 'ghost media');
     const image = sourceImage(drag.source);
     if (image) ghost.style.backgroundImage = 'url("' + image + '")';
     document.body.append(ghost);
@@ -975,15 +983,12 @@
   const ex = { category: null, lang: null, sort: 'viewers', listing: null,
     found: [], searching: false, searchTimer: null };
   try {
-    const saved = JSON.parse(localStorage.getItem('quadlink.explore.1') || '{}');
-    if (saved.category?.id) ex.category = saved.category;
+    const saved = JSON.parse(localStorage.getItem('quadlink.explore.2') || '{}');
     if (EX_SORTS.some(([k]) => k === saved.sort)) ex.sort = saved.sort;
-    if (typeof saved.q === 'string') exploreQ.value = saved.q;
-    ex.searching = saved.searching === true && Boolean(exploreQ.value.trim());
     if (typeof saved.lang === 'string') ex.lang = saved.lang;
   } catch {}
   function saveExplore() {
-    try { localStorage.setItem('quadlink.explore.1', JSON.stringify({ category: ex.category, sort: ex.sort, q: exploreQ.value, lang: ex.lang, searching: ex.searching })); } catch {}
+    try { localStorage.setItem('quadlink.explore.2', JSON.stringify({ sort: ex.sort, lang: ex.lang })); } catch {}
   }
 
   async function getJSON(path) {
@@ -998,7 +1003,6 @@
     document.body.classList.toggle('exploring', on);
     explore.hidden = !on;
     exploreBtn.setAttribute('aria-pressed', String(on));
-    try { history.replaceState(null, '', on ? '#explore' : location.pathname + location.search); } catch {}
     if (on) {
       showCats();
       showFound();
@@ -1007,7 +1011,39 @@
       pick(null);
     }
   }
-  exploreBtn.addEventListener('click', () => setExploring(!exploring()));
+  exploreBtn.addEventListener('click', () => { setExploring(!exploring()); remember(); });
+
+  // back and forward step through Explore: open or closed on the phone, the category, and
+  // the search. the address stays plain, so a fresh load always opens the default view
+  const here = () => ({ quad: 1, exploring: exploring(), category: ex.category, q: exploreQ.value,
+    searching: ex.searching });
+  const hereKey = s => JSON.stringify([s.exploring, s.category?.id ?? null, s.q, s.searching]);
+  // a pause in typing commits the search; later pauses in the same run of typing amend that
+  // entry, so back skips the run's half-typed words
+  let typingEntry = false;
+  function remember(typing = false) {
+    const now = here();
+    const amend = hereKey(now) === hereKey(history.state || {}) || (typing && typingEntry);
+    try {
+      if (amend) history.replaceState(now, ''); else history.pushState(now, '');
+    } catch {}
+    typingEntry = typing;
+  }
+  function restore(s) {
+    clearTimeout(ex.searchTimer);
+    typingEntry = false;
+    const open = !phone.matches || s.exploring;
+    if (ex.category?.id !== s.category?.id) ex.listing = null;
+    ex.category = s.category;
+    ex.searching = s.searching;
+    exploreQ.value = s.q;
+    if (open !== exploring()) { setExploring(open); return; }
+    if (!open) return;
+    showCats();
+    showFound();
+    if (!ex.listing) loadStreams();
+  }
+  addEventListener('popstate', e => { if (e.state?.quad) restore(e.state); });
 
   // Explore refreshes itself on the server's listing lifetime, but never under the hand: not
   // while the pointer or a recent touch is on it, a menu is open, or a pick or drag is under way
@@ -1028,13 +1064,12 @@
     b.className = 'chip';
     const name = document.createElement('span');
     name.textContent = c.name;
-    // a choice saved by an earlier page has no count
     b.append(name, viewerCount(c.viewers));
     b.dataset.id = c.id;
     b.dataset.name = c.name;
     b.setAttribute('aria-pressed', String(ex.category?.id === c.id));
     // the chosen category's chip clears the choice
-    b.addEventListener('click', () => (ex.category?.id === c.id ? unchoose() : choose(c)));
+    b.addEventListener('click', () => { if (ex.category?.id === c.id) unchoose(); else choose(c); remember(); });
     return b;
   }
 
@@ -1042,7 +1077,6 @@
     const kept = ex.category?.id === c.id;
     ex.category = { id: c.id, name: c.name, viewers: c.viewers };
     ex.searching = false;
-    saveExplore();
     markChips();
     if (!kept || !ex.listing) loadStreams(); else showStreams();
   }
@@ -1060,7 +1094,6 @@
     ex.category = null;
     ex.searching = false;
     exploreQ.value = '';
-    saveExplore();
     showCats();
     loadStreams();
   }
@@ -1161,7 +1194,7 @@
   exploreQ.addEventListener('input', () => {
     ex.searching = true;
     clearTimeout(ex.searchTimer);
-    ex.searchTimer = setTimeout(searched, SEARCH_AFTER);
+    ex.searchTimer = setTimeout(() => searched(true), SEARCH_AFTER);
   });
   exploreQ.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
@@ -1169,7 +1202,7 @@
     clearTimeout(ex.searchTimer);
     searched().then(chooseExact);
   });
-  clearable(exploreQ, searched);
+  clearable(exploreQ, () => searched());
 
   // Enter takes only an exact name: a channel, picked for a tile, before a category
   function chooseExact() {
@@ -1181,10 +1214,13 @@
   }
 
   // the search persists until cleared; clearing it ends a choice the top categories do not hold
-  async function searched() {
-    saveExplore();
+  async function searched(typing = false) {
+    remember(typing);
     const [found] = await Promise.all([showCats(), showFound()]);
-    if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) unchoose();
+    if (!exploreQ.value.trim() && found && ex.category && !found.some(c => c.id === ex.category.id)) {
+      unchoose();
+      remember(typing);
+    }
   }
 
   // quiet: a refresh of what is shown, so the grid keeps its place and shows no placeholders
@@ -1287,8 +1323,19 @@
 
   const card = s => item(s, { image: preview(s.thumbnail), title: streamTitle(s.title) });
 
-  if (!phone.matches || location.hash === '#explore') setExploring(true);
-  phone.addEventListener('change', () => { if (!phone.matches) setExploring(true); });
+  // a reload or a link opens the default view; back or forward from another page returns
+  // to the entry's own
+  if (performance.getEntriesByType('navigation')[0]?.type === 'back_forward' && history.state?.quad) {
+    restore(history.state);
+  } else if (!phone.matches) {
+    setExploring(true);
+  }
+  try { history.replaceState(here(), '', location.pathname); } catch {}
+  phone.addEventListener('change', () => {
+    if (phone.matches) return;
+    setExploring(true);
+    try { history.replaceState(here(), ''); } catch {}
+  });
 
   // placeholder rows until the first snapshot
   rail.replaceChildren(...Array.from({ length: ROW_SKELETONS }, () => skeleton('row')));

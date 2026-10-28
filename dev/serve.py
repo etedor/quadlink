@@ -38,12 +38,16 @@ def _mtimes(page: str) -> dict[Path, float]:
 
 
 async def _page(request: web.Request) -> web.Response:
-    name = request.match_info["name"] or "config"
+    name = request.match_info["name"] or "quad"
     path = (WEB_DIR / f"{name}.html").resolve()
     if path.parent != WEB_DIR or not path.is_file():
         raise web.HTTPNotFound()
     html = path.read_text().replace("</body>", RELOAD.replace("NAME", name) + "</body>", 1)
     return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def _old_quad(request: web.Request) -> web.Response:
+    raise web.HTTPFound("/")
 
 
 async def _asset(request: web.Request) -> web.FileResponse:
@@ -131,8 +135,9 @@ def main() -> None:
     app.cleanup_ctx.append(_session)
     app.router.add_get("/__reload", _reload)
     app.router.add_get("/web/{path:.+}", _asset)
+    app.router.add_get("/quad", _old_quad)
     app.router.add_get("/{name:[a-z0-9_-]*}", _page)
-    print(f"http://{args.host}:{args.port}/quad")
+    print(f"http://{args.host}:{args.port}/")
     print(f"pages from {WEB_DIR}, video from {args.upstream}")
     web.run_app(app, host=args.host, port=args.port, print=None)
 
