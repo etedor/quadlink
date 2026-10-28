@@ -73,7 +73,8 @@ class TestPage:
         text = await resp.text()
         assert text.count("<video") == 4
         assert "'/streams/ll/' : '/streams/'" in text
-        assert "play(video, streams + (i + 1), tile)" in text
+        assert "play(video, i + 1, tile)" in text
+        assert "video.src = '/streams/' + slot" in text
         assert TOKEN_PLACEHOLDER not in text
         assert webui.token in text
 

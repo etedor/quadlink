@@ -312,11 +312,13 @@
   const COVER_NATIVE = 7000;
   const COVER_MAX = 20000;
 
-  function play(video, src, tile) {
-    // native first: iOS Safari has HLS built in but no MSE, so hls.js can't run there
+  function play(video, slot, tile) {
+    // native first: iOS Safari has HLS built in but no MSE, so hls.js can't run there.
+    // WebKit counts a low-latency player's always-open request as page loading, so Safari's
+    // loading bar never finishes on one; Safari takes the plain streams
     if (video.canPlayType('application/vnd.apple.mpegurl') || !window.Hls || !Hls.isSupported()) {
-      video.src = src;
-      const retry = () => setTimeout(() => play(video, src, tile), 3000);
+      video.src = '/streams/' + slot;
+      const retry = () => setTimeout(() => play(video, slot, tile), 3000);
       video.addEventListener('error', retry, { once: true });
       return;
     }
@@ -331,9 +333,9 @@
       if (!data.fatal) return;
       hls.destroy();
       tile.cc = undefined;
-      setTimeout(() => play(video, src, tile), 3000);
+      setTimeout(() => play(video, slot, tile), 3000);
     });
-    hls.loadSource(src);
+    hls.loadSource(streams + slot);
     hls.attachMedia(video);
   }
 
@@ -391,7 +393,7 @@
   });
   tiles.forEach((tile, i) => {
     const video = tile.querySelector('video');
-    loaded.then(() => play(video, streams + (i + 1), tile));
+    loaded.then(() => play(video, i + 1, tile));
     // one tile has sound at a time; click the loud one again to mute it. with a row
     // picked, the click places that channel instead
     tile.querySelector('.inset-focus').addEventListener('click', () => {
