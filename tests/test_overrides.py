@@ -130,7 +130,7 @@ class TestDrop:
 
     def test_dropping_a_shown_stream_on_another_tile_swaps_them(self, scene):
         assert scene.drop("a", 3) == ("d", "b", "c", "a")
-        assert scene.overrides.holds == {}
+        assert scene.overrides.holds == {3: Hold("a")}
 
     def test_dropping_a_stream_on_its_own_tile_changes_nothing(self, scene):
         before = (scene.overrides, scene.state)
@@ -188,6 +188,22 @@ class TestUndo:
 class TestSwap:
     def test_unheld_channels_swap_slots(self, scene):
         assert scene.act(swap(scene.overrides, scene.state, 0, 3)) == ("d", "b", "c", "a")
+
+    def test_the_dragged_channel_holds_its_new_tile_hard(self, scene):
+        scene.act(swap(scene.overrides, scene.state, 0, 3))
+        assert scene.overrides.holds == {3: Hold("a")}
+        scene.live["a"] = 1
+        scene.live["e"] = 1000
+        assert scene.refresh()[3] == "a"
+
+    def test_the_moved_aside_channel_gets_no_hold(self, scene):
+        scene.act(swap(scene.overrides, scene.state, 0, 3))
+        assert 0 not in scene.overrides.holds
+
+    def test_unpin_after_a_swap_leaves_the_tile_to_selection(self, scene):
+        scene.act(swap(scene.overrides, scene.state, 0, 3))
+        scene.act(unpin(scene.overrides, scene.state, 3))
+        assert scene.overrides.holds == {}
 
     def test_a_hold_moves_with_its_holder(self, scene):
         scene.drop("f", 3)

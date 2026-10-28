@@ -605,7 +605,12 @@ C_LOCKED = {"2": {"holder": "c", "replaced": None, "soft": False, "priority": 0}
 ACTIONS: dict[str, tuple[Any, Any, dict[str, Any], list[str]]] = {
     # name: (setup action, action, saved holds, slots after)
     "place": (None, lambda d: d.place("e", 1), E_OVER_B, ["a", "e", "c", "d"]),
-    "swap": (None, lambda d: d.swap(0, 1), {}, ["b", "a", "c", "d"]),
+    "swap": (
+        None,
+        lambda d: d.swap(0, 1),
+        {"1": {"holder": "a", "replaced": None, "soft": False, "priority": 0}},
+        ["b", "a", "c", "d"],
+    ),
     "unpin": (lambda d: d.place("e", 1), lambda d: d.unpin(1), {}, ["a", "b", "c", "d"]),
     "unpin_all": (lambda d: d.place("e", 1), lambda d: d.unpin_all(), {}, ["a", "b", "c", "d"]),
     "lock": (None, lambda d: d.lock(2, False), C_LOCKED, ["a", "b", "c", "d"]),
@@ -924,7 +929,7 @@ class TestDashboardFeed:
             moved = await events.content.readuntil(b"\n\n")
             assert json.loads(moved[len(b"data: ") :])["slots"][0]["channel"] == "b"
             events.close()
-        assert daemon.overrides.holds == {}
+        assert daemon.overrides.holds == {1: Hold("a"), 3: Hold("c")}
 
 
 class TestConfigReload:

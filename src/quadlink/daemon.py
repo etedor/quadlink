@@ -440,7 +440,7 @@ class Daemon:
         )
 
     async def swap(self, a: int, b: int) -> None:
-        """Swap the channels of two slots; holds move with their holders."""
+        """Move a's channel onto b and b's onto a; a's channel holds b hard."""
         # with nothing to recompose from, the moved quad_state would never reach the relay
         if self._config is None or not self._pool:
             raise OverrideError("no live channels yet: wait for a refresh that finds one")

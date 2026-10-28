@@ -76,7 +76,12 @@ def place(
 
 
 def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> Result:
-    """Swap the channels of two slots; a hold moves with its holder, list and all."""
+    """Move a's channel onto b and b's onto a; a hold moves with its holder, list and all.
+
+    a's channel is the one dragged: unheld, it holds b hard, as a drop does. It
+    replaced nothing, since b's channel stays on screen, so an unpin leaves b to
+    selection. b's channel moves without a new hold.
+    """
     _check_slot(a)
     _check_slot(b)
     if a == b:
@@ -84,6 +89,8 @@ def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> Result:
     holds = {s: h for s, h in overrides.holds.items() if s not in (a, b)}
     if a in overrides.holds:
         holds[b] = overrides.holds[a]
+    elif state.channels[a]:
+        holds[b] = Hold(state.channels[a])
     if b in overrides.holds:
         holds[a] = overrides.holds[b]
     channels = list(state.channels)
@@ -91,7 +98,8 @@ def swap(overrides: Overrides, state: QuadState, a: int, b: int) -> Result:
     channels[a], channels[b] = channels[b], channels[a]
     urls[a], urls[b] = urls[b], urls[a]
     new_state = replace(state, quad=Quad(urls), channels=tuple(channels))
-    return _build(overrides, holds), new_state
+    fresh = () if a in overrides.holds else {state.channels[a]}
+    return _build(overrides, holds, fresh=fresh), new_state
 
 
 def lock(overrides: Overrides, state: QuadState, slot: int, soft: bool) -> Result:
