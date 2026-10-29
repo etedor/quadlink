@@ -438,6 +438,9 @@ class _Slot:
             self.queue.clear()
         if not new:
             return
+        # the plain relay polls a slot only while a plain player asks, and the TV plays
+        # LL, so the daemon's proof of live video comes from here
+        self.ll.relay.note_arrival(self.slot, identity)
         if self._start_pending:
             self._start_pending = False
             start = new[start_back(new, prefetch)]

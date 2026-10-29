@@ -138,6 +138,10 @@ class SlotRelay:
         """Current time on the clock that video_arrived_since compares against."""
         return self._time()
 
+    def note_arrival(self, slot: int, identity: str) -> None:
+        """Record new segments from this channel reaching the slot now."""
+        self._arrivals[slot] = (identity, self._time())
+
     def video_arrived_since(self, slot: int, identity: str, since: float) -> bool:
         """Whether new segments from this channel reached the slot after `since`.
 

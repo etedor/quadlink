@@ -385,6 +385,10 @@ class Source:
 class FakeRelay:
     def __init__(self) -> None:
         self.source: Source | None = None
+        self.arrivals: list[tuple[int, str]] = []
+
+    def note_arrival(self, slot: int, identity: str) -> None:
+        self.arrivals.append((slot, identity))
 
     async def current_source(self, slot: int) -> tuple[str, str] | None:
         if self.source is None:
@@ -598,6 +602,13 @@ async def test_a_channel_change_splices_at_once(setup):
     text = await _playlist(client)
     assert new[0].parts[0].independent
     assert "#EXT-X-DISCONTINUITY" in text
+
+
+async def test_an_ll_slot_reports_its_source_arrivals(setup):
+    relay, add, client, _ = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    assert (0, "chan") in relay.arrivals
 
 
 async def test_a_new_slot_counts_discontinuities_from_zero(setup):
