@@ -45,8 +45,16 @@ function option(type, name, value, text, checked, onChange) {
 // a checkbox group's value is a list, so order does not count
 const same = (a, b) => Array.isArray(a) ? [...a].sort().join('\n') === [...b].sort().join('\n') : a === b;
 
+// a scroll fade grows over its first --fade of travel, so it never pops in or out
+function fadeDepth(el, travel) {
+  const span = parseFloat(getComputedStyle(el).getPropertyValue('--fade')) || 40;
+  return Math.min(Math.max(travel, 0) / span, 1);
+}
+
 function edge(pop) {
-  pop.classList.toggle('more', pop.scrollTop + pop.clientHeight < pop.scrollHeight - 1);
+  const rest = pop.scrollHeight - pop.clientHeight - pop.scrollTop;
+  pop.style.setProperty('--more', fadeDepth(pop, rest));
+  pop.classList.toggle('more', rest > 1);
 }
 
 let openMenu = null;
