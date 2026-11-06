@@ -112,6 +112,11 @@ STARTUP_HOLD = 2.0 + PART_TARGET
 EMPTY_REPORT = 10.0
 # source segments a slot remembers by URI, to skip one listed again (about 2 minutes)
 TAKEN_MEMORY = 64
+# filler stalls of one channel within BACKOFF_WINDOW seconds that turn its prefetch
+# off: a broadcast whose early segments come late stalls the edge again and again,
+# and its finished segments play smooth a few seconds further back
+BACKOFF_STALLS = 2
+BACKOFF_WINDOW = 300.0
 
 
 def next_release(now: float, prev: "_Part | None", rate: float = 1.0) -> float:
@@ -126,6 +131,12 @@ def next_release(now: float, prev: "_Part | None", rate: float = 1.0) -> float:
     if prev is None:
         return now
     return max(now, prev.release + min(prev.duration, PART_TARGET) / rate)
+
+
+def without_prefetch(text: str) -> str:
+    """The source playlist without Twitch's prefetch segments."""
+    lines = [line for line in text.splitlines() if not line.startswith("#EXT-X-TWITCH-PREFETCH:")]
+    return "\n".join(lines) + "\n"
 
 
 def start_back(segs: list[Segment], prefetch: set[str]) -> int:
@@ -372,6 +383,15 @@ class _Slot:
         self._low_since: float | None = None
         # a new channel waits for a listing with segments to pick its start
         self._start_pending = False
+        # the channel whose prefetch is off, and loop times of its recent stalls
+        self.no_prefetch: str | None = None
+        self._stalls: deque[float] = deque()
+        # the next listing restarts back in finished segments, prefetch just turned off
+        self._backing_off = False
+        # URIs (without query) ingested as prefetch before the back-off and not yet
+        # listed finished: ingest holds them as known, so their finished listing is
+        # not new to it, and they are taken from the source state once listed
+        self._owed: set[str] = set()
         # the current player's start (loop time), the seconds of startup lead it
         # has left, and whether it has made a blocking reload yet
         self._player_at = -math.inf
@@ -420,11 +440,41 @@ class _Slot:
         await self.ll.retire(self)
 
     def _take(self, identity: str, text: str) -> None:
-        text, prefetch = with_prefetch(text)
         switched = identity != self.source.last_identity
+        if switched:
+            self.no_prefetch = None
+            self._stalls.clear()
+            self._backing_off = False
+            self._owed.clear()
+        if identity == self.no_prefetch:
+            text, prefetch = without_prefetch(text), set[str]()
+        else:
+            text, prefetch = with_prefetch(text)
         before_seq = self.source.next_seq
         ingest(self.source, text, identity)
         new = [s for s in self.source.segments if s.seq >= before_seq]
+        backing_off = self._backing_off and not switched
+        listed: set[str] = set()
+        if backing_off or self._owed:
+            listed = {uri.split("?", 1)[0] for _, uri, _, _, _ in parse_media_playlist(text)[2]}
+        if self._owed and not backing_off:
+            due = [s for s in self.source.segments if s.uri.split("?", 1)[0] in self._owed & listed]
+            self._owed -= listed
+            new = sorted({id(s): s for s in [*due, *new]}.values(), key=lambda s: s.seq)
+        if backing_off:
+            # the prefetch segments already taken are ingested, so a listing of
+            # finished ones holds nothing new: start again from those it lists now
+            self._backing_off = False
+            new = [s for s in self.source.segments if s.uri.split("?", 1)[0] in listed]
+            newest = new[-1].seq if new else -1
+            self._owed = {s.uri.split("?", 1)[0] for s in self.source.segments if s.seq > newest}
+            self.gen += 1
+            for queued in [*self.queue, *([self.current] if self.current else [])]:
+                if queued.fetch is not None:
+                    queued.fetch.cancel()
+            self.queue.clear()
+            self._taken.clear()
+            self._start_pending = True
         if switched:
             # before any return: ingest has taken the identity, and a first listing
             # of only ads has no segments
@@ -459,7 +509,12 @@ class _Slot:
                 continue
             self._taken.append(path)
             self.queue.append(_Queued(seg, identity, self.gen))
-        if not switched and not self._restarting and self._starved():
+        if backing_off and self.queue:
+            self.queue[0].fresh = True
+            self._restarting = True
+            self._restarted = asyncio.get_running_loop().time()
+            self._low_since = None
+        elif not switched and not self._restarting and self._starved():
             self._restart_back(prefetch)
         self._report_repeats()
         self._fetch_ahead()
@@ -505,6 +560,33 @@ class _Slot:
         self.queue = deque(kept)
         self._restarting = True
         logger.info("relay ll restart back", slot=self.slot, skipped=start, segments=len(kept))
+
+    def _note_stall(self, now: float) -> None:
+        """Count a filler stall against the channel playing; enough soon turn its prefetch off.
+
+        Only a stall of the channel the source lists counts, and not while the
+        source fails or a new channel starts: those are no fault of prefetch.
+        """
+        channel = self.source.last_identity
+        if (
+            channel is None
+            or channel != self.played
+            or channel == self.no_prefetch
+            or self._failing
+            or self._start_pending
+        ):
+            return
+        self._stalls.append(now)
+        while now - self._stalls[0] > BACKOFF_WINDOW:
+            self._stalls.popleft()
+        if len(self._stalls) < BACKOFF_STALLS:
+            return
+        logger.info(
+            "relay ll prefetch off", slot=self.slot, channel=channel, stalls=len(self._stalls)
+        )
+        self.no_prefetch = channel
+        self._stalls.clear()
+        self._backing_off = True
 
     def _report_repeats(self) -> None:
         now = time.monotonic()
@@ -883,6 +965,7 @@ class _Slot:
                     slot=self.slot,
                     stalled=round(now - due, 2),
                 )
+                self._note_stall(now)
             seg = self._open(now, filler=True)
             # paced like video, so returning video drops what is not out yet
             release = now

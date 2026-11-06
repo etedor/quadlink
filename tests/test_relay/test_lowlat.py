@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 
 import pytest
+import structlog.testing
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -26,6 +27,7 @@ from quadlink.relay.lowlat import (
     next_release,
     start_back,
     with_prefetch,
+    without_prefetch,
 )
 from quadlink.relay.parts import Part
 from quadlink.relay.playlist import Segment
@@ -69,6 +71,15 @@ class TestWithPrefetch:
             "#EXTINF:2.000,live\nhttps://cdn/b.ts", "#EXTINF:2.000,Amazon\nhttps://cdn/b.ts"
         )
         assert with_prefetch(ad) == (ad, set())
+
+    def test_without_prefetch_drops_only_the_prefetch_lines(self):
+        text = without_prefetch(SOURCE)
+        assert "TWITCH-PREFETCH" not in text
+        assert [line for line in text.splitlines() if not line.startswith("#")] == [
+            "https://cdn/a.ts",
+            "https://cdn/b.ts",
+        ]
+        assert "#EXT-X-MEDIA-SEQUENCE:100" in text
 
     def test_a_playlist_without_prefetch_is_unchanged(self):
         plain = "\n".join(x for x in SOURCE.splitlines() if "PREFETCH" not in x) + "\n"
@@ -350,6 +361,9 @@ class Source:
         # bytes go out at once
         self.stopped_at: float | None = None
         self.base = ""
+        # seconds late the bytes of these segments come when asked for as prefetch,
+        # as a broadcast with a slow low-latency edge sends them
+        self.prefetch_lag: dict[int, float] = {}
 
     def encoding(self) -> int:
         """Index of the segment being encoded now."""
@@ -368,13 +382,14 @@ class Source:
     async def serve(self, request: web.Request) -> web.StreamResponse:
         i = int(request.match_info["i"])
         data = self.segs[i]
+        lag = self.prefetch_lag.get(i, 0.0) if i >= self.encoding() else 0.0
         resp = web.StreamResponse()
         await resp.prepare(request)
         chunks = 20
         size = -(-len(data) // chunks)
         for k in range(chunks):
             # segment i encodes from 2(i-1)s to 2i s after start; i=0 is old
-            due = self.start + 2 * (i - 1) + 2 * (k + 1) / chunks
+            due = self.start + 2 * (i - 1) + 2 * (k + 1) / chunks + lag
             while (self.stopped_at is not None and i >= self.encoding()) or time.monotonic() < due:
                 await asyncio.sleep(0.02)
             await resp.write(data[k * size : (k + 1) * size])
@@ -761,3 +776,165 @@ async def test_a_cold_first_playlist_closes_a_segment(setup):
     text = await _playlist(client)
     assert re.search(r"^#EXTINF:", text, re.M), text
     assert sum(d for d, _, _ in _parts(text)) >= STARTUP_HOLD - PART_TARGET
+
+
+def _stalled_slot(ll: LowLatency, channel: str = "chan") -> lowlat._Slot:
+    """A slot playing channel from prefetch: a, then b and c being encoded."""
+    state = lowlat._Slot(ll, 0)
+    state._take(channel, _source_listing(["a"], ["b", "c"]))
+    state.played = channel
+    return state
+
+
+class TestPrefetchBackOff:
+    async def test_one_stall_keeps_prefetch(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        assert state.no_prefetch is None and not state._backing_off
+        await state.stop()
+
+    async def test_stalls_close_together_turn_prefetch_off(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        with structlog.testing.capture_logs() as logs:
+            state._note_stall(100.0)
+            state._note_stall(100.0 + lowlat.BACKOFF_WINDOW - 1)
+        assert state.no_prefetch == "chan" and state._backing_off
+        assert [e for e in logs if e["event"] == "relay ll prefetch off"] == [
+            {
+                "event": "relay ll prefetch off",
+                "slot": 0,
+                "channel": "chan",
+                "stalls": 2,
+                "log_level": "info",
+            }
+        ]
+        await state.stop()
+
+    async def test_stalls_far_apart_keep_prefetch(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        state._note_stall(100.0 + lowlat.BACKOFF_WINDOW + 1)
+        assert state.no_prefetch is None
+        await state.stop()
+
+    @pytest.mark.parametrize("cause", ["failing", "starting", "other channel playing"])
+    async def test_stalls_not_of_prefetch_do_not_count(self, setup, cause):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        if cause == "failing":
+            state._failing = True
+        elif cause == "starting":
+            state._start_pending = True
+        else:
+            state.played = "before"
+        state._note_stall(100.0)
+        state._note_stall(101.0)
+        assert state.no_prefetch is None
+        await state.stop()
+
+    async def test_backing_off_restarts_a_cushion_back_in_finished_segments(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        assert _queued(state) == ["a.ts", "b.ts", "c.ts"]
+        state.queue.clear()
+        gen = state.gen
+        state._note_stall(100.0)
+        state._note_stall(101.0)
+        # b is finished now; c, d and e are prefetch, and c was taken as prefetch
+        state._take("chan", _source_listing(["a", "b"], ["c", "d"]))
+        # back from the newest finished one, never a prefetch one
+        assert _queued(state) == ["a.ts", "b.ts"]
+        assert state.gen > gen and state.queue[0].fresh
+        assert all(q.gen == state.gen for q in state.queue)
+        assert not state._backing_off and state._restarting
+        await state.stop()
+
+    async def test_a_backed_off_channel_takes_only_finished_segments(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        state._note_stall(101.0)
+        state._take("chan", _source_listing(["a", "b"], ["c", "d"]))
+        # c was taken as prefetch before the back-off: owed, it is fed once finished
+        state._take("chan", _source_listing(["a", "b", "c"], ["d", "e"]))
+        assert _queued(state) == ["a.ts", "b.ts", "c.ts"]
+        assert not state.queue[-1].fresh
+        state._take("chan", _source_listing(["a", "b", "c", "d"], ["e", "f"]))
+        state._take("chan", _source_listing(["a", "b", "c", "d"], ["e", "f"]))
+        assert _queued(state) == ["a.ts", "b.ts", "c.ts", "d.ts"]
+        assert not state._owed
+        await state.stop()
+
+    async def test_a_backed_off_channel_stalls_without_counting(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        state._note_stall(101.0)
+        state._take("chan", _source_listing(["a", "b"], ["c", "d"]))
+        state._note_stall(102.0)
+        state._note_stall(103.0)
+        assert not state._backing_off and not state._stalls
+        await state.stop()
+
+    async def test_a_channel_change_turns_prefetch_back_on(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        state._note_stall(101.0)
+        state._take("two", _source_listing(["p"], ["q", "r"]))
+        assert state.no_prefetch is None and not state._backing_off
+        assert _queued(state) == ["p.ts", "q.ts", "r.ts"]
+        # the first channel back later starts with prefetch again
+        state.played = "two"
+        state._take("chan", _source_listing(["x"], ["y", "z"]))
+        assert _queued(state) == ["x.ts", "y.ts", "z.ts"]
+        await state.stop()
+
+    async def test_a_stall_count_ends_with_its_channel(self, setup):
+        _, _, _, ll = setup
+        state = _stalled_slot(ll)
+        state._note_stall(100.0)
+        state._take("two", _source_listing(["p"], ["q", "r"]))
+        state.played = "two"
+        state._note_stall(101.0)
+        assert state.no_prefetch is None
+        await state.stop()
+
+
+async def test_a_channel_with_a_late_prefetch_edge_backs_off_and_plays_on(setup):
+    relay, add, client, ll = setup
+    source = relay.source = add("chan", count=20)
+    # every other segment comes 4s late while it is prefetch, past what the cushion
+    # covers: the edge stalls again and again; finished, the same bytes come at once
+    source.prefetch_lag = dict.fromkeys(range(1, 20, 2), 4.0)
+    await _playlist(client)
+    state = ll.slot(1)
+    started = time.monotonic()
+    while state.no_prefetch is None and time.monotonic() - started < 25:
+        await _playlist(client)
+        await asyncio.sleep(0.5)
+    assert state.no_prefetch == "chan"
+    # once settled behind the finished edge, no more filler
+    await asyncio.sleep(4)
+    before = sum(1 for seg in state.segs if seg.filler)
+    newest = max(seg.seq for seg in state.segs)
+    for _ in range(14):
+        await _playlist(client)
+        await asyncio.sleep(0.5)
+    assert not [seg for seg in state.segs if seg.filler and seg.seq > newest], before
+    assert state.no_prefetch == "chan"
+
+
+async def test_a_channel_with_a_steady_prefetch_edge_keeps_prefetch(setup):
+    relay, add, client, ll = setup
+    relay.source = add("chan", count=12)
+    await _playlist(client)
+    state = ll.slot(1)
+    for _ in range(24):
+        await _playlist(client)
+        await asyncio.sleep(0.5)
+    assert state.no_prefetch is None
+    assert not any(seg.filler for seg in state.segs)
