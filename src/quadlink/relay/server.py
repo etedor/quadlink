@@ -22,6 +22,7 @@ from quadlink.relay.playlist import (
     FILLER_DURATION,
     Segment,
     SlotState,
+    absolutize,
     add_filler,
     first_map_uri,
     has_live_segment,
@@ -167,7 +168,7 @@ class SlotRelay:
         if hit is not None:
             return hit[1]
         fetch = self._fetch or self._default_fetch
-        text = await fetch(url)
+        text = absolutize(await fetch(url), url)
         self._cache[url] = (now, text)
         return text
 

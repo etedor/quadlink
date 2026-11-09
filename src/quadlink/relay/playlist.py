@@ -11,6 +11,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urljoin
 
 # a parsed source segment: (duration, uri, program_date_time, source_discontinuity, ext_map)
 # ext_map is the raw #EXT-X-MAP line in effect (fMP4 init segment), or None for TS
@@ -39,7 +40,7 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
         if not line:
             continue
         if line.startswith("#EXT-X-TARGETDURATION:"):
-            target_duration = int(line.split(":", 1)[1])
+            target_duration = math.ceil(float(line.split(":", 1)[1]))
         elif line.startswith("#EXT-X-MEDIA-SEQUENCE:"):
             media_sequence = int(line.split(":", 1)[1])
         elif line == "#EXT-X-DISCONTINUITY":
@@ -61,6 +62,29 @@ def parse_media_playlist(text: str) -> tuple[int, int, list[ParsedSegment]]:
 
 
 _MAP_URI_RE = re.compile(r'#EXT-X-MAP:[^\n]*URI="([^"]+)"')
+_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
+_PREFETCH = "#EXT-X-TWITCH-PREFETCH:"
+
+
+def absolutize(text: str, base: str) -> str:
+    """The playlist with every URI resolved against its own URL (RFC 8216 4.1).
+
+    Twitch lists absolute URIs; other servers often list bare segment names, which
+    every fetch path here would otherwise request from the wrong place.
+    """
+    out = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            raw = urljoin(base, line)
+        elif line.startswith(_PREFETCH):
+            raw = _PREFETCH + urljoin(base, line[len(_PREFETCH) :])
+        elif 'URI="' in line:
+            raw = _URI_ATTR_RE.sub(lambda m: f'URI="{urljoin(base, m.group(1))}"', raw)
+        out.append(raw)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
 _ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 
 # served in place of source video while a slot has none; see add_filler

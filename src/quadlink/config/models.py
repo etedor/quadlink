@@ -125,6 +125,25 @@ class StreamGroup(BaseModel):
     rulesets: list[str] = Field(default_factory=list)
 
 
+class Source(BaseModel):
+    """A live HLS stream that is not on Twitch.
+
+    Attributes:
+        name: The source's key in priorities, the dashboard and holds. A name listed
+            here never refers to a Twitch channel.
+        url: Its media playlist.
+        title: Shown as the stream title.
+        category: Shown as its category, and matched by rulesets.
+        slot: The tile (1-4) it holds whenever it is live, or None to rotate normally.
+    """
+
+    name: str = Field(pattern=r"^[a-z0-9_]{2,25}$")
+    url: str = Field(pattern=r"^https?://")
+    title: str = ""
+    category: str = ""
+    slot: int | None = Field(default=None, ge=1, le=4)
+
+
 class Webhook(BaseModel):
     """Webhook notification configuration.
 
@@ -157,6 +176,7 @@ class Config(BaseSettings):
         relay_segments: Serve segments from the relay and convert audio to 48 kHz.
         log_level: Minimum log level, unless a CLI --log-level flag overrides it.
         twitch_api: Twitch application for Helix viewer counts; None uses Twitch GQL.
+        sources: Live HLS streams that are not on Twitch, listed in priorities by name.
     """
 
     model_config = SettingsConfigDict(
@@ -197,6 +217,8 @@ class Config(BaseSettings):
 
     twitch_api: TwitchAPI | None = None
 
+    sources: list[Source] = Field(default_factory=list)
+
     @field_validator("mode", "log_level", mode="before")
     @classmethod
     def _normalize_case(cls, v: object) -> object:
@@ -230,6 +252,25 @@ class Config(BaseSettings):
             self.stability_bonus = self.diversity_bonus + 1
 
         return self
+
+    @model_validator(mode="after")
+    def validate_sources(self) -> "Config":
+        """Each source has its own name and, if fixed, its own slot.
+
+        Raises:
+            ValueError: Two sources share a name or a slot.
+        """
+        names = [source.name for source in self.sources]
+        if len(names) != len(set(names)):
+            raise ValueError(f"source names must differ: {names}")
+        slots = [source.slot for source in self.sources if source.slot is not None]
+        if len(slots) != len(set(slots)):
+            raise ValueError(f"two sources are fixed to one slot: {slots}")
+        return self
+
+    def source(self, name: str) -> Source | None:
+        """The source with this name, or None for a Twitch channel."""
+        return next((source for source in self.sources if source.name == name), None)
 
     def get_ruleset(self, name: str) -> Ruleset | None:
         """Get a ruleset by name.

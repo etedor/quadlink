@@ -149,6 +149,7 @@ def _compose(
         s.stream.channel: s for s in reversed(pool) if _eligible(s.stream.channel, overrides)
     }
     pinned = _reclaimed(overrides, candidate_map)
+    pinned.update(_fixed(config, overrides, candidate_map, pinned))
     soft = {
         h.holder: (slot, h)
         for slot, h in overrides.holds.items()
@@ -205,6 +206,30 @@ def _reclaimed(
         channel: replace(candidate_map[channel], position=slot)
         for channel, slot in overrides.hard_pins.items()
         if channel in candidate_map
+    }
+
+
+def _fixed(
+    config: Config,
+    overrides: Overrides,
+    candidate_map: dict[str, PrioritizedStream],
+    pinned: dict[str, PrioritizedStream],
+) -> dict[str, PrioritizedStream]:
+    """Live sources the config fixes to a slot, each positioned there.
+
+    A fixed source takes its slot back whenever it is in the pool, as a hard pin
+    does. A manual hold on the slot overrides it until that hold ends; meanwhile the
+    source competes like any channel.
+    """
+    taken = {s.position for s in pinned.values()}
+    return {
+        source.name: replace(candidate_map[source.name], position=source.slot - 1)
+        for source in config.sources
+        if source.slot is not None
+        and source.name in candidate_map
+        and source.name not in pinned
+        and source.slot - 1 not in overrides.holds
+        and source.slot - 1 not in taken
     }
 
 

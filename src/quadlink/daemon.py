@@ -366,7 +366,9 @@ class Daemon:
         # then has its result arrive late rather than twice
         if self._viewers_task is not None and not self._viewers_task.done():
             return
-        channels = sorted(configured_channels(config) | self.overrides.extras)
+        # a source's name may also be some Twitch user's login
+        sources = {source.name for source in config.sources}
+        channels = sorted((configured_channels(config) | self.overrides.extras) - sources)
         self._viewers_task = asyncio.create_task(self._viewer_counts(channels))
 
     async def _viewer_counts(self, channels: list[str]) -> None:
@@ -430,6 +432,7 @@ class Daemon:
         invalid input, and otherwise saves the overrides and requests one recompose.
         """
         channel = channel.strip().lower()
+        self._check_fixed(channel, slot)
         configured = self._configured()
         if channel not in configured and channel not in self.overrides.extras:
             await self._look_up_outside(channel)
@@ -444,7 +447,19 @@ class Daemon:
         # with nothing to recompose from, the moved quad_state would never reach the relay
         if self._config is None or not self._pool:
             raise OverrideError("no live channels yet: wait for a refresh that finds one")
+        if a in range(4):
+            self._check_fixed(self.quad_state.channels[a], b)
         self._apply(*actions.swap(self.overrides, self.quad_state, a, b))
+
+    def _check_fixed(self, channel: str, slot: int) -> None:
+        """Refuse to move a source off the slot the config fixes it to.
+
+        Its slot can be overridden by hand, but the source itself goes nowhere else:
+        a hold elsewhere would show it twice once its fixed slot is free again.
+        """
+        source = self._config.source(channel) if self._config is not None else None
+        if source is not None and source.slot is not None and source.slot - 1 != slot:
+            raise OverrideError(f"{channel} stays on tile {source.slot}: the config fixes it there")
 
     async def unpin(self, slot: int) -> None:
         """End the tile's hold; the channel it replaced gets the tile back."""

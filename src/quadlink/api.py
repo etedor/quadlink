@@ -14,11 +14,11 @@ from urllib.parse import quote
 import structlog
 from aiohttp import web
 
-from quadlink.dashboard import Snapshot
+from quadlink.dashboard import ChannelView, Snapshot
 from quadlink.explore import Category, Directory, DirectoryError, Sort, Stream
 from quadlink.overrides import OverrideError
 from quadlink.relay.segments import SegmentProxy
-from quadlink.types import thumbnail_url
+from quadlink.types import ChannelStatus, thumbnail_url
 
 logger = structlog.get_logger()
 
@@ -135,7 +135,7 @@ def snapshot_json(snap: Snapshot) -> dict[str, Any]:
             "priorities": c.status.priorities,
             "priority": c.status.priority,
             "reason": c.status.reason,
-            "thumbnail": c.status.thumbnail_url,
+            "thumbnail": _thumbnail(c),
         }
         for c in snap.channels
     ]
@@ -340,9 +340,11 @@ class DashboardAPI:
         if not channel:
             return web.json_response({"error": f"slot {slot} is empty"}, status=404)
         requested = request.query.get("c", "")
+        # a source's name may also be some Twitch user's login: never their preview
+        sources = {c.channel for c in self.dashboard.snapshot().channels if _is_source(c.status)}
         if requested != channel:
             # a URL from before a swap: never the picture of the channel there now
-            if _LOGIN.fullmatch(requested):
+            if _LOGIN.fullmatch(requested) and requested not in sources:
                 return _redirect(thumbnail_url(requested))
             return web.json_response(
                 {"error": f"the c parameter must name the channel in slot {slot}"}, status=404
@@ -352,7 +354,7 @@ class DashboardAPI:
             return web.Response(
                 body=jpeg, content_type="image/jpeg", headers={"Cache-Control": "max-age=5"}
             )
-        if not _LOGIN.fullmatch(channel):
+        if not _LOGIN.fullmatch(channel) or channel in sources:
             return web.json_response({"error": f"slot {slot} has no picture"}, status=404)
         return _redirect(thumbnail_url(channel))
 
@@ -444,6 +446,19 @@ def _stream_json(s: Stream) -> dict[str, Any]:
         "tags": list(s.tags),
         "thumbnail": s.thumbnail,
     }
+
+
+def _is_source(status: ChannelStatus) -> bool:
+    return status.stream is not None and status.stream.source
+
+
+def _thumbnail(channel: ChannelView) -> str | None:
+    """A channel's picture: Twitch's preview, or for an on-screen source its relay still."""
+    if not _is_source(channel.status):
+        return channel.status.thumbnail_url
+    if channel.slot is None:
+        return None
+    return f"/api/slots/{channel.slot}/still.jpg?c={quote(channel.channel)}"
 
 
 def _redirect(location: str) -> web.Response:

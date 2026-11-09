@@ -8,6 +8,7 @@ import structlog
 from quadlink.config.models import Config
 from quadlink.stream.fetcher import LookupFailed, StreamlinkFetcher
 from quadlink.stream.filters import StreamFilter
+from quadlink.stream.source import SourceChecker
 from quadlink.types import (
     ChannelState,
     ChannelStatus,
@@ -51,6 +52,7 @@ class StreamProcessor:
             timeout=lookup_timeout,
         )
         self.filter = StreamFilter(config)
+        self.sources = SourceChecker()
         self.semaphore = asyncio.Semaphore(max_concurrent)
         # channel key -> this run's one lookup, shared by every configured entry of
         # the channel (one channel may sit in several groups with different rulesets)
@@ -283,5 +285,8 @@ class StreamProcessor:
         return await asyncio.shield(self._start_lookup(url))
 
     async def _fetch(self, url: str) -> Stream | None:
+        source = self.config.source(channel_login(url))
+        if source is not None:
+            return await self.sources.check(source)
         async with self.semaphore:
             return await self.fetcher.fetch_stream_info(url)

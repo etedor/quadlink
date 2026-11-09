@@ -96,6 +96,7 @@ class Stream:
         has_video: False when the only rendition carries audio alone.
         channel: Lowercase Twitch login, the channel's identity everywhere;
             derived from url when not given.
+        source: A configured non-Twitch source; its channel is the source's name.
     """
 
     url: str
@@ -103,6 +104,7 @@ class Stream:
     master_url: str | None = None
     has_video: bool = True
     channel: str = ""
+    source: bool = False
 
     def __post_init__(self) -> None:
         if not self.channel:
@@ -160,7 +162,7 @@ class ChannelStatus:
     @property
     def thumbnail_url(self) -> str | None:
         """Twitch's live preview image, for a live channel."""
-        if self.state is not ChannelState.LIVE or self.stream is None:
+        if self.state is not ChannelState.LIVE or self.stream is None or self.stream.source:
             return None
         return thumbnail_url(self.stream.channel)
 

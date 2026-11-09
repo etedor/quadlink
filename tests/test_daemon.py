@@ -1518,3 +1518,70 @@ class TestSoftHolds:
         assert first.overrides.holds == {1: Hold("e", "b", soft=True, priority=100)}
         second = make_daemon()
         assert second.overrides == first.overrides
+
+
+SKY_URL = "http://cam.lan:8095/live.m3u8"
+
+
+class TestSources:
+    """A configured HLS source fixed to slot 2, at the lowest priority."""
+
+    @pytest.fixture
+    def sky(self, config_path: Path, monkeypatch: pytest.MonkeyPatch) -> set[str]:
+        write_config(
+            config_path,
+            mode="local",
+            priorities={100: [{"urls": list(CONFIGURED)}], 1: [{"urls": ["sky"]}]},
+            sources=[{"name": "sky", "url": SKY_URL, "category": "Map", "slot": 2}],
+        )
+        live = {"sky"}
+
+        async def check(_: Any, source: Any) -> Stream | None:
+            if source.name not in live:
+                return None
+            meta = Metadata(source.name, source.category, source.title)
+            return Stream(SKY_URL, meta, master_url=SKY_URL, channel=source.name, source=True)
+
+        monkeypatch.setattr("quadlink.stream.source.SourceChecker.check", check)
+        return live
+
+    async def test_a_fixed_source_holds_its_slot_through_an_outage(self, make_daemon, sky):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            assert store_channels(daemon)[1] == "sky"
+            assert daemon.slot_store.get(1).url == SKY_URL
+            sky.clear()
+            await loops.refresh()
+            assert "sky" not in store_channels(daemon) and all(store_channels(daemon))
+            sky.add("sky")
+            await loops.refresh()
+        assert store_channels(daemon)[1] == "sky"
+
+    async def test_a_manual_drop_overrides_the_slot_until_unpinned(self, make_daemon, sky, twitch):
+        twitch.go_live("e")
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            await daemon.place("e", 1)
+            await settle()
+            assert store_channels(daemon)[1] == "e"
+            await daemon.unpin(1)
+            await settle()
+        assert store_channels(daemon)[1] == "sky"
+
+    async def test_the_source_itself_does_not_move(self, make_daemon, sky):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+            with pytest.raises(OverrideError, match="sky stays on tile 2"):
+                await daemon.place("sky", 0)
+            with pytest.raises(OverrideError, match="sky stays on tile 2"):
+                await daemon.swap(1, 3)
+        assert store_channels(daemon)[1] == "sky"
+
+    async def test_viewer_counts_never_ask_twitch_for_a_source(self, make_daemon, sky, stats):
+        daemon = make_daemon()
+        async with stepped(daemon) as loops:
+            await loops.refresh()
+        assert stats.calls and all("sky" not in call for call in stats.calls)
