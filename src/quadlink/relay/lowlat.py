@@ -500,6 +500,8 @@ class _Slot:
         self._stalls: deque[float] = deque()
         # the next listing restarts back in finished segments, prefetch just turned off
         self._backing_off = False
+        # the last part's release waited on the release line, not on catch-up
+        self._line_bound = False
         # the cushion this slot keeps, its measured lateness, and when it last moved
         self.cushion_target = CUSHION
         self.lateness = Lateness()
@@ -986,6 +988,8 @@ class _Slot:
                 self._catching = False
             release = next_release(now, prev, CATCH_UP if self._catching else 1.0)
             start, media = self._line or (release, 0.0)
+            # held by the line: the player has all it missed, so surplus is only delay
+            self._line_bound = start + media >= release
             release = max(release, start + media)
             if self._lead > 0 and now - self._player_at < STARTUP:
                 # the startup lead: out now instead of on the schedule, and the line
@@ -1004,6 +1008,7 @@ class _Slot:
                 seg.complete = True
                 self.target = max(self.target, math.ceil(seg.duration - 0.001))
             self._shed(now)
+            self._shed_tail(now)
 
     def _shed(self, now: float) -> None:
         """Drop the oldest whole unreleased segment while the cushion holds one more.
@@ -1040,6 +1045,50 @@ class _Slot:
             del self.segs[index]
             self._schedule(-media)
             logger.info("relay ll cushion shed", slot=self.slot, seconds=round(media, 2))
+
+    def _shed_tail(self, now: float) -> None:
+        """Drop the unreleased rest of the edge segment while the cushion holds it.
+
+        A running stream can only come closer to live by losing media, and whole
+        segments go only with a segment's surplus, which a cushion near its target
+        never has. A segment may end early only before a keyframe: the next one
+        opens on its own after a discontinuity, as at a splice, and a player
+        blocked on a dropped part is answered by it (see has).
+        """
+        if not self._line_bound:
+            # catch-up is refilling what a stall took from the player: that is no surplus
+            return
+        seg = next((s for s in self.segs if s.released(now) < len(s.parts)), None)
+        if seg is None or seg.filler:
+            return
+        released = seg.released(now)
+        if released == 0:
+            # an untouched segment goes whole, by _shed
+            return
+        tail = seg.parts[released:]
+        media = sum(min(p.duration, PART_TARGET) for p in tail)
+        if self.cushion(now) - media < self.cushion_target:
+            return
+        del seg.parts[released:]
+        after = self.segs[self.segs.index(seg) + 1 :]
+        if not seg.complete:
+            # the source segment goes on: skip its parts until the next one opens
+            seg.complete = True
+            self.need_independent = True
+            self.pending_disc = True
+        elif after:
+            # RFC 8216 6.2.2: the next segment now opens with a discontinuity
+            delta = int(not after[0].disc)
+            after[0].disc = True
+            # the next segment goes out when the dropped tail would have
+            shift = after[0].parts[0].release - tail[0].release
+            for later in after:
+                later.dseq += delta
+                later.wall -= shift
+                for p in later.parts:
+                    p.release -= shift
+        self._schedule(-media)
+        logger.info("relay ll cushion shed", slot=self.slot, seconds=round(media, 2), partial=True)
 
     def _schedule(self, media: float) -> None:
         """Add media to the release line; negative for parts dropped unreleased."""

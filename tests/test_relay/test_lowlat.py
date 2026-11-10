@@ -1253,7 +1253,7 @@ async def test_a_streamed_source_settles_to_a_small_cushion(setup, monkeypatch):
     # a source streamed as it is written arrives on time: the cushion falls to the floor
     assert state.cushion_target == CUSHION_MIN, state.cushion_target
     assert state.lateness.worst() + CUSHION_MARGIN <= CUSHION_MIN + 0.1
-    assert before is not None and after is not None and after < before, (before, after)
+    assert after is not None and after < 1.0, (before, after)
     assert not any(seg.filler for seg in state.segs)
 
 
@@ -1284,3 +1284,113 @@ async def test_a_hinted_source_is_read_again_as_each_segment_ends(setup):
     assert relay.fresh_reads >= 3
     assert state.lateness.worst() < 0.4, state.lateness.worst()
     assert not any(seg.filler for seg in state.segs)
+
+
+def _timed_seg(seq: int, releases: list[float], complete: bool = True) -> _Seg:
+    seg = _Seg(seq, False, 0, complete=complete, wall=1000.0 + 2 * seq)
+    for k, release in enumerate(releases):
+        seg.parts.append(_Part(b"", 0.5, k == 0, release=release))
+    return seg
+
+
+class TestTailShed:
+    async def test_a_surplus_drops_the_edge_segments_unreleased_rest(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.cushion_target = 0.5
+        state._line_bound = True
+        # the edge sits in segment 1 (one part out); segment 2 follows, all queued
+        state.segs = [_timed_seg(1, [0.0, 1.0, 1.5, 2.0]), _timed_seg(2, [2.5, 3.0, 3.5, 4.0])]
+        with structlog.testing.capture_logs() as logs:
+            state._shed_tail(0.5)
+        first, second = state.segs
+        assert len(first.parts) == 1 and first.complete
+        # the next segment opens after a discontinuity, 1.5 s sooner
+        assert second.disc and second.dseq == 1
+        assert [p.release for p in second.parts] == [1.0, 1.5, 2.0, 2.5]
+        assert second.wall == pytest.approx(1004.0 - 1.5)
+        assert [e for e in logs if e["event"] == "relay ll cushion shed"][0]["partial"] is True
+        await state.stop()
+
+    async def test_no_drop_without_the_surplus(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.cushion_target = 3.0
+        state._line_bound = True
+        state.segs = [_timed_seg(1, [0.0, 1.0, 1.5, 2.0]), _timed_seg(2, [2.5, 3.0, 3.5, 4.0])]
+        state._shed_tail(0.5)
+        assert [len(s.parts) for s in state.segs] == [4, 4]
+        await state.stop()
+
+    async def test_an_untouched_segment_is_left_to_whole_shedding(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.cushion_target = 0.5
+        state._line_bound = True
+        state.segs = [_timed_seg(1, [1.0, 1.5]), _timed_seg(2, [2.5, 3.0])]
+        state._shed_tail(0.5)
+        assert [len(s.parts) for s in state.segs] == [2, 2]
+        await state.stop()
+
+    async def test_an_open_segment_cut_short_skips_the_rest_of_its_source(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.cushion_target = 0.5
+        state._line_bound = True
+        state.segs = [_timed_seg(1, [0.0, 1.5, 2.0, 2.5], complete=False)]
+        state._shed_tail(0.5)
+        (seg,) = state.segs
+        assert len(seg.parts) == 1 and seg.complete
+        assert state.need_independent and state.pending_disc
+        await state.stop()
+
+    async def test_filler_is_never_cut(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.cushion_target = 0.5
+        state._line_bound = True
+        filler = _timed_seg(1, [0.0, 1.0, 1.5, 2.0])
+        filler.filler = True
+        state.segs = [filler]
+        state._shed_tail(0.5)
+        assert len(state.segs[0].parts) == 4
+        await state.stop()
+
+
+async def test_a_running_stream_comes_down_to_its_target(setup, monkeypatch):
+    relay, add, client, ll = setup
+    # minutes of settling, compressed
+    monkeypatch.setattr(lowlat, "CUSHION_SETTLE", 0.2)
+    monkeypatch.setattr(lowlat, "CUSHION_STEP", 0.5)
+    source = relay.source = add("chan", count=24)
+    # the run starts on finished segments, so with a big cushion, as one does at a
+    # deploy; then the source streams its segments, and only shedding can close the gap
+    source.announce = "none"
+    await _playlist(client)
+    state = ll.slot(1)
+    state.lateness.window = 3.0
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(5)
+    before = state.behind(loop.time(), time.time())
+    source.announce = "hint"
+    with structlog.testing.capture_logs() as logs:
+        for _ in range(36):
+            assert await _playlist(client)
+            await asyncio.sleep(0.5)
+    after = state.behind(loop.time(), time.time())
+    assert state.cushion_target == CUSHION_MIN
+    assert any(e["event"] == "relay ll cushion shed" and e.get("partial") for e in logs)
+    assert before is not None and after is not None and after < before - 1.0, (before, after)
+    assert not any(seg.filler for seg in state.segs)
+
+
+async def test_catch_up_keeps_what_a_stall_took(setup):
+    _, _, _, ll = setup
+    state = lowlat._Slot(ll, 0)
+    state.cushion_target = 0.5
+    # the last release came early, on catch-up: the surplus refills the player
+    state._line_bound = False
+    state.segs = [_timed_seg(1, [0.0, 1.0, 1.5, 2.0]), _timed_seg(2, [2.5, 3.0, 3.5, 4.0])]
+    state._shed_tail(0.5)
+    assert [len(s.parts) for s in state.segs] == [4, 4]
+    await state.stop()
