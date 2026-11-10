@@ -128,6 +128,10 @@ _HINT_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 # seconds a prefetch segment's PROGRAM-DATE-TIME runs past its expected one; see
 # with_prefetch
 PREFETCH_LEAD = 1.0
+# after an in-progress segment ends, fresh playlist reads this far apart until the
+# next one shows, at most RESYNC_TRIES: the source may list it a moment after
+RESYNC_GAP = 0.1
+RESYNC_TRIES = 5
 # seconds between two latency reports for one slot
 LATENCY_REPORT = 60.0
 # source segments whose start time a slot remembers, by first video PTS
@@ -390,8 +394,14 @@ def _ignore(run: _Run, parts: list[Part]) -> None:
 class _Fetch:
     """One source segment, streamed into a queue of chunks as it arrives."""
 
-    def __init__(self, session: aiohttp.ClientSession, uri: str) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        uri: str,
+        on_end: Callable[[], None] | None = None,
+    ) -> None:
         self._chunks: asyncio.Queue[bytes | Exception | None] = asyncio.Queue()
+        self._on_end = on_end
         self._task = asyncio.create_task(self._run(session, uri))
 
     async def _run(self, session: aiohttp.ClientSession, uri: str) -> None:
@@ -408,6 +418,8 @@ class _Fetch:
             self._chunks.put_nowait(e)
             return
         self._chunks.put_nowait(None)
+        if self._on_end is not None:
+            self._on_end()
 
     async def chunks(self) -> AsyncIterator[bytes]:
         while (item := await self._chunks.get()) is not None:
@@ -494,6 +506,13 @@ class _Slot:
         self._target_moved = -math.inf
         # media each run has cut, by run, for the lateness offsets
         self._run_media: dict[int, float] = {}
+        # set when an in-progress segment's response ends: the source has opened the
+        # next one, so its playlist is read at once instead of at the next poll
+        self._resync = asyncio.Event()
+        # URIs (without query) of segments taken while still being written
+        self._in_progress: set[str] = set()
+        # segments queued since the slot began; a resync reads until this moves
+        self._queued_count = 0
         # first video PTS of a recently fed source segment -> when its media started
         self._source_times: dict[int, float] = {}
         # (seconds behind the source, sampled at a player's blocking request) since the
@@ -536,11 +555,10 @@ class _Slot:
     # source
 
     async def _follow(self) -> None:
+        fresh = False
         while self.active:
             try:
-                got = await self.ll.relay.current_source(self.slot)
-                if got is not None:
-                    self._take(*got)
+                await self._read_source(fresh)
                 if self._failing:
                     self._failing = False
                     logger.info("relay ll source recovered", slot=self.slot)
@@ -548,8 +566,30 @@ class _Slot:
                 if not self._failing:
                     self._failing = True
                     logger.warning("relay ll source failed", slot=self.slot, error=repr(e))
-            await asyncio.sleep(POLL)
+            try:
+                await asyncio.wait_for(self._resync.wait(), POLL)
+                fresh = True
+            except TimeoutError:
+                fresh = False
+            self._resync.clear()
         await self.ll.retire(self)
+
+    async def _read_source(self, fresh: bool) -> None:
+        """Read the source playlist and take what it lists.
+
+        Fresh after an in-progress segment ends, and again while the next segment has
+        not shown: one round trip after the source opens it, instead of a poll and the
+        playlist cache later, which every hinted segment would start that late.
+        """
+        before = self._queued_count
+        for attempt in range(RESYNC_TRIES if fresh else 1):
+            if attempt:
+                await asyncio.sleep(RESYNC_GAP)
+            got = await self.ll.relay.current_source(self.slot, fresh=fresh)
+            if got is not None:
+                self._take(*got)
+            if self._queued_count != before:
+                return
 
     def _take(self, identity: str, text: str) -> None:
         switched = identity != self.source.last_identity
@@ -622,6 +662,9 @@ class _Slot:
                 self._repeats += 1
                 continue
             self._taken.append(path)
+            if seg.uri in prefetch:
+                self._in_progress.add(path)
+            self._queued_count += 1
             self.queue.append(
                 _Queued(seg, identity, self.gen, source_time=_source_time(seg, prefetch))
             )
@@ -677,6 +720,13 @@ class _Slot:
         self._restarting = True
         logger.info("relay ll restart back", slot=self.slot, skipped=start, segments=len(kept))
 
+    def _open_fetch(self, queued: _Queued) -> _Fetch:
+        """Start fetching a queued segment; one still being written resyncs when it ends."""
+        path = queued.seg.uri.split("?", 1)[0]
+        on_end = self._resync.set if path in self._in_progress else None
+        self._in_progress.discard(path)
+        return _Fetch(self.ll.session(), queued.seg.uri, on_end)
+
     def _note_stall(self, now: float) -> None:
         """Count a filler stall against the channel playing; enough soon turn its prefetch off.
 
@@ -714,7 +764,7 @@ class _Slot:
     def _fetch_ahead(self) -> None:
         for queued in list(self.queue)[:FETCH_AHEAD]:
             if queued.fetch is None:
-                queued.fetch = _Fetch(self.ll.session(), queued.seg.uri)
+                queued.fetch = self._open_fetch(queued)
 
     # conversion
 
@@ -731,7 +781,7 @@ class _Slot:
                     queued.fetch.cancel()
                 continue
             if queued.fetch is None:
-                queued.fetch = _Fetch(self.ll.session(), queued.seg.uri)
+                queued.fetch = self._open_fetch(queued)
             self.current = queued
             try:
                 await self._feed_one(queued)

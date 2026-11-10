@@ -158,13 +158,14 @@ class SlotRelay:
         resp.raise_for_status()
         return resp.text
 
-    async def _cached_fetch(self, url: str) -> str:
+    async def _cached_fetch(self, url: str, fresh: bool = False) -> str:
+        """The playlist at url, at most cache_ttl old; fresh fetches it anew (and caches it)."""
         now = self._time()
         # drop expired entries so the cache stays bounded on a long-running daemon
         self._cache = {
             u: entry for u, entry in self._cache.items() if now - entry[0] < self.cache_ttl
         }
-        hit = self._cache.get(url)
+        hit = None if fresh else self._cache.get(url)
         if hit is not None:
             return hit[1]
         fetch = self._fetch or self._default_fetch
@@ -172,10 +173,10 @@ class SlotRelay:
         self._cache[url] = (now, text)
         return text
 
-    async def _fetch_source(self, slot: int, url: str) -> str:
+    async def _fetch_source(self, slot: int, url: str, fresh: bool = False) -> str:
         """Fetch a slot's playlist, moving to its newest URL once the kept one fails."""
         try:
-            return await self._cached_fetch(url)
+            return await self._cached_fetch(url, fresh)
         except httpx.HTTPStatusError as e:
             # 403: the kept URL's token expired; 404: its session ended
             if e.response.status_code not in (403, 404) or not self.store.refresh(slot):
@@ -299,16 +300,16 @@ class SlotRelay:
                     return
         self._fold(slot, state, entry, text)
 
-    async def current_source(self, slot: int) -> tuple[str, str] | None:
+    async def current_source(self, slot: int, fresh: bool = False) -> tuple[str, str] | None:
         """(channel identity, source playlist) the slot plays now, or None.
 
         Same choice as _ingest_slot, without its side effects: during a new channel's
-        preroll, the outgoing channel's playlist.
+        preroll, the outgoing channel's playlist. fresh skips the playlist cache.
         """
         entry = self.store.get(slot)
         if entry is None:
             return None
-        text = await self._fetch_source(slot, entry.url)
+        text = await self._fetch_source(slot, entry.url, fresh)
         if not has_live_segment(text):
             outgoing = self.store.outgoing(slot)
             if outgoing is not None:

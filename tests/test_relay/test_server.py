@@ -1122,3 +1122,25 @@ async def test_routes_number_slots_one_to_four():
     assert proxy.registered == [(3, 0), (3, 1)]
     for bad in ("0", "5", "+1", " 1", "-1", "²", "١"):
         assert (await _call(relay, bad)).status == 404
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_read_skips_the_playlist_cache():
+    store = SlotStore()
+    store.update(["url-A", "", "", ""], ["chan-A", "", "", ""])
+    calls = 0
+
+    async def fetch(url):
+        nonlocal calls
+        calls += 1
+        return _src(100 + calls, ["a.ts"])
+
+    relay = SlotRelay(store, fetch=fetch, cache_ttl=1.0, time_fn=lambda: 0.0)
+    await relay.current_source(0)
+    await relay.current_source(0)
+    assert calls == 1
+    _, text = await relay.current_source(0, fresh=True)
+    assert calls == 2 and "MEDIA-SEQUENCE:102" in text
+    # and the fresh read is what the cache serves next
+    _, again = await relay.current_source(0)
+    assert calls == 2 and again == text

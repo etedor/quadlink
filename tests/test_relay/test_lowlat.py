@@ -7,6 +7,7 @@ import types
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
+import aiohttp
 import pytest
 import structlog.testing
 from aiohttp import web
@@ -423,17 +424,30 @@ class Source:
 
 
 class FakeRelay:
-    def __init__(self) -> None:
+    """The slot relay as the LL engine sees it, with its playlist cache."""
+
+    def __init__(self, cache_ttl: float = 1.0) -> None:
         self.source: Source | None = None
         self.arrivals: list[tuple[int, str]] = []
+        self.cache_ttl = cache_ttl
+        self._cached: tuple[float, Source, str] | None = None
+        self.fresh_reads = 0
 
     def note_arrival(self, slot: int, identity: str) -> None:
         self.arrivals.append((slot, identity))
 
-    async def current_source(self, slot: int) -> tuple[str, str] | None:
+    async def current_source(self, slot: int, fresh: bool = False) -> tuple[str, str] | None:
         if self.source is None:
             return None
-        return self.source.identity, self.source.playlist()
+        now = time.monotonic()
+        cached = self._cached
+        if fresh:
+            self.fresh_reads += 1
+        elif cached is not None and cached[1] is self.source and now - cached[0] < self.cache_ttl:
+            return self.source.identity, cached[2]
+        text = self.source.playlist()
+        self._cached = (now, self.source, text)
+        return self.source.identity, text
 
 
 @pytest.fixture
@@ -1240,4 +1254,33 @@ async def test_a_streamed_source_settles_to_a_small_cushion(setup, monkeypatch):
     assert state.cushion_target == CUSHION_MIN, state.cushion_target
     assert state.lateness.worst() + CUSHION_MARGIN <= CUSHION_MIN + 0.1
     assert before is not None and after is not None and after < before, (before, after)
+    assert not any(seg.filler for seg in state.segs)
+
+
+async def test_a_fetch_signals_its_end_only_when_complete(setup):
+    _, add, _, ll = setup
+    source = add("chan", count=4)
+    ended: list[str] = []
+    fetch = lowlat._Fetch(ll.session(), f"{source.base}/chan/0.ts", lambda: ended.append("end"))
+    assert b"".join([c async for c in fetch.chunks()])
+    await asyncio.sleep(0)
+    assert ended == ["end"]
+    failing = lowlat._Fetch(ll.session(), f"{source.base}/nope/0.ts", lambda: ended.append("bad"))
+    # the origin has no such channel: an error status, never a complete segment
+    with pytest.raises(aiohttp.ClientResponseError):
+        _ = [c async for c in failing.chunks()]
+    assert ended == ["end"]
+
+
+async def test_a_hinted_source_is_read_again_as_each_segment_ends(setup):
+    relay, add, client, ll = setup
+    source = relay.source = add("chan", count=16)
+    source.announce = "hint"
+    await _playlist(client)
+    state = ll.slot(1)
+    await asyncio.sleep(9)
+    # each hinted segment's end brought a fresh read past the 1 s cache, so the
+    # next one started on time: lateness stays near the source's own jitter
+    assert relay.fresh_reads >= 3
+    assert state.lateness.worst() < 0.4, state.lateness.worst()
     assert not any(seg.filler for seg in state.segs)
