@@ -16,7 +16,12 @@ from quadlink.relay import lowlat
 from quadlink.relay.lowlat import (
     CATCH_UP,
     CUSHION,
+    CUSHION_MARGIN,
+    CUSHION_MAX,
+    CUSHION_MIN,
+    CUSHION_SETTLE,
     CUSHION_SLACK,
+    CUSHION_STEP,
     LATENCY_REPORT,
     LOW_FOR,
     PART_HOLD_BACK,
@@ -24,6 +29,7 @@ from quadlink.relay.lowlat import (
     PREFETCH_LEAD,
     STARTUP,
     STARTUP_HOLD,
+    Lateness,
     LowLatency,
     _Part,
     _Seg,
@@ -1112,4 +1118,126 @@ async def test_a_hinted_segment_is_cut_as_it_is_written(setup):
     hinted = await _oldest_edge(state, 5)
     assert finished_only > 1.5, finished_only
     assert hinted < 1.0, hinted
+    assert not any(seg.filler for seg in state.segs)
+
+
+class TestLateness:
+    def test_an_opening_burst_costs_nothing(self):
+        late = Lateness()
+        # 2.5 s of backlog cut at once, then parts at their own pace
+        for k in range(5):
+            late.add(0.0, "run", 0.0 - 0.5 * k)
+        for k in range(10):
+            late.add(0.5 * (k + 1), "run", -2.5)
+        assert late.worst() == 0.0
+
+    def test_finished_segments_arrive_a_segment_late(self):
+        late = Lateness()
+        media = 0.0
+        for burst in range(5):
+            for _ in range(4):
+                late.add(2.0 * burst, "run", 2.0 * burst - media)
+                media += 0.5
+        # each burst's first part waited the 1.5 s the previous burst's last left
+        assert late.worst() == pytest.approx(1.5)
+
+    def test_a_streamed_source_shows_only_its_jitter(self):
+        late = Lateness()
+        for k, jitter in enumerate([0.0, 0.1, 0.05, 0.2, 0.0, 0.15]):
+            late.add(0.5 * k + jitter, "run", jitter)
+        assert late.worst() == pytest.approx(0.2)
+
+    def test_runs_do_not_mix(self):
+        late = Lateness()
+        late.add(0.0, "old", 5.0)
+        late.add(1.0, "new", 9.0)
+        assert late.worst() == 0.0
+
+    def test_old_lateness_leaves_the_window(self):
+        late = Lateness(window=10.0)
+        late.add(0.0, "run", 0.0)
+        late.add(1.0, "run", 2.0)
+        assert late.worst() == 2.0
+        late.add(12.0, "run", 2.0)
+        assert late.worst() == 0.0
+
+
+class TestCushionTarget:
+    def _slot(self, ll: LowLatency) -> lowlat._Slot:
+        state = lowlat._Slot(ll, 0)
+        state._take("chan", _source_listing(["a"], ["b", "c"]))
+        return state
+
+    async def test_late_arrivals_grow_it_at_once(self, setup):
+        _, _, _, ll = setup
+        state = self._slot(ll)
+        state.lateness.add(0.0, "run", 0.0)
+        state.lateness.add(1.0, "run", 2.8)
+        with structlog.testing.capture_logs() as logs:
+            state._adapt(1.0)
+        assert state.cushion_target == CUSHION_MAX
+        assert [e["event"] for e in logs] == ["relay ll cushion grown"]
+        await state.stop()
+
+    async def test_it_shrinks_a_step_per_settled_minute(self, setup):
+        _, _, _, ll = setup
+        state = self._slot(ll)
+        state.lateness.add(0.0, "run", 0.0)
+        state._adapt(0.0)
+        assert state.cushion_target == pytest.approx(CUSHION - CUSHION_STEP)
+        state._adapt(CUSHION_SETTLE / 2)
+        assert state.cushion_target == pytest.approx(CUSHION - CUSHION_STEP)
+        state._adapt(CUSHION_SETTLE)
+        assert state.cushion_target == pytest.approx(CUSHION - 2 * CUSHION_STEP)
+        await state.stop()
+
+    async def test_it_never_shrinks_below_what_arrivals_need(self, setup):
+        _, _, _, ll = setup
+        state = self._slot(ll)
+        state.cushion_target = 1.0
+        state.lateness.add(0.0, "run", 0.0)
+        state.lateness.add(1.0, "run", 0.65)
+        state._adapt(1000.0)
+        assert state.cushion_target == pytest.approx(0.65 + CUSHION_MARGIN)
+        state.lateness.clear()
+        for k in range(100):
+            state._adapt(1000.0 + CUSHION_SETTLE * (k + 1))
+        assert state.cushion_target == CUSHION_MIN
+        await state.stop()
+
+    async def test_a_new_channel_starts_at_the_default(self, setup):
+        _, _, _, ll = setup
+        state = self._slot(ll)
+        state.cushion_target = 0.6
+        state.lateness.add(0.0, "run", 0.0)
+        state._take("two", _source_listing(["p"], ["q", "r"]))
+        assert state.cushion_target == CUSHION and state.lateness.worst() == 0.0
+        await state.stop()
+
+    def test_a_run_starts_its_cushion_back(self):
+        segs = [Segment(i, f"{i}.ts", 2.0, None, False, None) for i in range(6)]
+        assert start_back(segs, set(), cushion=0.5) == 5
+        assert start_back(segs, set(), cushion=3.0) == 4
+
+
+async def test_a_streamed_source_settles_to_a_small_cushion(setup, monkeypatch):
+    relay, add, client, ll = setup
+    # minutes of settling, compressed
+    monkeypatch.setattr(lowlat, "CUSHION_SETTLE", 0.2)
+    monkeypatch.setattr(lowlat, "CUSHION_STEP", 0.5)
+    source = relay.source = add("chan", count=20)
+    source.announce = "hint"
+    await _playlist(client)
+    state = ll.slot(1)
+    loop = asyncio.get_running_loop()
+    await asyncio.sleep(4)
+    before = state.behind(loop.time(), time.time())
+    for _ in range(30):
+        await _playlist(client)
+        await asyncio.sleep(0.5)
+    after = state.behind(loop.time(), time.time())
+    # a source streamed as it is written arrives on time: the cushion falls to the floor
+    assert state.cushion_target == CUSHION_MIN, state.cushion_target
+    assert state.lateness.worst() + CUSHION_MARGIN <= CUSHION_MIN + 0.1
+    assert before is not None and after is not None and after < before, (before, after)
     assert not any(seg.filler for seg in state.segs)

@@ -10,12 +10,12 @@ AVPlayer uses LL-HLS only over HTTP/2 with ECN and SACK; over HTTP/1.1 it plays
 these playlists as ordinary HLS.
 
 The relay holds a cushion: it releases parts on its own real-time schedule,
-about CUSHION seconds behind the newest part it has cut. Each run (a new
+a slot's cushion target behind the newest part it has cut (see Lateness). Each run (a new
 channel, or video back after filler) starts that far back in the source, in
 segments already complete, so their bytes arrive at once and fill the cushion
 while the first part goes out at once. A source hiccup shorter than the cushion
 then drains it instead of the player's buffer. A cushion grown a whole
-segment past CUSHION sheds that segment: QuadStream never skips ahead, so
+segment past the target sheds that segment: QuadStream never skips ahead, so
 releasing the excess faster would only move it into the player.
 
 QuadStream rebuilds any player that stalls, so a slot never lets its parts run
@@ -81,6 +81,17 @@ PROBE_MAX = 1 << 20
 # goes unseen; each second of it is a second of latency. Twitch segments are 2s,
 # so a run starts one complete segment back from the one being encoded
 CUSHION = 2.5
+# the cushion each slot keeps, sized as the parts' measured lateness plus a margin,
+# within these bounds. It grows at once and shrinks CUSHION_STEP per clean
+# CUSHION_SETTLE seconds: one quiet minute is no proof the next is. A new channel
+# starts at CUSHION, since its arrivals are not yet known
+CUSHION_MIN = 0.5
+CUSHION_MAX = 3.0
+CUSHION_MARGIN = 0.3
+CUSHION_STEP = 0.1
+CUSHION_SETTLE = 60.0
+# seconds of arrivals the lateness is measured over
+LATENESS_WINDOW = 180.0
 # after the released edge stood still, a cushion over CUSHION + CUSHION_SLACK
 # releases CATCH_UP times faster than real time until back at CUSHION, refilling
 # what the stall took from the player's buffer. The release line caps it at real
@@ -156,8 +167,8 @@ def without_prefetch(text: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def start_back(segs: list[Segment], prefetch: set[str]) -> int:
-    """Index of the segment a run starts at: about CUSHION of media back from the newest.
+def start_back(segs: list[Segment], prefetch: set[str], cushion: float = CUSHION) -> int:
+    """Index of the segment a run starts at: about `cushion` of media back from the newest.
 
     Segments before the first prefetch one are complete, so their bytes arrive at
     once and become the cushion. The first prefetch one is being encoded; on
@@ -166,7 +177,7 @@ def start_back(segs: list[Segment], prefetch: set[str]) -> int:
     edge = next((i for i, s in enumerate(segs) if s.uri in prefetch), len(segs))
     have = segs[edge].duration / 2 if edge < len(segs) else 0.0
     i = edge
-    while i > 0 and have < CUSHION:
+    while i > 0 and have < cushion:
         i -= 1
         have += segs[i].duration
     return min(i, len(segs) - 1)
@@ -228,6 +239,43 @@ def with_prefetch(text: str) -> tuple[str, set[str]]:
         out.append(f"#EXTINF:{duration:.3f},live")
         out.append(uri)
     return "\n".join(out) + "\n", set(prefetch)
+
+
+class Lateness:
+    """How late parts arrive against the earliest pace their run has shown.
+
+    A part's offset is its cut time minus the media its run had cut before it. Over
+    a run the lowest offset is the pace media can keep; how far a part's offset sits
+    above the lowest before it is how long the edge stood waiting for it, which the
+    cushion has to cover. A run's opening burst sets the low point and costs nothing.
+    Finished-only segments arrive a whole segment at a time and show that segment;
+    a source streamed as it is written shows only its jitter.
+    """
+
+    def __init__(self, window: float = LATENESS_WINDOW) -> None:
+        self.window = window
+        # (loop time, run, offset), oldest first
+        self._offsets: deque[tuple[float, object, float]] = deque()
+
+    def add(self, now: float, run: object, offset: float) -> None:
+        self._offsets.append((now, run, offset))
+        while self._offsets and now - self._offsets[0][0] > self.window:
+            self._offsets.popleft()
+
+    def clear(self) -> None:
+        self._offsets.clear()
+
+    def worst(self) -> float:
+        """The most any part in the window arrived behind its run's earlier pace."""
+        lowest: dict[int, float] = {}
+        worst = 0.0
+        for _, run, offset in self._offsets:
+            low = lowest.get(id(run))
+            if low is None or offset < low:
+                lowest[id(run)] = offset
+            else:
+                worst = max(worst, offset - low)
+        return worst
 
 
 @dataclass(eq=False)
@@ -440,6 +488,12 @@ class _Slot:
         self._stalls: deque[float] = deque()
         # the next listing restarts back in finished segments, prefetch just turned off
         self._backing_off = False
+        # the cushion this slot keeps, its measured lateness, and when it last moved
+        self.cushion_target = CUSHION
+        self.lateness = Lateness()
+        self._target_moved = -math.inf
+        # media each run has cut, by run, for the lateness offsets
+        self._run_media: dict[int, float] = {}
         # first video PTS of a recently fed source segment -> when its media started
         self._source_times: dict[int, float] = {}
         # (seconds behind the source, sampled at a player's blocking request) since the
@@ -500,6 +554,8 @@ class _Slot:
     def _take(self, identity: str, text: str) -> None:
         switched = identity != self.source.last_identity
         if switched:
+            self.cushion_target = CUSHION
+            self.lateness.clear()
             self.no_prefetch = None
             self._stalls.clear()
             self._backing_off = False
@@ -551,7 +607,7 @@ class _Slot:
         self.ll.relay.note_arrival(self.slot, identity)
         if self._start_pending:
             self._start_pending = False
-            start = new[start_back(new, prefetch)]
+            start = new[start_back(new, prefetch, self.cushion_target)]
             # the older segments skipped here count as taken, or one listed again
             # would be fed behind the edge, back in time
             self._taken.extend(s.uri.split("?", 1)[0] for s in new if s.seq < start.seq)
@@ -606,7 +662,7 @@ class _Slot:
         queued = [q for q in self.queue if q.gen == self.gen]
         if not queued or queued[0].seg.uri in prefetch:
             return
-        start = start_back([q.seg for q in queued], prefetch)
+        start = start_back([q.seg for q in queued], prefetch, self.cushion_target)
         self._restarted = asyncio.get_running_loop().time()
         self._low_since = None
         self.gen += 1
@@ -825,7 +881,38 @@ class _Slot:
 
     def _on_parts(self, run: _Run, parts: list[Part]) -> None:
         if run.live:
-            self._add(parts, asyncio.get_running_loop().time())
+            now = asyncio.get_running_loop().time()
+            self._note_arrivals(run, parts, now)
+            self._add(parts, now)
+            self._adapt(now)
+
+    def _note_arrivals(self, run: _Run, parts: list[Part], now: float) -> None:
+        media = self._run_media.get(id(run), 0.0)
+        for part in parts:
+            self.lateness.add(now, run, now - media)
+            media += min(part.duration, PART_TARGET)
+        # keyed by id: a run ends and its id may be reused, so only the newest is kept
+        self._run_media = {id(run): media}
+
+    def _adapt(self, now: float) -> None:
+        """Move the cushion target toward the measured lateness plus the margin."""
+        needed = min(CUSHION_MAX, max(CUSHION_MIN, self.lateness.worst() + CUSHION_MARGIN))
+        if needed > self.cushion_target + 0.05:
+            self._move_target(needed, now, "late arrivals")
+        elif needed < self.cushion_target and now - self._target_moved >= CUSHION_SETTLE:
+            self._move_target(max(needed, self.cushion_target - CUSHION_STEP), now, None)
+
+    def _move_target(self, target: float, now: float, why: str | None) -> None:
+        if why is not None:
+            logger.info(
+                "relay ll cushion grown",
+                slot=self.slot,
+                seconds=round(target, 2),
+                was=round(self.cushion_target, 2),
+                reason=why,
+            )
+        self.cushion_target = round(target, 2)
+        self._target_moved = now
 
     def _add(self, parts: list[Part], now: float) -> None:
         """Queue parts cut at loop time `now` behind the cushion."""
@@ -843,9 +930,9 @@ class _Slot:
             cushion = self.cushion(now)
             if fresh:
                 self._catching = False
-            elif cushion > CUSHION + CUSHION_SLACK:
+            elif cushion > self.cushion_target + CUSHION_SLACK:
                 self._catching = True
-            elif cushion <= CUSHION:
+            elif cushion <= self.cushion_target:
                 self._catching = False
             release = next_release(now, prev, CATCH_UP if self._catching else 1.0)
             start, media = self._line or (release, 0.0)
@@ -888,7 +975,7 @@ class _Slot:
                 return
             seg, after = self.segs[index], self.segs[index + 1 :]
             media = sum(min(p.duration, PART_TARGET) for p in seg.parts)
-            if self.cushion(now) - media < CUSHION:
+            if self.cushion(now) - media < self.cushion_target:
                 return
             # RFC 8216 6.2.2: the next segment now opens with a discontinuity
             delta = int(not after[0].disc) - int(seg.disc)
@@ -973,6 +1060,7 @@ class _Slot:
                 edge_p50=round(lags[len(lags) // 2], 2),
                 edge_p95=round(lags[min(len(lags) - 1, int(len(lags) * 0.95))], 2),
                 player_p50=round(lags[len(lags) // 2] + PART_HOLD_BACK, 2),
+                cushion=self.cushion_target,
                 samples=len(lags),
             )
         self._lags = []
@@ -1071,6 +1159,10 @@ class _Slot:
                     stalled=round(now - due, 2),
                 )
                 self._note_stall(now)
+                # the stall is lateness the window may not show: a new run follows
+                self._move_target(
+                    min(CUSHION_MAX, self.cushion_target + (now - due)), now, "filler"
+                )
             seg = self._open(now, filler=True)
             # paced like video, so returning video drops what is not out yet
             release = now
