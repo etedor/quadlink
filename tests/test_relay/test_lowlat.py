@@ -29,6 +29,7 @@ from quadlink.relay.lowlat import (
     _Seg,
     _source_time,
     next_release,
+    preload_hints,
     start_back,
     with_prefetch,
     without_prefetch,
@@ -366,6 +367,9 @@ class Source:
         self.stopped_at: float | None = None
         # the wall clock at start, for PROGRAM-DATE-TIME as Twitch stamps each segment
         self.wall_start = time.time()
+        # "twitch", "hint" or "none": lets tests set a source that lists only complete
+        # segments against ones that announce the segment still being encoded
+        self.announce = "twitch"
         self.base = ""
         # seconds late the bytes of these segments come when asked for as prefetch,
         # as a broadcast with a slow low-latency edge sends them
@@ -386,8 +390,12 @@ class Source:
                 "#EXTINF:2.000,live",
                 f"{self.base}/{self.identity}/{i}.ts",
             ]
-        for i in range(live, min(live + 2, len(self.segs))):
-            lines.append(f"#EXT-X-TWITCH-PREFETCH:{self.base}/{self.identity}/{i}.ts")
+        if self.announce == "twitch":
+            for i in range(live, min(live + 2, len(self.segs))):
+                lines.append(f"#EXT-X-TWITCH-PREFETCH:{self.base}/{self.identity}/{i}.ts")
+        elif self.announce == "hint" and live < len(self.segs):
+            uri = f"{self.base}/{self.identity}/{live}.ts"
+            lines.append(f'#EXT-X-PRELOAD-HINT:TYPE=PART,URI="{uri}"')
         return "\n".join(lines) + "\n"
 
     async def serve(self, request: web.Request) -> web.StreamResponse:
@@ -1028,3 +1036,80 @@ async def test_released_media_carries_its_source_time(setup):
     # the source stamps a segment as it begins encoding; the relay releases it a
     # cushion later, after the segment's own time to arrive
     assert lag is not None and 0 < lag < CUSHION + 3
+
+
+HINTED = """#EXTM3U
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:7
+#EXT-X-PROGRAM-DATE-TIME:2026-11-09T01:00:00.000Z
+#EXTINF:2.000,
+https://cam.lan/seg7.ts
+#EXT-X-PRELOAD-HINT:TYPE=PART,URI="https://cam.lan/seg8.ts"
+"""
+
+
+class TestPreloadHint:
+    def test_a_hint_names_the_segment_being_written(self):
+        text, prefetch = with_prefetch(HINTED)
+        assert prefetch == {"https://cam.lan/seg8.ts"}
+        assert [line for line in text.splitlines() if not line.startswith("#")] == [
+            "https://cam.lan/seg7.ts",
+            "https://cam.lan/seg8.ts",
+        ]
+        assert "PRELOAD-HINT" not in text
+        # timed one segment on, plus the prefetch lead, as Twitch's prefetch is
+        assert "#EXT-X-PROGRAM-DATE-TIME:2026-11-09T01:00:03.000+00:00" in text
+
+    def test_a_playlist_with_parts_hints_a_part_not_a_segment(self):
+        parted = HINTED.replace(
+            "#EXT-X-PRELOAD-HINT", '#EXT-X-PART:DURATION=0.5,URI="p.ts"\n#EXT-X-PRELOAD-HINT'
+        )
+        assert preload_hints(parted, set()) == []
+
+    def test_a_hint_past_the_first_byte_is_left(self):
+        ranged = HINTED.replace(
+            'URI="https://cam.lan/seg8.ts"', 'URI="https://cam.lan/seg8.ts",BYTERANGE-START=4096'
+        )
+        assert preload_hints(ranged, set()) == []
+
+    def test_a_hint_for_a_listed_segment_is_no_news(self):
+        assert preload_hints(HINTED, {"https://cam.lan/seg8.ts"}) == []
+
+    def test_other_hint_types_are_left(self):
+        mapped = HINTED.replace("TYPE=PART", "TYPE=MAP")
+        assert preload_hints(mapped, set()) == []
+
+
+async def _oldest_edge(state: lowlat._Slot, seconds: float) -> float:
+    """The most the newest cut media trailed the source over `seconds` of sampling."""
+    loop = asyncio.get_running_loop()
+    worst = 0.0
+    end = loop.time() + seconds
+    while loop.time() < end:
+        seg = next((g for g in reversed(state.segs) if g.parts and not g.filler), None)
+        if seg is not None and seg.source is not None:
+            newest = seg.source + seg.duration
+            worst = max(worst, time.time() - newest)
+        await asyncio.sleep(0.05)
+    return worst
+
+
+async def test_a_hinted_segment_is_cut_as_it_is_written(setup):
+    relay, add, client, ll = setup
+    plain = relay.source = add("plain", count=16)
+    plain.announce = "none"
+    await _playlist(client)
+    state = ll.slot(1)
+    await asyncio.sleep(4)
+    # listed only once complete, a segment arrives whole: the newest media ages a
+    # full segment between arrivals
+    finished_only = await _oldest_edge(state, 5)
+    hinted_source = add("hinted", count=16)
+    hinted_source.announce = "hint"
+    relay.source = hinted_source
+    await asyncio.sleep(4)
+    # hinted, it streams in as encoded: the newest media is never more than a part old
+    hinted = await _oldest_edge(state, 5)
+    assert finished_only > 1.5, finished_only
+    assert hinted < 1.0, hinted
+    assert not any(seg.filler for seg in state.segs)

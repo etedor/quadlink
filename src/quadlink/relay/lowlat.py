@@ -25,9 +25,10 @@ its release, filler parts go out.
 
 import asyncio
 import math
+import re
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -112,6 +113,7 @@ STARTUP_HOLD = 2.0 + PART_TARGET
 EMPTY_REPORT = 10.0
 # source segments a slot remembers by URI, to skip one listed again (about 2 minutes)
 TAKEN_MEMORY = 64
+_HINT_ATTR_RE = re.compile(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)')
 # seconds a prefetch segment's PROGRAM-DATE-TIME runs past its expected one; see
 # with_prefetch
 PREFETCH_LEAD = 1.0
@@ -170,25 +172,55 @@ def start_back(segs: list[Segment], prefetch: set[str]) -> int:
     return min(i, len(segs) - 1)
 
 
-def with_prefetch(text: str) -> tuple[str, set[str]]:
-    """The source playlist with Twitch's prefetch segments listed as ordinary ones.
+def preload_hints(text: str, listed: Collection[str]) -> list[str]:
+    """URIs of in-progress segments a standard preload hint names (RFC 8216bis 4.4.5.3).
 
-    Returns the playlist and the prefetch URIs. While the newest listed segment is
-    an ad, prefetch is left out: it would be more of the ad, and Twitch tags it
-    only once listed. A prefetch segment gets a PROGRAM-DATE-TIME a second past
-    its expected one, so its later ordinary listing, with an earlier time, reads
-    as already ingested and not as a restarted broadcast.
+    Taken only from a playlist that lists no parts: there a hint can only name the
+    segment being written, served as it grows. In a playlist with parts it names
+    the next part, which this relay does not consume; a hint for a byte range
+    past the start would need ranged fetches, and one already listed is no news.
+    """
+    if "#EXT-X-PART:" in text:
+        return []
+    hints = []
+    for line in text.splitlines():
+        if not line.startswith("#EXT-X-PRELOAD-HINT:"):
+            continue
+        attrs = {k: v.strip('"') for k, v in _HINT_ATTR_RE.findall(line.split(":", 1)[1])}
+        uri = attrs.get("URI")
+        if attrs.get("TYPE") != "PART" or not uri or uri in listed:
+            continue
+        if attrs.get("BYTERANGE-START", "0") != "0":
+            continue
+        hints.append(uri)
+    return hints
+
+
+def with_prefetch(text: str) -> tuple[str, set[str]]:
+    """The source playlist with its in-progress segments listed as ordinary ones.
+
+    Those are Twitch's prefetch segments, or the one a standard preload hint names
+    (see preload_hints); either is fetched as it grows. Returns the playlist and
+    their URIs. While the newest listed segment is an ad, prefetch is left out:
+    it would be more of the ad, and Twitch tags it only once listed. A prefetch
+    segment gets a PROGRAM-DATE-TIME a second past its expected one, so its later
+    ordinary listing, with an earlier time, reads as already ingested and not as a
+    restarted broadcast.
     """
     lines = text.splitlines()
+    _, _, segments = parse_media_playlist(text)
     prefetch = [
         line.split(":", 1)[1] for line in lines if line.startswith("#EXT-X-TWITCH-PREFETCH:")
-    ]
-    _, _, segments = parse_media_playlist(text)
+    ] or preload_hints(text, {uri for _, uri, _, _, _ in segments})
     if not prefetch or not segments or segments[-1][1] in ad_segment_uris(text):
         return text, set()
     duration, _, pdt, _, _ = segments[-1]
     last_time = _parse_pdt(pdt)
-    out = [line for line in lines if not line.startswith("#EXT-X-TWITCH-PREFETCH:")]
+    out = [
+        line
+        for line in lines
+        if not line.startswith(("#EXT-X-TWITCH-PREFETCH:", "#EXT-X-PRELOAD-HINT:"))
+    ]
     for n, uri in enumerate(prefetch, 1):
         if last_time is not None:
             stamp = last_time + timedelta(seconds=duration * n + PREFETCH_LEAD)
