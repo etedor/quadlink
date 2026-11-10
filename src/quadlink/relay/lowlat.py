@@ -112,6 +112,13 @@ STARTUP_HOLD = 2.0 + PART_TARGET
 EMPTY_REPORT = 10.0
 # source segments a slot remembers by URI, to skip one listed again (about 2 minutes)
 TAKEN_MEMORY = 64
+# seconds a prefetch segment's PROGRAM-DATE-TIME runs past its expected one; see
+# with_prefetch
+PREFETCH_LEAD = 1.0
+# seconds between two latency reports for one slot
+LATENCY_REPORT = 60.0
+# source segments whose start time a slot remembers, by first video PTS
+SOURCE_TIMES = 16
 # filler stalls of one channel within BACKOFF_WINDOW seconds that turn its prefetch
 # off: a broadcast whose early segments come late stalls the edge again and again,
 # and its finished segments play smooth a few seconds further back
@@ -131,6 +138,14 @@ def next_release(now: float, prev: "_Part | None", rate: float = 1.0) -> float:
     if prev is None:
         return now
     return max(now, prev.release + min(prev.duration, PART_TARGET) / rate)
+
+
+def _source_time(seg: Segment, prefetch: set[str]) -> float | None:
+    """When a source segment's media started, by its PROGRAM-DATE-TIME, prefetch lead undone."""
+    stamp = _parse_pdt(seg.program_date_time)
+    if stamp is None:
+        return None
+    return stamp.timestamp() - (PREFETCH_LEAD if seg.uri in prefetch else 0.0)
 
 
 def without_prefetch(text: str) -> str:
@@ -176,7 +191,7 @@ def with_prefetch(text: str) -> tuple[str, set[str]]:
     out = [line for line in lines if not line.startswith("#EXT-X-TWITCH-PREFETCH:")]
     for n, uri in enumerate(prefetch, 1):
         if last_time is not None:
-            stamp = last_time + timedelta(seconds=duration * n + 1)
+            stamp = last_time + timedelta(seconds=duration * n + PREFETCH_LEAD)
             out.append(f"#EXT-X-PROGRAM-DATE-TIME:{stamp.isoformat(timespec='milliseconds')}")
         out.append(f"#EXTINF:{duration:.3f},live")
         out.append(uri)
@@ -203,6 +218,9 @@ class _Seg:
     # PROGRAM-DATE-TIME (epoch seconds): the release clock after a discontinuity,
     # else the previous segment's plus its duration
     wall: float = 0.0
+    # when its media started at the source (epoch seconds, the source's clock), from
+    # the source's PROGRAM-DATE-TIME; None for filler or a source without times
+    source: float | None = None
 
     def released(self, now: float) -> int:
         return sum(1 for p in self.parts if p.release <= now)
@@ -329,6 +347,8 @@ class _Queued:
     fetch: _Fetch | None = None
     # starts a new run: the segments before it were skipped
     fresh: bool = False
+    # when its media started at the source (epoch seconds), if the source times it
+    source_time: float | None = None
 
 
 class _Slot:
@@ -388,6 +408,12 @@ class _Slot:
         self._stalls: deque[float] = deque()
         # the next listing restarts back in finished segments, prefetch just turned off
         self._backing_off = False
+        # first video PTS of a recently fed source segment -> when its media started
+        self._source_times: dict[int, float] = {}
+        # (seconds behind the source, sampled at a player's blocking request) since the
+        # last latency report, and that report's loop time
+        self._lags: list[float] = []
+        self._lag_reported = -math.inf
         # URIs (without query) ingested as prefetch before the back-off and not yet
         # listed finished: ingest holds them as known, so their finished listing is
         # not new to it, and they are taken from the source state once listed
@@ -508,7 +534,9 @@ class _Slot:
                 self._repeats += 1
                 continue
             self._taken.append(path)
-            self.queue.append(_Queued(seg, identity, self.gen))
+            self.queue.append(
+                _Queued(seg, identity, self.gen, source_time=_source_time(seg, prefetch))
+            )
         if backing_off and self.queue:
             self.queue[0].fresh = True
             self._restarting = True
@@ -694,6 +722,10 @@ class _Slot:
         self, queued: _Queued, prefix: bytes, key: int | None, force_new: bool = False
     ) -> None:
         """Start the segment on its run, opening a new run where it cannot continue one."""
+        if key is not None and queued.source_time is not None:
+            self._source_times[key] = queued.source_time
+            for old in list(self._source_times)[:-SOURCE_TIMES]:
+                del self._source_times[old]
         run = self.run
         # by channel, not by run: a run that failed leaves none, and that is no splice
         switch = queued.identity != self.played
@@ -771,7 +803,7 @@ class _Slot:
             if part.independent or not self.segs or self.segs[-1].complete:
                 if not part.independent:
                     continue
-                self._open(now)
+                self._open(now).source = self._source_times.get(part.key)
             seg = self.segs[-1]
             prev = seg.parts[-1] if seg.parts else self._last_part()
             fresh = not seg.parts and (seg.disc or len(self.segs) == 1)
@@ -872,6 +904,47 @@ class _Slot:
 
     def player_blocked(self) -> None:
         self._blocked = True
+
+    def behind(self, now: float, wall: float) -> float | None:
+        """Seconds the newest released media trails the source at wall time `wall`.
+
+        Measured against the media's end: the source's clock stamped its start. None
+        while the newest released part has no source time, as filler has none.
+        """
+        for seg in reversed(self.segs):
+            released = seg.released(now)
+            if not released:
+                continue
+            if seg.source is None:
+                return None
+            end = seg.source + sum(p.duration for p in seg.parts[:released])
+            return wall - end
+        return None
+
+    def sample_latency(self, now: float, wall: float) -> None:
+        """Note how far behind the source a player's blocking request finds the edge.
+
+        Reported as p50/p95 each LATENCY_REPORT seconds. A player plays about
+        PART_HOLD_BACK behind this edge, so its picture trails the source by that more.
+        """
+        lag = self.behind(now, wall)
+        if lag is not None:
+            self._lags.append(lag)
+        if now - self._lag_reported < LATENCY_REPORT:
+            return
+        if self._lags:
+            lags = sorted(self._lags)
+            logger.info(
+                "relay ll latency",
+                slot=self.slot,
+                channel=self.played,
+                edge_p50=round(lags[len(lags) // 2], 2),
+                edge_p95=round(lags[min(len(lags) - 1, int(len(lags) * 0.95))], 2),
+                player_p50=round(lags[len(lags) // 2] + PART_HOLD_BACK, 2),
+                samples=len(lags),
+            )
+        self._lags = []
+        self._lag_reported = now
 
     def closed(self, now: float) -> bool:
         """The playlist lists a complete segment."""
@@ -1164,6 +1237,7 @@ class LowLatency:
             if not await self._wait(state, msn, part):
                 self._miss("relay ll block timeout", request, state, msn=msn, part=part)
                 return web.Response(status=503, text="not yet available")
+            state.sample_latency(loop.time(), time.time())
         else:
             # AVPlayer blocks on every reload after its first, so a plain request is a
             # player starting: QuadStream rebuilds one after any stall

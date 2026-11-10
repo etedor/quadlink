@@ -5,7 +5,7 @@ import re
 import time
 import types
 from collections.abc import AsyncIterator, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 import structlog.testing
@@ -17,13 +17,17 @@ from quadlink.relay.lowlat import (
     CATCH_UP,
     CUSHION,
     CUSHION_SLACK,
+    LATENCY_REPORT,
     LOW_FOR,
     PART_HOLD_BACK,
     PART_TARGET,
+    PREFETCH_LEAD,
     STARTUP,
     STARTUP_HOLD,
     LowLatency,
     _Part,
+    _Seg,
+    _source_time,
     next_release,
     start_back,
     with_prefetch,
@@ -360,6 +364,8 @@ class Source:
         # while set, nothing past this time is listed or sent; cleared, the held
         # bytes go out at once
         self.stopped_at: float | None = None
+        # the wall clock at start, for PROGRAM-DATE-TIME as Twitch stamps each segment
+        self.wall_start = time.time()
         self.base = ""
         # seconds late the bytes of these segments come when asked for as prefetch,
         # as a broadcast with a slow low-latency edge sends them
@@ -374,7 +380,12 @@ class Source:
         live = self.encoding()
         lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:6", "#EXT-X-MEDIA-SEQUENCE:0"]
         for i in range(live):
-            lines += ["#EXTINF:2.000,live", f"{self.base}/{self.identity}/{i}.ts"]
+            began = datetime.fromtimestamp(self.wall_start + 2 * (i - 1), UTC)
+            lines += [
+                f"#EXT-X-PROGRAM-DATE-TIME:{began.isoformat(timespec='milliseconds')}",
+                "#EXTINF:2.000,live",
+                f"{self.base}/{self.identity}/{i}.ts",
+            ]
         for i in range(live, min(live + 2, len(self.segs))):
             lines.append(f"#EXT-X-TWITCH-PREFETCH:{self.base}/{self.identity}/{i}.ts")
         return "\n".join(lines) + "\n"
@@ -938,3 +949,82 @@ async def test_a_channel_with_a_steady_prefetch_edge_keeps_prefetch(setup):
         await asyncio.sleep(0.5)
     assert state.no_prefetch is None
     assert not any(seg.filler for seg in state.segs)
+
+
+def _segment(uri: str, pdt: str | None) -> Segment:
+    return Segment(
+        seq=1, uri=uri, duration=2.0, program_date_time=pdt, discontinuity=False, map_gen=None
+    )
+
+
+class TestLatency:
+    @pytest.mark.parametrize(
+        "pdt",
+        ["2026-11-09T01:00:00.000Z", "2026-11-08T17:00:00.000-0800", "2026-11-09T01:00:00+00:00"],
+    )
+    def test_source_times_read_any_offset(self, pdt):
+        expected = datetime(2026, 11, 9, 1, tzinfo=UTC).timestamp()
+        assert _source_time(_segment("a.ts", pdt), set()) == expected
+
+    def test_a_prefetch_segment_is_timed_without_its_lead(self):
+        seg = _segment("b.ts", "2026-11-09T01:00:02.000Z")
+        base = datetime(2026, 11, 9, 1, 0, 2, tzinfo=UTC).timestamp()
+        assert _source_time(seg, {"b.ts"}) == base - PREFETCH_LEAD
+
+    def test_no_time_without_a_program_date_time(self):
+        assert _source_time(_segment("a.ts", None), set()) is None
+
+    async def test_parts_take_their_segments_source_time(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state._source_times[900] = 1000.0
+        state._add([Part(900, b"", 0.5, True, False), Part(900, b"", 0.5, False, False)], 0.0)
+        assert state.segs[-1].source == 1000.0
+        await state.stop()
+
+    async def test_behind_measures_to_the_end_of_released_media(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        seg = _Seg(1, False, 0, source=1000.0)
+        seg.parts += [_Part(b"", 0.5, True, release=0.0), _Part(b"", 0.5, False, release=5.0)]
+        state.segs.append(seg)
+        # one part out: the edge is 0.5 s of media past the segment's start
+        assert state.behind(1.0, wall=1003.0) == pytest.approx(2.5)
+        assert state.behind(6.0, wall=1003.0) == pytest.approx(2.0)
+        state.segs.append(_Seg(2, True, 1, filler=True, parts=[_Part(b"", 2.0, True, release=6.0)]))
+        assert state.behind(7.0, wall=1004.0) is None
+        await state.stop()
+
+    async def test_a_report_each_minute_with_percentiles(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        state.played = "chan"
+        seg = _Seg(1, False, 0, source=1000.0)
+        seg.parts.append(_Part(b"", 0.5, True, release=0.0))
+        state.segs.append(seg)
+        with structlog.testing.capture_logs() as logs:
+            for k in range(10):
+                state.sample_latency(1.0 + k, wall=1001.0 + k)
+            state.sample_latency(1.0 + LATENCY_REPORT, wall=1001.0)
+        reports = [e for e in logs if e["event"] == "relay ll latency"]
+        # the first sample reports at once; the rest wait a full minute
+        assert len(reports) == 2
+        last = reports[-1]
+        assert last["channel"] == "chan" and last["samples"] == 10
+        assert last["edge_p50"] == pytest.approx(5.5) and last["edge_p95"] == pytest.approx(9.5)
+        assert last["player_p50"] == pytest.approx(5.5 + PART_HOLD_BACK)
+        await state.stop()
+
+
+async def test_released_media_carries_its_source_time(setup):
+    relay, add, client, ll = setup
+    relay.source = add("chan")
+    await _playlist(client)
+    await asyncio.sleep(5)
+    state = ll.slot(1)
+    timed = [seg for seg in state.segs if seg.parts and not seg.filler]
+    assert timed and all(seg.source is not None for seg in timed)
+    lag = state.behind(asyncio.get_running_loop().time(), time.time())
+    # the source stamps a segment as it begins encoding; the relay releases it a
+    # cushion later, after the segment's own time to arrive
+    assert lag is not None and 0 < lag < CUSHION + 3
