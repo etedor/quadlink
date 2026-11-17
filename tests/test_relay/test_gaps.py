@@ -215,6 +215,21 @@ async def test_new_channel_preroll_plays_outgoing_channel():
 
 
 @pytest.mark.asyncio
+async def test_a_later_ad_break_stays_on_the_current_channel():
+    store = SlotStore()
+    store.update(["a", "", "", ""], ["A", "", "", ""])
+    store.update(["b", "", "", ""], ["B", "", "", ""])
+    source = Source({"a": _src(10, ["a10.ts"]), "b": ONLY_ADS})
+    relay = _relay(store, source, {"t": 0.0})
+    assert (await relay.current_source(0, fresh=True))[0] == "A"
+
+    source.playlists["b"] = AD_SRC
+    assert (await relay.current_source(0, fresh=True))[0] == "B"
+    source.playlists["b"] = ONLY_ADS
+    assert (await relay.current_source(0, fresh=True))[0] == "B"
+
+
+@pytest.mark.asyncio
 async def test_init_follows_the_url_being_played():
     store = SlotStore()
     store.update(["a", "", "", ""], ["A", "", "", ""])

@@ -303,14 +303,18 @@ class SlotRelay:
     async def current_source(self, slot: int, fresh: bool = False) -> tuple[str, str] | None:
         """(channel identity, source playlist) the slot plays now, or None.
 
-        Same choice as _ingest_slot, without its side effects: during a new channel's
-        preroll, the outgoing channel's playlist. fresh skips the playlist cache.
+        Same choice as _ingest_slot: during a new channel's preroll, the outgoing
+        channel's playlist. fresh skips the playlist cache.
         """
         entry = self.store.get(slot)
         if entry is None:
             return None
         text = await self._fetch_source(slot, entry.url, fresh)
-        if not has_live_segment(text):
+        if has_live_segment(text):
+            # the LL engine may be the only reader: without this, every later ad
+            # break would fall back to the outgoing channel
+            self.store.release_outgoing(slot)
+        else:
             outgoing = self.store.outgoing(slot)
             if outgoing is not None:
                 try:
