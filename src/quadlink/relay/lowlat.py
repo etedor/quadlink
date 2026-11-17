@@ -498,6 +498,10 @@ class _Slot:
         # the channel whose prefetch is off, and loop times of its recent stalls
         self.no_prefetch: str | None = None
         self._stalls: deque[float] = deque()
+        # the channel of the open ad break and its ads' durations by URI; a closed
+        # break keeps its URIs: its ads stay listed behind live video for a while
+        self._ad_channel: str | None = None
+        self._ads: dict[str, float] = {}
         # the next listing restarts back in finished segments, prefetch just turned off
         self._backing_off = False
         # the last part's release waited on the release line, not on catch-up
@@ -593,7 +597,32 @@ class _Slot:
             if self._queued_count != before:
                 return
 
+    def _note_ads(self, identity: str, text: str) -> None:
+        """Log each ad break once, as it ends, with the seconds of ads it listed."""
+        if self._ad_channel not in (None, identity):
+            self._end_ad_break()
+        segments = parse_media_playlist(text)[2]
+        ads = ad_segment_uris(text)
+        fresh = {uri: dur for dur, uri, _, _, _ in segments if uri in ads and uri not in self._ads}
+        if fresh:
+            if self._ad_channel is None:
+                self._ad_channel = identity
+                self._ads = {}
+            self._ads.update(fresh)
+        elif self._ad_channel is not None and segments and segments[-1][1] not in ads:
+            self._end_ad_break()
+
+    def _end_ad_break(self) -> None:
+        logger.info(
+            "relay ll ad break",
+            slot=self.slot,
+            channel=self._ad_channel,
+            seconds=round(sum(self._ads.values()), 1),
+        )
+        self._ad_channel = None
+
     def _take(self, identity: str, text: str) -> None:
+        self._note_ads(identity, text)
         switched = identity != self.source.last_identity
         if switched:
             self.cushion_target = CUSHION

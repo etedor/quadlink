@@ -1394,3 +1394,37 @@ async def test_catch_up_keeps_what_a_stall_took(setup):
     state._shed_tail(0.5)
     assert [len(s.parts) for s in state.segs] == [4, 4]
     await state.stop()
+
+
+def _ad_listing(entries: list[tuple[str, bool]]) -> str:
+    lines = ["#EXTM3U", "#EXT-X-TARGETDURATION:2", "#EXT-X-MEDIA-SEQUENCE:1"]
+    for uri, ad in entries:
+        lines += [f"#EXTINF:2.000,{'Amazon|1' if ad else 'live'}", uri]
+    return "\n".join(lines) + "\n"
+
+
+class TestAdBreak:
+    async def test_a_break_is_logged_once_with_its_length(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        with structlog.testing.capture_logs() as logs:
+            state._note_ads("chan", _ad_listing([("l1.ts", False), ("a1.ts", True)]))
+            state._note_ads("chan", _ad_listing([("a1.ts", True), ("a2.ts", True)]))
+            state._note_ads("chan", _ad_listing([("a2.ts", True), ("l2.ts", False)]))
+            # the ads still listed behind live video are the same break
+            state._note_ads(
+                "chan", _ad_listing([("a2.ts", True), ("l2.ts", False), ("l3.ts", False)])
+            )
+        breaks = [e for e in logs if e["event"] == "relay ll ad break"]
+        assert [(e["channel"], e["seconds"]) for e in breaks] == [("chan", 4.0)]
+        await state.stop()
+
+    async def test_a_switch_ends_the_outgoing_channels_break(self, setup):
+        _, _, _, ll = setup
+        state = lowlat._Slot(ll, 0)
+        with structlog.testing.capture_logs() as logs:
+            state._note_ads("a", _ad_listing([("a1.ts", True)]))
+            state._note_ads("b", _ad_listing([("b1.ts", False)]))
+        breaks = [e for e in logs if e["event"] == "relay ll ad break"]
+        assert [(e["channel"], e["seconds"]) for e in breaks] == [("a", 2.0)]
+        await state.stop()
